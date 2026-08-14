@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "activeAccountNumber": 1,
+  "accounts": [
+    {
+      "number": 1,
+      "email": "acct1@example.com",
+      "organizationName": "Acct One",
+      "organizationUuid": "00000000-0000-4000-8000-000000000001",
+      "isOrganization": true,
+      "active": true,
+      "usageStatus": "ok",
+      "usage": {
+        "fiveHour": {
+          "pct": 12.0,
+          "resetsAt": "2026-08-14T19:00:00.035216+00:00",
+          "countdown": "12m",
+          "clock": "12:00"
+        },
+        "sevenDay": {
+          "pct": 60.0,
+          "resetsAt": "2026-08-17T23:00:00.035241+00:00",
+          "countdown": "3d 4h",
+          "clock": "Aug 17 16:00",
+          "expectedPct": 54.6,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-08-17T07:58:06Z",
+          "willLastToReset": false
+        },
+        "scoped": [
+          {
+            "pct": 80.0,
+            "resetsAt": "2026-08-17T23:00:00.035469+00:00",
+            "countdown": "3d 4h",
+            "clock": "Aug 17 16:00",
+            "expectedPct": 54.6,
+            "aheadOfPace": true,
+            "projectedExhaustionAt": "2026-08-15T17:43:35Z",
+            "willLastToReset": false,
+            "name": "Fable"
+          }
+        ]
+      },
+      "usageFetchedAt": "2026-08-14T18:46:52Z",
+      "usageAgeSeconds": 14.2
+    },
+    {
+      "number": 2,
+      "email": "acct2@example.com",
+      "organizationName": "acct2@example.com's Organization",
+      "organizationUuid": "00000000-0000-4000-8000-000000000002",
+      "isOrganization": true,
+      "active": false,
+      "usageStatus": "ok",
+      "usage": {
+        "fiveHour": {
+          "pct": 68.0,
+          "resetsAt": "2026-08-14T22:30:00.110021+00:00",
+          "countdown": "3h 42m",
+          "clock": "15:30"
+        },
+        "sevenDay": {
+          "pct": 57.0,
+          "resetsAt": "2026-08-19T09:00:00.110040+00:00",
+          "countdown": "4d 14h",
+          "clock": "Aug 19 02:00",
+          "expectedPct": 34.4,
+          "aheadOfPace": true,
+          "projectedExhaustionAt": "2026-08-16T14:22:26Z",
+          "willLastToReset": false
+        },
+        "scoped": [
+          {
+            "pct": 88.0,
+            "resetsAt": "2026-08-19T09:00:00.110224+00:00",
+            "countdown": "4d 14h",
+            "clock": "Aug 19 02:00",
+            "expectedPct": 34.4,
+            "aheadOfPace": true,
+            "projectedExhaustionAt": "2026-08-15T02:39:45Z",
+            "willLastToReset": false,
+            "name": "Fable"
+          }
+        ]
+      },
+      "usageFetchedAt": "2026-08-14T18:46:59Z",
+      "usageAgeSeconds": 7.0
+    },
+    {
+      "number": 3,
+      "email": "acct3@example.com",
+      "organizationName": "acct3@example.com's Organization",
+      "organizationUuid": "00000000-0000-4000-8000-000000000003",
+      "isOrganization": true,
+      "active": false,
+      "usageStatus": "ok",
+      "usage": {
+        "fiveHour": {
+          "pct": 100.0,
+          "resetsAt": "2026-08-14T20:00:00.334934+00:00",
+          "countdown": "1h 12m",
+          "clock": "13:00"
+        },
+        "sevenDay": {
+          "pct": 100.0,
+          "resetsAt": "2026-08-15T02:00:00.334955+00:00",
+          "countdown": "7h 12m",
+          "clock": "19:00",
+          "expectedPct": 95.7,
+          "aheadOfPace": false,
+          "projectedExhaustionAt": "2026-08-14T18:46:59Z",
+          "willLastToReset": false
+        },
+        "scoped": [
+          {
+            "pct": 100.0,
+            "resetsAt": "2026-08-15T02:00:00.335165+00:00",
+            "countdown": "7h 12m",
+            "clock": "19:00",
+            "expectedPct": 95.7,
+            "aheadOfPace": false,
+            "projectedExhaustionAt": "2026-08-14T18:46:59Z",
+            "willLastToReset": false,
+            "name": "Fable"
+          }
+        ]
+      },
+      "usageFetchedAt": "2026-08-14T18:46:59Z",
+      "usageAgeSeconds": 7.0
+    }
+  ]
+}

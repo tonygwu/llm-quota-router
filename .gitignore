@@ -1,0 +1,64 @@
+# --------------------------------------------------------------------------------------
+# Python
+# --------------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build artifacts
+build/
+dist/
+sdist/
+wheels/
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.python-version
+
+# Test / type / lint caches
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.ruff_cache/
+.hypothesis/
+
+# --------------------------------------------------------------------------------------
+# Editors / OS
+# --------------------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# --------------------------------------------------------------------------------------
+# Operator data — NEVER commit real account state
+#
+# This repo reasons about the operator's own LLM subscriptions. Live oracle dumps carry
+# real emails, organization UUIDs and usage numbers. Root-level captures and scratch
+# space are ignored; the one committed sample is the REDACTED test fixture below.
+# --------------------------------------------------------------------------------------
+.env
+.env.*
+/cswap-*.json
+/*.local.json
+/scratch/
+/tmp/
+/.tmp/
+
+# ...but the redacted fixture is part of the test suite and must stay tracked.
+!tests/fixtures/cswap_real.json

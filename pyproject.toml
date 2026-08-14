@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-quota-router"
+description = "Per-invocation router that picks which of the operator's own already-authorized LLM accounts to spend from, maximizing use of quota that would otherwise expire unused."
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+# ZERO runtime dependencies, on purpose. The router is a decision function plus a
+# thin oracle/exec layer over CLIs the operator has already installed; anything it
+# needs (json, subprocess, pathlib, datetime) is in the standard library.
+dependencies = []
+
+keywords = ["llm", "quota", "router", "scheduling", "claude", "codex"]
+
+classifiers = [
+  # Belt-and-braces guard: this project is private and must never be uploaded to PyPI.
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.scripts]
+quotapick = "quota_router.cli:main"
+
+[project.optional-dependencies]
+# Test-only; still zero *runtime* deps.
+dev = ["pytest>=8.0"]
+
+# --------------------------------------------------------------------------------------
+# src-layout packaging
+# --------------------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["quota_router*"]
+
+# Single source of truth for the version lives in src/quota_router/__init__.py, where it
+# is a plain string literal so setuptools can read it without importing the package.
+[tool.setuptools.dynamic]
+version = { attr = "quota_router.__version__" }
+
+# --------------------------------------------------------------------------------------
+# pytest
+# --------------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# Makes `pytest` work straight from a checkout (no editable install required) while
+# keeping the src-layout guarantee that tests import the packaged code, not loose files.
+pythonpath = ["src"]
+# The trailing `-m "not live"` is overridden by any `-m` given on the command line
+# (last one wins), so `pytest -m live` runs exactly the live-only tests.
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not live"]
+markers = [
+  "live: touches the real machine (the `cswap` binary, ~/.claude* configs, real CLIs). Deselected by default; run with `pytest -m live`.",
+]
