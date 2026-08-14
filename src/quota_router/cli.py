@@ -1098,7 +1098,7 @@ def _cmd_pick(
     if getattr(args, "explain", False):
         stderr.write(
             explain_mod.explain_verbose(
-                prepared.decision, margin=_effective_margin(prepared)
+                _decision_for_render(prepared), margin=_effective_margin(prepared)
             )
             + "\n"
         )
@@ -1115,14 +1115,7 @@ def _cmd_explain(
     cwd: str | None,
 ) -> int:
     prepared = _prepare(args, env, now_s, deps, cwd, event="explain", write_state=False)
-    # `pick` reports decision.excluded PLUS the candidates dropped at the CLI/config
-    # layer (eligibility floor, --only/--exclude). `explain` must report the same set
-    # or an account simply vanishes from the human view while appearing in the JSON —
-    # and a reader who cannot see WHY an account is absent stops trusting the output.
-    decision = replace(
-        prepared.decision,
-        excluded=tuple(prepared.decision.excluded) + prepared.cli_excluded,
-    )
+    decision = _decision_for_render(prepared)
     if getattr(args, "json", False):
         payload = decision.to_dict()
         payload["generated_at"] = _iso(now_s)
