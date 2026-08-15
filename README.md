@@ -126,6 +126,35 @@ From any other language, shell out to `quotapick pick --json` and honor the
 including when every account is exhausted (you get the earliest-reset candidate
 with `fits: false`). Callers should never have to handle a crash.
 
+## Keeping the oracle fresh
+
+`cswap` stores a **copy** of each account's credentials. The live config dirs keep
+refreshing their own OAuth tokens; those copies do not. After a few hours a copy
+expires, `cswap` reports `usageStatus: "relogin_required"`, and the router — correctly,
+but silently — stops seeing that account. Observed in practice: two of three accounts
+went dark within roughly seven hours of registration.
+
+The router degrades safely (it warns and skips rather than guessing), but a skipped
+account is an invisible one, so left alone the fleet narrows itself.
+
+```sh
+./ops/refresh-oracle-credentials.sh --check   # report status, mutate nothing
+./ops/refresh-oracle-credentials.sh           # re-capture every configured account
+./ops/install-launchd.sh                      # do it every 30 min (macOS)
+./ops/install-launchd.sh --uninstall
+```
+
+Re-capturing is idempotent and non-destructive: it copies credentials *into* cswap's
+own registry and never changes which account is globally active, so concurrent spawns
+against different accounts stay isolated.
+
+**This is operator tooling, deliberately outside `src/`.** The package's oracle-only
+guarantee — `cswap list --json` and nothing else — is about the *router* never mutating
+account state while making a routing decision, and `tests/test_portability.py` enforces
+it across the package. Refreshing the oracle's own credential cache is a separate,
+explicitly-invoked maintenance action, so it lives in `ops/` where that rule does not
+and should not reach.
+
 ## Design notes
 
 - **Pure core.** `scoring.py` and `select.py` import only stdlib and the type
