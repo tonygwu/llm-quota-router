@@ -106,6 +106,30 @@ def _utc_date(epoch_s: float) -> str:
     return datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def _first_record_day(path: Path) -> str | None:
+    """The UTC day of the first record in a history file, or None if unreadable.
+
+    Only the first line is read, so this stays O(1) no matter how large the file is.
+    A file whose head is missing, truncated mid-write, or not a record simply yields
+    None and the caller falls back to mtime — history is best-effort telemetry and
+    must never raise into a routing decision.
+    """
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            first = handle.readline()
+    except OSError:
+        return None
+    if not first.strip():
+        return None
+    try:
+        stamp = json.loads(first).get("t")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(stamp, (int, float)):
+        return None
+    return _utc_date(float(stamp))
+
+
 def _iso(epoch_s: float) -> str:
     """RFC 3339 timestamp in UTC."""
     return (
@@ -135,6 +159,21 @@ class HistoryWrite:
         object.__setattr__(self, "warnings", tuple(self.warnings))
 
 
+def _day_from_rotated_name(name: str) -> str | None:
+    """``history-2026-08-14.jsonl`` (or ``…-2.jsonl``) -> ``2026-08-14``.
+
+    Returns None for any name that does not carry a well-formed date, so the caller
+    can fall back to mtime rather than guess at a file it does not recognize.
+    """
+    stem = name[len("history-") :].removesuffix(".jsonl") if name.startswith("history-") else ""
+    day = stem[:10]
+    if len(day) != 10 or day[4] != "-" or day[7] != "-":
+        return None
+    if not (day[:4].isdigit() and day[5:7].isdigit() and day[8:10].isdigit()):
+        return None
+    return day
+
+
 def _rotation_target(path: Path, day: str) -> Path:
     """``history-<day>.jsonl``, disambiguated when that name is taken."""
     candidate = path.with_name(f"history-{day}.jsonl")
@@ -157,12 +196,20 @@ def _maybe_rotate(
         warnings.append(f"cannot stat history file {path}: {exc}")
         return None
 
-    day_rolled = _utc_date(stat.st_mtime) != _utc_date(now_s)
+    # Rotate on the day of the DATA, not the day the file happened to be touched.
+    # Filesystem mtime is wall-clock; the records carry their own logical timestamp.
+    # Keying off mtime makes rotation depend on when the process ran rather than on
+    # what it recorded, so a caller supplying its own clock (a replay, a backfill, a
+    # test) rotates correctly only when wall-clock and logical time agree — which is
+    # a bug that hides until the two diverge.
+    file_day = _first_record_day(path) or _utc_date(stat.st_mtime)
+
+    day_rolled = file_day != _utc_date(now_s)
     too_big = max_bytes > 0 and stat.st_size >= max_bytes
     if not (day_rolled or too_big):
         return None
 
-    target = _rotation_target(path, _utc_date(stat.st_mtime))
+    target = _rotation_target(path, file_day)
     try:
         os.replace(path, target)
     except OSError as exc:
@@ -182,9 +229,20 @@ def _prune(path: Path, now_s: float, keep_days: int, warnings: list[str]) -> lis
     except OSError as exc:
         warnings.append(f"cannot list rotated history files: {exc}")
         return []
+    cutoff_day = _utc_date(cutoff)
     for candidate in candidates:
         try:
-            if candidate.stat().st_mtime >= cutoff:
+            # Prefer the day encoded in the rotated filename over the filesystem
+            # mtime, for the same reason rotation does: mtime records when the file
+            # was last touched, not which day's data it holds. A file copied,
+            # restored from backup, or written under an injected clock has an mtime
+            # that says nothing about its contents — and deleting telemetry on that
+            # basis is silent data loss.
+            day = _day_from_rotated_name(candidate.name)
+            if day is not None:
+                if day >= cutoff_day:  # lexicographic works on YYYY-MM-DD
+                    continue
+            elif candidate.stat().st_mtime >= cutoff:
                 continue
             candidate.unlink()
             removed.append(candidate.name)

@@ -996,9 +996,12 @@ def test_history_prunes_rotated_files_past_the_retention_window(env, tmp_path):
     stale.write_text("{}\n")
     os.utime(stale, (NOW - 90 * 86_400, NOW - 90 * 86_400))
 
+    # Pruning is deliberately coupled to rotation (rotation fires daily, so retention
+    # is enforced daily). Trigger it the way production does -- by appending on a later
+    # logical day -- rather than by back-dating an mtime: rotation keys off the day of
+    # the DATA now, so a doctored mtime no longer causes one.
     append_snapshots(real_capture(), now_s=NOW, path=target)
-    os.utime(target, (NOW - 86_400, NOW - 86_400))
-    append_snapshots(real_capture(), now_s=NOW, path=target, keep_days=30)
+    append_snapshots(real_capture(), now_s=NOW + 86_400, path=target, keep_days=30)
 
     assert not stale.exists()
 
