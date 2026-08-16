@@ -221,3 +221,31 @@ def test_the_default_account_exec_plan_must_not_set_claude_config_dir() -> None:
         "the default Claude account must be selected by unsetting CLAUDE_CONFIG_DIR, "
         f"not by pointing it at the config dir; got {env!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# 6. A slot account must never borrow the default account's credentials.
+# --------------------------------------------------------------------------
+
+
+def test_a_slot_dir_with_no_keychain_entry_does_not_fall_back_to_the_default() -> None:
+    """Observed the moment a fourth subscription was added, before it was logged in.
+
+    ``keychain_service_for`` returned (suffixed, unsuffixed) for every directory.
+    For the DEFAULT directory that is a sensible fallback. For a slot directory it
+    is misattribution: ~/.claude-d had no entry yet, so the lookup fell through to
+    ``Claude Code-credentials`` and read ACCOUNT A's token -- reporting A's usage as
+    D's, and routing work to "D" that actually spends A.
+
+    A slot with no entry is not logged in. That is the only correct answer.
+    """
+    from quota_router.providers.claude_oauth import keychain_service_for
+
+    default = keychain_service_for("/Users/x/.claude", home="/Users/x")
+    assert default[0] == "Claude Code-credentials"
+
+    slot = keychain_service_for("/Users/x/.claude-d", home="/Users/x")
+    assert "Claude Code-credentials" not in slot, (
+        f"a slot dir must never resolve to the default account's entry; got {slot}"
+    )
+    assert len(slot) == 1 and slot[0].startswith("Claude Code-credentials-")

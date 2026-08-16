@@ -67,6 +67,7 @@ from quota_router.types import (
     ACCOUNT_CLAUDE,
     ACCOUNT_CLAUDE_B,
     ACCOUNT_CLAUDE_C,
+    ACCOUNT_CLAUDE_D,
     ACCOUNT_CODEX,
     SOURCE_ASSUMED,
     SOURCE_CACHE,
@@ -499,8 +500,12 @@ def test_keychain_service_for_puts_the_unsuffixed_name_first_only_for_the_defaul
     """Verified against all three of this operator's real accounts.
 
     The default directory's entry is unsuffixed; every other directory is suffixed with
-    the first eight hex digits of the SHA-256 of its absolute path. Both candidates are
-    always returned -- the mapping is an observed convention, not a documented contract.
+    the first eight hex digits of the SHA-256 of its absolute path.
+
+    The default gets a suffixed fallback because the unsuffixed name is an observed
+    convention rather than a documented contract. A SLOT gets no unsuffixed fallback:
+    it would read the default account's credentials, which misattributes one account's
+    usage to another rather than reporting the slot as logged out.
     """
     home = Path("/Users/tonygwu")
 
@@ -510,8 +515,7 @@ def test_keychain_service_for_puts_the_unsuffixed_name_first_only_for_the_defaul
 
     for dir_name, digest in ((".claude-b", "6bf31a73"), (".claude-c", "8af63c1d")):
         candidates = keychain_service_for(home / dir_name, home=home)
-        assert candidates[0] == f"{KEYCHAIN_SERVICE_BASE}-{digest}"
-        assert candidates[1] == KEYCHAIN_SERVICE_BASE
+        assert candidates == (f"{KEYCHAIN_SERVICE_BASE}-{digest}",)
 
 
 def test_keychain_service_names_are_per_directory_and_expand_a_tilde() -> None:
@@ -525,8 +529,13 @@ def test_keychain_service_names_are_per_directory_and_expand_a_tilde() -> None:
     )[0]
 
 
-def test_keychain_read_tries_the_second_candidate_when_the_first_misses(tmp_path: Path) -> None:
-    config_dir = tmp_path / ".claude-b"
+def test_the_default_dir_tries_its_second_candidate_when_the_first_misses(tmp_path: Path) -> None:
+    """Only the default directory has a second candidate to try.
+
+    A slot directory deliberately has exactly one, so there is nothing to fall
+    through to -- falling through would read the default account's credentials.
+    """
+    config_dir = tmp_path / ".claude"
     first, second = keychain_service_for(config_dir, home=tmp_path)
     keychain = FakeKeychain({second: keychain_blob(expires_at_s=NOW + 3600)})
 
@@ -536,6 +545,16 @@ def test_keychain_read_tries_the_second_candidate_when_the_first_misses(tmp_path
     assert read.token == ACCESS_TOKEN
     assert read.service == second
     assert keychain.services == [first, second]
+
+
+def test_a_slot_dir_never_reaches_the_default_accounts_entry(tmp_path: Path) -> None:
+    config_dir = tmp_path / ".claude-b"
+    keychain = FakeKeychain({KEYCHAIN_SERVICE_BASE: keychain_blob(expires_at_s=NOW + 3600)})
+
+    read = read_access_token(config_dir, runner=keychain, home=tmp_path, now_s=NOW)
+
+    assert read.usable is False, "a logged-out slot must not borrow account A's token"
+    assert KEYCHAIN_SERVICE_BASE not in keychain.services
 
 
 # ======================================================================================
@@ -1062,7 +1081,7 @@ def test_discovery_returns_unresolved_directories_rather_than_hiding_them(tmp_pa
     )
     configs = {config.account_id: config for config in discover_claude_configs(home=tmp_path)}
 
-    assert set(configs) == {ACCOUNT_CLAUDE, ACCOUNT_CLAUDE_B, ACCOUNT_CLAUDE_C}
+    assert set(configs) == {ACCOUNT_CLAUDE, ACCOUNT_CLAUDE_B, ACCOUNT_CLAUDE_C, ACCOUNT_CLAUDE_D}
     assert configs[ACCOUNT_CLAUDE].resolved is True
     assert configs[ACCOUNT_CLAUDE].tier == TIER_UNKNOWN  # present, but no tier recorded
     assert configs[ACCOUNT_CLAUDE_B].resolved is False

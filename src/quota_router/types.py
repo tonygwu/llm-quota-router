@@ -71,6 +71,7 @@ __all__ = [
     "ACCOUNT_CLAUDE",
     "ACCOUNT_CLAUDE_B",
     "ACCOUNT_CLAUDE_C",
+    "ACCOUNT_CLAUDE_D",
     "ACCOUNT_CODEX",
     "ACCOUNT_ANTIGRAVITY_GEMINI",
     "ACCOUNT_ANTIGRAVITY_CLAUDE",
@@ -195,6 +196,7 @@ def _as_text(value: Any, field_name: str, *, allow_empty: bool = False) -> str:
 ACCOUNT_CLAUDE: Final[str] = "claude"
 ACCOUNT_CLAUDE_B: Final[str] = "claude_b"
 ACCOUNT_CLAUDE_C: Final[str] = "claude_c"
+ACCOUNT_CLAUDE_D: Final[str] = "claude_d"
 ACCOUNT_CODEX: Final[str] = "codex"
 ACCOUNT_ANTIGRAVITY_GEMINI: Final[str] = "antigravity_gemini"
 ACCOUNT_ANTIGRAVITY_CLAUDE: Final[str] = "antigravity_claude"
@@ -206,6 +208,7 @@ ACCOUNT_IDS: Final[tuple[str, ...]] = (
     ACCOUNT_CLAUDE,
     ACCOUNT_CLAUDE_B,
     ACCOUNT_CLAUDE_C,
+    ACCOUNT_CLAUDE_D,
     ACCOUNT_CODEX,
     ACCOUNT_ANTIGRAVITY_GEMINI,
     ACCOUNT_ANTIGRAVITY_CLAUDE,
@@ -231,6 +234,7 @@ ACCOUNT_PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(
         ACCOUNT_CLAUDE: PROVIDER_CLAUDE,
         ACCOUNT_CLAUDE_B: PROVIDER_CLAUDE,
         ACCOUNT_CLAUDE_C: PROVIDER_CLAUDE,
+        ACCOUNT_CLAUDE_D: PROVIDER_CLAUDE,
         ACCOUNT_CODEX: PROVIDER_CODEX,
         ACCOUNT_ANTIGRAVITY_GEMINI: PROVIDER_ANTIGRAVITY,
         ACCOUNT_ANTIGRAVITY_CLAUDE: PROVIDER_ANTIGRAVITY,

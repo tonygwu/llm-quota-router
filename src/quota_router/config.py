@@ -649,6 +649,7 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "claude": {"config_dir": "~/.claude"},
             "claude_b": {"config_dir": "~/.claude-b"},
             "claude_c": {"config_dir": "~/.claude-c"},
+            "claude_d": {"config_dir": "~/.claude-d"},
             "codex": {"config_dir": "~/.codex"},
             # Antigravity has no per-account config directory: the two pools behind the
             # one CLI are selected by AGY_MODEL, where a value containing "claude" means

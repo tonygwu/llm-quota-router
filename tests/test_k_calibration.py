@@ -288,3 +288,27 @@ def test_a_physically_impossible_k_is_refused_however_tight_its_interval() -> No
     est = estimate_weekly_to_session(log)["claude"]
     assert est.k is None, f"k={est.k} is below the physical floor and must be refused"
     assert "impossible" in (est.reason or "").lower(), est.reason
+
+
+def test_a_fourth_claude_account_is_canonical_not_a_fallback() -> None:
+    """Adding a subscription must not depend on a prefix heuristic to be routable.
+
+    ``provider_for_account_id`` already guessed claude_d correctly, but a guess is
+    not a registration: without a builtin config entry and a default config-dir
+    name the account is never discovered, so it is invisible to routing however
+    well its provider resolves.
+    """
+    from quota_router.config import load_config
+    from quota_router.providers.claude_cli_config import DEFAULT_CLAUDE_CONFIG_DIR_NAMES
+    from quota_router.types import ACCOUNT_IDS, provider_for_account_id
+
+    assert "claude_d" in ACCOUNT_IDS
+    assert provider_for_account_id("claude_d") == "claude"
+    assert DEFAULT_CLAUDE_CONFIG_DIR_NAMES["claude_d"] == ".claude-d"
+
+    cfg = load_config(env={})
+    account = cfg.accounts.get("claude_d")
+    assert account is not None, "claude_d must be a builtin account"
+    assert account.config_dir and account.config_dir.endswith(".claude-d")
+    # A slot account, unlike the default, IS selected by naming its directory.
+    assert account.exec_env().get("CLAUDE_CONFIG_DIR", "").endswith(".claude-d")

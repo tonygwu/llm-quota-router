@@ -137,9 +137,15 @@ def keychain_service_for(config_dir: Path | str, *, home: Path | str | None = No
 
     ``~/.claude-b`` -> ``6bf31a73``, ``~/.claude-c`` -> ``8af63c1d``.
 
-    Both candidates are returned rather than one guessed, because the mapping is
-    an observed convention rather than a documented contract -- if Claude Code
-    ever suffixes the default directory too, the fallback keeps us working.
+    The DEFAULT directory gets both candidates, because the unsuffixed name is an
+    observed convention rather than a documented contract and the suffixed form is
+    a safe fallback for the same account.
+
+    A SLOT directory gets exactly one. Falling back to the unsuffixed entry there
+    would read the *default account's* credentials -- observed the moment a fourth
+    subscription was added: ~/.claude-d had no entry yet, resolved to account A's,
+    and reported A's usage as D's. A slot with no entry is not logged in, and
+    saying so is the only correct answer.
     """
     resolved = Path(os.path.expanduser(str(config_dir)))
     digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
@@ -147,7 +153,7 @@ def keychain_service_for(config_dir: Path | str, *, home: Path | str | None = No
     base = Path(home) if home is not None else Path(os.path.expanduser("~"))
     if resolved == base / ".claude":
         return (KEYCHAIN_SERVICE_BASE, suffixed)
-    return (suffixed, KEYCHAIN_SERVICE_BASE)
+    return (suffixed,)
 
 
 def usage_cache_path(

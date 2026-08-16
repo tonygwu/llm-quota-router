@@ -23,6 +23,7 @@ from ..types import (
     ACCOUNT_CLAUDE,
     ACCOUNT_CLAUDE_B,
     ACCOUNT_CLAUDE_C,
+    ACCOUNT_CLAUDE_D,
     TIER_UNKNOWN,
     Identity,
     normalize_tier,
@@ -41,6 +42,7 @@ DEFAULT_CLAUDE_CONFIG_DIR_NAMES: Final[Mapping[str, str]] = {
     ACCOUNT_CLAUDE: ".claude",
     ACCOUNT_CLAUDE_B: ".claude-b",
     ACCOUNT_CLAUDE_C: ".claude-c",
+    ACCOUNT_CLAUDE_D: ".claude-d",
 }
 
 #: Optional JSON env override: ``{"claude": "/abs/dir", "claude_b": "/abs/dir"}``.
