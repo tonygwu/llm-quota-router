@@ -113,6 +113,10 @@ DEFAULT_USAGE_TTL_S: Final[float] = 120.0
 #: on numbers old enough to be wrong.
 DEFAULT_USAGE_STALE_MAX_S: Final[float] = 900.0
 
+#: Backoff assumed when a 429 arrives without a parseable ``Retry-After``. Never
+#: zero: retrying immediately is what the server just asked us not to do.
+DEFAULT_RETRY_AFTER_S: Final[float] = 60.0
+
 #: ``limits[].kind`` -> (window key, window length). ``weekly_scoped`` is handled
 #: separately because its key comes from the model it is scoped to.
 _KIND_TO_WINDOW: Final[dict[str, tuple[str, float]]] = {
@@ -179,29 +183,33 @@ def usage_cache_path(
     return base / f"{safe}.json"
 
 
-def _read_usage_cache(path: Path) -> tuple[Any | None, float | None]:
+def _read_usage_cache(path: Path) -> tuple[Any | None, float | None, float | None]:
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return None, None, None
     if not isinstance(blob, Mapping):
-        return None, None
+        return None, None, None
     fetched_at = blob.get("fetched_at_s")
     payload = blob.get("payload")
     if not isinstance(fetched_at, (int, float)) or payload is None:
         return None, None
-    return payload, float(fetched_at)
+    not_before = blob.get("not_before_s")
+    return payload, float(fetched_at), (float(not_before) if isinstance(not_before, (int, float)) else None)
 
 
-def _write_usage_cache(path: Path, payload: Any, fetched_at_s: float) -> None:
+def _write_usage_cache(
+    path: Path, payload: Any, fetched_at_s: float, not_before_s: float | None = None
+) -> None:
     """Best-effort cache write. A cache that cannot be written is not an error --
     the next call simply re-fetches."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps({"fetched_at_s": fetched_at_s, "payload": payload}), encoding="utf-8"
-        )
+        record: dict[str, Any] = {"fetched_at_s": fetched_at_s, "payload": payload}
+        if not_before_s is not None:
+            record["not_before_s"] = not_before_s
+        tmp.write_text(json.dumps(record), encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         pass
@@ -286,8 +294,15 @@ def read_access_token(
     return TokenRead(None, None, None, hard_failure or "no Keychain entry found for this config dir")
 
 
-def _fetch_usage(token: str, *, timeout_s: float, opener: Any = None) -> tuple[Any | None, str | None]:
-    """GET the usage endpoint. Returns ``(payload, error)`` -- never raises."""
+def _fetch_usage(
+    token: str, *, timeout_s: float, opener: Any = None
+) -> tuple[Any | None, str | None, float | None]:
+    """GET the usage endpoint. Returns ``(payload, error, retry_after_s)``; never raises.
+
+    ``retry_after_s`` is the server's own backoff instruction on a 429. Honoring it
+    matters: without it we re-request on every invocation while throttled, which is
+    the behavior that earns the throttle in the first place.
+    """
     request = urllib.request.Request(
         USAGE_URL,
         headers={
@@ -300,14 +315,21 @@ def _fetch_usage(token: str, *, timeout_s: float, opener: Any = None) -> tuple[A
     fetch = opener or urllib.request.urlopen
     try:
         with fetch(request, timeout=timeout_s) as response:
-            return json.loads(response.read().decode()), None
+            return json.loads(response.read().decode()), None, None
     except urllib.error.HTTPError as exc:
         detail = "401 unauthorized (token rejected)" if exc.code == 401 else f"HTTP {exc.code}"
-        return None, detail
+        retry_after: float | None = None
+        if exc.code == 429:
+            raw = exc.headers.get("Retry-After") if exc.headers else None
+            try:
+                retry_after = float(str(raw).strip())
+            except (TypeError, ValueError):
+                retry_after = DEFAULT_RETRY_AFTER_S
+        return None, detail, retry_after
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, f"{type(exc).__name__}: {exc}", None
     except (json.JSONDecodeError, ValueError) as exc:
-        return None, f"unparseable usage payload ({type(exc).__name__}: {exc})"
+        return None, f"unparseable usage payload ({type(exc).__name__}: {exc})", None
 
 
 def _model_class_for(entry: Mapping[str, Any]) -> str | None:
@@ -462,16 +484,20 @@ class ClaudeOAuthAdapter(ProviderAdapter):
             ]
 
         cache_path = usage_cache_path(config.account_id, self._env, home=self._home)
-        cached, cached_at = _read_usage_cache(cache_path)
+        cached, cached_at, not_before = _read_usage_cache(cache_path)
 
         payload: Any | None = None
         observed_at_s = now_s
         extra: list[str] = []
 
-        if cached is not None and cached_at is not None and (now_s - cached_at) < self._ttl_s:
+        fresh_enough = cached_at is not None and (now_s - cached_at) < self._ttl_s
+        backing_off = not_before is not None and now_s < not_before
+        if cached is not None and cached_at is not None and (fresh_enough or backing_off):
             payload, observed_at_s = cached, cached_at
+            if backing_off and not fresh_enough:
+                extra.append(f"endpoint asked for backoff; served cache")
         else:
-            payload, error = _fetch_usage(
+            payload, error, retry_after = _fetch_usage(
                 read.token or "", timeout_s=self._timeout_s, opener=self._opener
             )
             if error is None and payload is not None:
@@ -481,6 +507,12 @@ class ClaudeOAuthAdapter(ProviderAdapter):
                 # Serving it beats going dark; saying so beats pretending it is fresh.
                 payload, observed_at_s = cached, cached_at
                 extra.append(f"usage endpoint unavailable ({error}); served cache")
+                if retry_after is not None:
+                    # Persist the server's own backoff alongside the cache we just
+                    # served, so the next invocation does not re-ask inside the window
+                    # it was explicitly told to wait out. Re-requesting through a 429
+                    # is what earns the throttle in the first place.
+                    _write_usage_cache(cache_path, cached, cached_at, now_s + retry_after)
             else:
                 return [
                     AccountSnapshot(

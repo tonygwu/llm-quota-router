@@ -1750,3 +1750,49 @@ def test_the_cache_never_escapes_an_injected_home(tmp_path: Path) -> None:
 
     assert injected != real_home_cache
     assert str(injected).startswith(str(tmp_path)), injected
+
+
+def test_a_429_backoff_is_honored_on_the_next_invocation(tmp_path: Path) -> None:
+    """After a 429 we must not re-ask inside the window the server named.
+
+    Re-requesting through a throttle is what earns the throttle. The observed
+    endpoint returns `Retry-After` in the tens of seconds, so a router invoked per
+    LLM call would otherwise spend every one of those calls on a rejected request.
+    """
+    config = make_config(tmp_path)
+    runner = _keychain_with_token((NOW + 86400) * 1000)
+
+    ok = FakeOpener(usage_payload())
+    ClaudeOAuthAdapter(runner=runner, opener=ok, home=tmp_path, configs=[config]).snapshot(NOW)
+
+    throttled = FakeOpener(
+        raises=urllib.error.HTTPError(
+            USAGE_URL, 429, "Too Many Requests", {"Retry-After": "50"}, None
+        )
+    )
+    # Past the TTL, so this one really does try the endpoint and gets refused.
+    ClaudeOAuthAdapter(
+        runner=runner, opener=throttled, home=tmp_path, configs=[config]
+    ).snapshot(NOW + 300)
+    assert len(throttled.requests) == 1
+
+    # Still inside Retry-After: serve the cache, ask nothing.
+    again = FakeOpener(
+        raises=urllib.error.HTTPError(
+            USAGE_URL, 429, "Too Many Requests", {"Retry-After": "50"}, None
+        )
+    )
+    snapshot = ClaudeOAuthAdapter(
+        runner=runner, opener=again, home=tmp_path, configs=[config]
+    ).snapshot(NOW + 320)[0]
+
+    assert again.requests == [], "must not re-request inside the server's backoff window"
+    assert snapshot.available is True
+    assert snapshot.windows
+
+    # Past it, we are allowed to try again.
+    after = FakeOpener(usage_payload())
+    ClaudeOAuthAdapter(
+        runner=runner, opener=after, home=tmp_path, configs=[config]
+    ).snapshot(NOW + 400)
+    assert len(after.requests) == 1
