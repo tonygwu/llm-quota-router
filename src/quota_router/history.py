@@ -696,6 +696,7 @@ class WeeklyToSessionEstimate:
     samples: int
     session_resets_seen: int
     max_gap_s: float
+    span_s: float
     dropped_pairs: int
     undersampled: bool
     reason: str | None = None
@@ -862,6 +863,7 @@ def estimate_weekly_to_session(
             samples=pairs,
             session_resets_seen=resets,
             max_gap_s=max_gap,
+            span_s=(series[-1][0] - series[0][0]) if len(series) > 1 else 0.0,
             dropped_pairs=dropped,
             undersampled=undersampled,
             reason=reason,

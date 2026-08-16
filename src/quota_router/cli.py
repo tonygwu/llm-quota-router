@@ -1496,8 +1496,8 @@ def _cmd_calibrate(
         # testing produced tight intervals around values that were plainly wrong
         # (0.1 and 2.6 against a hand-measured ~12). Demand a real observation span
         # and a substantial share of a weekly cycle before recommending a swap.
-        span_h = est.max_gap_s and (est.samples * est.max_gap_s / 3600.0)
-        enough = width < 4.0 and est.weekly_consumed_pp >= 20.0 and (span_h or 0) >= 24.0
+        span_h = est.span_s / 3600.0
+        enough = width < 4.0 and est.weekly_consumed_pp >= 20.0 and span_h >= 24.0
         verdict = (
             "ADOPT"
             if enough
@@ -1506,7 +1506,7 @@ def _cmd_calibrate(
         stdout.write(
             f"  {account_id}: k={est.k:.1f} [{est.low:.1f}-{est.high:.1f}] "
             f"from {est.session_increment_pp:.0f}pp session / {est.weekly_consumed_pp:.0f}pp "
-            f"weekly over {est.samples} samples -> {verdict}\n"
+            f"weekly over {est.samples} samples spanning {span_h:.0f}h -> {verdict}\n"
         )
 
     usable = {k: v for k, v in results.items() if v.calls_per_window is not None}
