@@ -550,7 +550,7 @@ def _partition_candidates(
                 # rejecting them here on the default path would change how the normal
                 # route treats the antigravity pools for no gain. A floor of exactly 0
                 # is likewise nothing to fail.
-                if config.eligibility.explicit and min_remaining > 0.0:
+                if config.eligibility.min_remaining_configured and min_remaining > 0.0:
                     reason = (
                         "no applicable usage window, so its remaining quota cannot be "
                         f"verified against the min-remaining floor ({min_remaining:.1%})"

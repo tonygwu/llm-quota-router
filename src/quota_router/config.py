@@ -388,7 +388,8 @@ class EligibilityConfig:
         min_remaining: An account needs at least this fraction left in every applicable
             window to be eligible. Guards against routing to a pool with a sliver of
             quota that the very next call will exhaust mid-stream.
-        explicit: True when ``min_remaining`` came from ``--min-remaining`` or a config
+        min_remaining_configured: True when ``min_remaining`` came from
+            ``--min-remaining`` or a config
             file rather than the built-in default. The two are the same number but not
             the same claim: the default is *our* sanity guard against a sliver of quota,
             while an explicit value is a bar the CALLER set and expects to bind. Only the
@@ -398,7 +399,7 @@ class EligibilityConfig:
     """
 
     min_remaining: float = 0.02
-    explicit: bool = False
+    min_remaining_configured: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,7 +583,7 @@ class Config:
             out = replace(
                 out,
                 eligibility=EligibilityConfig(
-                    min_remaining=min_remaining, explicit=True
+                    min_remaining=min_remaining, min_remaining_configured=True
                 ),
             )
         if no_sticky:
@@ -929,7 +930,7 @@ def _build(
                 minimum=0.0,
                 maximum=1.0,
             ),
-            explicit=eligibility_explicit,
+            min_remaining_configured=eligibility_explicit,
         ),
         pileup=PileupConfig(
             enabled=_as_bool(pileup_raw.get("enabled", True), "pileup", "enabled"),

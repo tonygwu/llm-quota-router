@@ -216,7 +216,11 @@ def test_waste_is_bounded_by_the_session_throttle_not_just_your_typing_speed() -
     the real limit once the horizon is long enough for several refills.
     """
     s = stocks(session_used=0.0, weekly_used=0.5, weekly_reset_in=2 * HOUR, session_reset_in=5 * HOUR)
-    assert wasted_pse(s, now_s=NOW, rate_pse_per_hour=2.0) == pytest.approx(6.0 - 1.0, abs=0.01)
+    # Derived from the calibrated constant, not hardcoded: k is a measurement and
+    # gets re-derived, so a literal here breaks every time the router gets more
+    # accurate -- which is the wrong incentive.
+    weekly = 0.5 * DEFAULT_WEEKLY_TO_SESSION
+    assert wasted_pse(s, now_s=NOW, rate_pse_per_hour=2.0) == pytest.approx(weekly - 1.0, abs=0.01)
 
 
 def test_waste_is_bounded_by_your_rate_when_the_horizon_is_long_enough_to_refill() -> None:
@@ -227,7 +231,11 @@ def test_waste_is_bounded_by_your_rate_when_the_horizon_is_long_enough_to_refill
     expires.
     """
     s = stocks(session_used=0.0, weekly_used=0.5, weekly_reset_in=48 * HOUR, session_reset_in=1 * HOUR)
-    assert wasted_pse(s, now_s=NOW, rate_pse_per_hour=0.1) == pytest.approx(6.0 - 4.8, abs=0.05)
+    weekly = 0.5 * DEFAULT_WEEKLY_TO_SESSION
+    absorbable = 0.1 * 48  # rate x hours, well under what the session windows supply
+    assert wasted_pse(s, now_s=NOW, rate_pse_per_hour=0.1) == pytest.approx(
+        max(0.0, weekly - absorbable), abs=0.05
+    )
 
 
 def test_nothing_is_wasted_when_the_deadline_is_far_enough_away() -> None:

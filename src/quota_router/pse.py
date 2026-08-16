@@ -22,12 +22,23 @@ calibration. That is what ``Plan`` holds.
 
 THE TWO CONSTANTS, AND HOW MUCH TO TRUST THEM
 ---------------------------------------------
-``weekly_to_session`` (k) -- measured at ~11.9 from this operator's own logged
-deltas using ``k = d(session%) / d(weekly%)``: summed over four intervals,
-95/8 = 11.9. The seven-day bar is integer-quantized, so per-interval estimates
-ranged 5-17 and the error bars are roughly +/-2. It is emphatically not a
-constant of nature -- Anthropic changed session caps in May without resizing the
-weekly bucket -- so it is a calibrated input with a default, never a literal.
+``weekly_to_session`` (k) -- **6.25**, from a single clean full-window
+measurement: an account created fresh, both bars starting at zero, driven to
+100% of its five-hour window with no reset in between, reading 100pp session
+against 16pp weekly. Cross-checks: the increment-summing estimator read 6.5 on
+the same account (slightly high -- summing loses a little burn to the gap before
+each sample), and a second 20x account read 6.1.
+
+An earlier value of 11.9 was wrong and is worth recording as such. It came from
+four intervals where the weekly bar moved only 1-3pp, so the 1pp quantum
+dominated, and it was taken before a source-oscillation bug was fixed. It was
+reported with +/-2 error bars that were far too confident. The correction is
+roughly a factor of two, which had been making every weekly pool look twice as
+large as it is.
+
+Still a calibrated input, never a literal: Anthropic changed session caps in May
+without resizing the weekly bucket, and ``quotapick calibrate`` re-derives this
+per account from the history log.
 
 ``fable_fraction`` -- Anthropic documents the Fable cap as 50% of the weekly
 allowance. Two independent checks against live data are *consistent* with 0.5
@@ -63,7 +74,7 @@ __all__ = [
 ]
 
 #: Measured, not assumed. See the module docstring for provenance and error bars.
-DEFAULT_WEEKLY_TO_SESSION: Final[float] = 12.0
+DEFAULT_WEEKLY_TO_SESSION: Final[float] = 6.25
 
 #: Documented by Anthropic as 50% of the weekly allowance for Max plans.
 DEFAULT_FABLE_FRACTION: Final[float] = 0.5
