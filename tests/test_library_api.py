@@ -302,3 +302,29 @@ def test_pinning_to_one_account_does_not_apply_pileup_reservations(tmp_path) -> 
     assert pinned.fits is True, (
         f"reservations drove the only candidate to unservable; reason={pinned.reason}"
     )
+
+
+def test_meets_policy_is_false_when_the_selection_layer_chose_nobody(tmp_path) -> None:
+    """The last unmarked fallback path, found by review rather than by failure.
+
+    Five of six `_exhausted_fallback` call sites mark the decision as a fallback.
+    The sixth -- reached when the scoring layer runs but returns chosen=None -- did
+    not, so `meets_policy` reported TRUE for a decision that nothing qualified for.
+    Same class as the degraded-conflation bug, and the same consequence: a caller
+    gating on the field is told its constraints were met when they were not.
+    """
+    from quota_router import cli
+
+    exhausted = [
+        s.__class__(
+            id=s.id, windows=(), tier=s.tier, source=s.source, available=True,
+        )
+        for s in real_capture()
+    ]
+    sel = select_account(
+        model="fable", env=_env(tmp_path), now_s=NOW, deps=_deps(exhausted), record=False
+    )
+    assert sel.meets_policy is False, (
+        f"no candidate qualified, so policy was not met; got meets_policy="
+        f"{sel.meets_policy} account={sel.account} reason={sel.reason}"
+    )

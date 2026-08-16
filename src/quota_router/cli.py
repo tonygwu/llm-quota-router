@@ -819,6 +819,11 @@ def _decide(
         return _mark_fallback(fallback_flag) or _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
 
     if decision.chosen is None:
+        # The scoring layer ran and qualified nobody. That is a fallback exactly like
+        # the other five sites, and it must be marked as one -- otherwise meets_policy
+        # reports TRUE for a decision no candidate qualified for, which is the whole
+        # failure this field exists to prevent.
+        _mark_fallback(fallback_flag)
         fallback = _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
         return replace(
             fallback,
