@@ -328,3 +328,34 @@ def test_meets_policy_is_false_when_the_selection_layer_chose_nobody(tmp_path) -
         f"no candidate qualified, so policy was not met; got meets_policy="
         f"{sel.meets_policy} account={sel.account} reason={sel.reason}"
     )
+
+
+def test_reservations_cannot_subtract_more_than_a_quarter_of_a_window(tmp_path) -> None:
+    """A ceiling on pileup, so a wrong per-call cost cannot fabricate exhaustion.
+
+    Each pick reserves multiplier/calls_per_window of the window -- 0.5% at the
+    uncalibrated default. Reservations clear on a 60s timer rather than on
+    completion, so a batch at concurrency 3 keeps ~79 of them alive at once and
+    subtracts ~40% of the window while the real work consumed a fraction of that.
+    Observed live: the router concluded an account was spent and refused calls.
+
+    Sizing the reservations correctly needs a calibrated per-call cost, which needs
+    days of routed traffic. A ceiling needs neither: pileup still spreads work
+    across accounts, which is its actual purpose, but it can no longer talk itself
+    into believing an account with most of its window left is exhausted.
+    """
+    from quota_router.cli import MAX_PILEUP_FRACTION, _apply_pileup
+
+    assert 0.0 < MAX_PILEUP_FRACTION < 1.0
+
+    snaps = [s for s in real_capture() if s.id == "claude"]
+    before = snaps[0].windows[0].used_fraction
+    # A wildly oversized reservation, as produced by a sustained concurrent batch.
+    adjusted = _apply_pileup(snaps, {"claude": 5.0})[0]
+    after = adjusted.windows[0].used_fraction
+
+    assert after - before <= MAX_PILEUP_FRACTION + 1e-9, (
+        f"reservations added {after - before:.3f} to the used fraction, above the "
+        f"{MAX_PILEUP_FRACTION} ceiling"
+    )
+    assert after > before, "the ceiling must cap the subtraction, not remove it"

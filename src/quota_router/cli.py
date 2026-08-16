@@ -460,6 +460,20 @@ def _normalize_snapshot_result(result: Any) -> tuple[tuple[AccountSnapshot, ...]
     return snapshots, warnings
 
 
+#: Ceiling on how much in-flight reservations may add to an account's used fraction.
+#:
+#: Reservations are sized by an per-call cost that is essentially uncalibrated, and
+#: they clear on a 60-second timer rather than on completion -- so a sustained batch
+#: keeps dozens alive at once. Observed live: ~79 concurrent reservations at 0.5%
+#: each subtracted ~40% of a window whose real consumption was a fraction of that,
+#: and the router refused calls against an account that was mostly free.
+#:
+#: Sizing them correctly needs days of routed traffic to calibrate. A ceiling needs
+#: none: pileup still spreads work across accounts, which is the whole point, but it
+#: can no longer manufacture exhaustion out of a bad constant.
+MAX_PILEUP_FRACTION: Final[float] = 0.25
+
+
 def _apply_pileup(
     snapshots: Sequence[AccountSnapshot], reserved: Mapping[str, float]
 ) -> tuple[AccountSnapshot, ...]:
@@ -474,16 +488,18 @@ def _apply_pileup(
 
     out: list[AccountSnapshot] = []
     for snapshot in snapshots:
-        cost = reserved.get(snapshot.id, 0.0)
-        if cost <= 0.0 or not snapshot.windows:
+        raw_cost = reserved.get(snapshot.id, 0.0)
+        if raw_cost <= 0.0 or not snapshot.windows:
             out.append(snapshot)
             continue
+        cost = min(raw_cost, MAX_PILEUP_FRACTION)
         windows = tuple(
             replace(window, used_fraction=min(1.0, window.used_fraction + cost))
             for window in snapshot.windows
         )
+        capped = "" if cost == raw_cost else f" (capped from {raw_cost:.4f})"
         note = (snapshot.note + "; " if snapshot.note else "") + (
-            f"{cost:.4f} reserved by in-flight calls"
+            f"{cost:.4f} reserved by in-flight calls{capped}"
         )
         out.append(replace(snapshot, windows=windows, note=note))
     return tuple(out)
