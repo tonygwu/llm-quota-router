@@ -185,6 +185,8 @@ def test_pick_payload_matches_the_golden_schema(env):
         "binding_window",
         "regime",
         "fits",
+            "meets_policy",
+            "available_at",
         "sticky",
     }
     assert set(payload["exec"]) == {"env"}

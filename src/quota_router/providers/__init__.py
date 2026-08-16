@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Final
 
@@ -216,6 +217,9 @@ def collect_snapshots(
     best: dict[str, AccountSnapshot] = {}
     order: list[str] = []
     warnings: list[str] = []
+    #: Every window any source reported for an account, so a winner that is blind to
+    #: one can have it restored rather than silently dropping the constraint.
+    seen_windows: dict[str, dict[str, Any]] = {}
 
     for adapter in adapters:
         name = getattr(adapter, "name", type(adapter).__name__)
@@ -226,6 +230,9 @@ def collect_snapshots(
             continue
         warnings.extend(getattr(adapter, "warnings", ()))
         for snapshot in produced:
+            known = seen_windows.setdefault(snapshot.id, {})
+            for window in snapshot.windows:
+                known.setdefault(window.key, window)
             existing = best.get(snapshot.id)
             if existing is None:
                 best[snapshot.id] = snapshot
@@ -233,7 +240,53 @@ def collect_snapshots(
             elif _rank(snapshot) > _rank(existing):
                 best[snapshot.id] = snapshot
 
-    return [best[account_id] for account_id in order], warnings
+    merged: list[AccountSnapshot] = []
+    for account_id in order:
+        snapshot = best[account_id]
+        restored, notes = _restore_missing_windows(snapshot, seen_windows.get(account_id, {}))
+        warnings.extend(notes)
+        merged.append(restored)
+    return merged, warnings
+
+
+def _restore_missing_windows(
+    snapshot: AccountSnapshot, known: Mapping[str, Any]
+) -> tuple[AccountSnapshot, list[str]]:
+    """Put back any window the winning source could not see.
+
+    Sources differ in what they can observe, not just in how fresh they are. The
+    statusline cache carries only the account-wide 5h and 7d windows and is
+    structurally blind to model-scoped ones; the usage endpoint sees all three. When
+    the statusline wins -- because the endpoint was rate-limited, or its cached
+    payload aged out -- the model-scoped window vanishes from the merged snapshot.
+
+    That is not "no constraint", it is "this source cannot see the constraint", and
+    the difference is dangerous in one direction only: dropping a window can only
+    make an account look healthier than it is. Observed live, and it let an account
+    with 20% Fable headroom report 57% and pass a 50% eligibility gate.
+
+    The restored window keeps its original provenance, and confidence drops to the
+    lower of the two, so a merged snapshot never claims more certainty than its
+    weakest part.
+    """
+    have = {w.key for w in snapshot.windows}
+    missing = [w for key, w in known.items() if key not in have]
+    if not missing:
+        return snapshot, []
+
+    keys = ", ".join(sorted(w.key for w in missing))
+    note = (
+        f"{snapshot.id}: {snapshot.source} cannot see window(s) {keys}; "
+        f"restored from another source rather than scoring the account as unconstrained"
+    )
+    return (
+        replace(
+            snapshot,
+            windows=tuple(snapshot.windows) + tuple(missing),
+            confidence=min(snapshot.confidence, *(0.6 for _ in missing)),
+        ),
+        [note],
+    )
 
 
 def load_snapshots(

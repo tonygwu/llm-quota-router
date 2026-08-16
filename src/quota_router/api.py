@@ -46,6 +46,8 @@ class Selection:
     warnings: tuple[str, ...] = ()
     degraded: tuple[Any, ...] = ()
     fits: bool | None = None
+    meets_policy: bool | None = None
+    available_at: float | None = None
     reason: str | None = None
     contract_version: int = 1
     _payload: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -66,6 +68,8 @@ class Selection:
             warnings=tuple(payload.get("warnings") or ()),
             degraded=tuple(payload.get("degraded") or ()),
             fits=decision.get("fits"),
+            meets_policy=decision.get("meets_policy"),
+            available_at=decision.get("available_at"),
             reason=decision.get("reason"),
             contract_version=int(payload.get("contract_version") or 1),
             _payload=dict(payload),

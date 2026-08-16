@@ -174,3 +174,58 @@ def test_the_documented_readme_snippet_actually_runs(tmp_path) -> None:
     child_env = {**os.environ, **decision.exec_env}
     assert isinstance(child_env, dict)
     assert decision.account is not None
+
+
+# ======================================================================================
+# Batch callers need a binding "no" plus a time to retry.
+# ======================================================================================
+
+
+def test_fits_is_false_when_no_account_meets_the_caller_s_bar(tmp_path) -> None:
+    """A threshold that silently stops binding cannot be used as a stop signal.
+
+    Reported by a batch harness: with ``--min-remaining 0.50`` and nothing meeting
+    it, the router still returned a winner with ``fits: true``. ``fits`` meant "has
+    some quota left", not "satisfies what you asked for", so a caller could not tell
+    a real answer from a fallback.
+    """
+    sel = select_account(
+        model="fable",
+        min_remaining=0.50,
+        env=_env(tmp_path),
+        now_s=NOW,
+        deps=_deps(real_capture()),
+        record=False,
+    )
+    assert sel.meets_policy is False, (
+        "every account was below the bar, so the decision is a fallback and must "
+        f"say so; got meets_policy={sel.meets_policy} account={sel.account}"
+    )
+
+
+def test_available_at_says_when_the_bar_could_next_be_met(tmp_path) -> None:
+    """So a daemon can sleep exactly once instead of waking blind every 30 minutes.
+
+    When nothing fits, the useful answer is not just "no" -- it is "no, and not
+    before T". T is the earliest reset among the windows that caused the
+    exclusions, because that is the first moment any account refills.
+    """
+    sel = select_account(
+        model="fable",
+        min_remaining=0.50,
+        env=_env(tmp_path),
+        now_s=NOW,
+        deps=_deps(real_capture()),
+        record=False,
+    )
+    assert sel.meets_policy is False
+    assert sel.available_at is not None, "a binding no must carry a retry time"
+    assert sel.available_at > NOW, sel.available_at
+
+
+def test_available_at_is_none_when_something_does_fit(tmp_path) -> None:
+    sel = select_account(
+        model="fable", env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=False
+    )
+    assert sel.meets_policy is True
+    assert sel.available_at is None, "no retry time is meaningful when the answer fits"

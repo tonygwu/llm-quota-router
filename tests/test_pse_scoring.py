@@ -400,3 +400,117 @@ def test_a_five_x_account_cannot_serve_more_than_a_quarter_window_of_work() -> N
         stocks, now_s=NOW, horizon_s=10 * HOUR, rate_pse_per_hour=1.0, model_class=None
     )
     assert over_two_windows == pytest.approx(0.50), over_two_windows
+
+
+# ======================================================================================
+# Degraded sources must never DELETE a constraint.
+# ======================================================================================
+
+
+def test_a_source_that_cannot_see_the_fable_window_must_not_look_unconstrained() -> None:
+    """The failure a batch caller hit: an account looked 57% free for Fable at 20%.
+
+    Observed live. claude_c's usage-endpoint read was rate-limited and its cached
+    payload had aged past the stale bound, so the statusline cache served instead --
+    and the statusline carries only the 5h and 7d windows, never the model-scoped
+    one. The merged snapshot therefore had no Fable window, ``min_remaining_fraction
+    ("fable")`` fell back to the account-wide 57%, and the account sailed past a
+    ``--min-remaining 0.50`` gate it should have failed.
+
+    A missing window is not an absent constraint. When any source knows about a
+    window, the merged snapshot must keep it, because dropping one can only ever
+    flatter the account -- the more dangerous direction.
+    """
+    from quota_router.providers import collect_snapshots
+    from quota_router.types import SOURCE_CACHE
+
+    complete = AccountSnapshot(
+        id="claude_c",
+        windows=(
+            _w("5h", 0.06, length_s=FIVE_HOUR_S, ttr_s=2 * HOUR),
+            _w("7d", 0.43, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR),
+            _w("fable", 0.80, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR,
+               applies_to=frozenset({"fable"})),
+        ),
+        tier=TIER_MAX_5X,
+        source=SOURCE_CACHE,
+        confidence=0.6,
+    )
+    # The statusline: fresher and better-ranked, but structurally blind to Fable.
+    blind = AccountSnapshot(
+        id="claude_c",
+        windows=(
+            _w("5h", 0.06, length_s=FIVE_HOUR_S, ttr_s=2 * HOUR),
+            _w("7d", 0.43, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR),
+        ),
+        tier=TIER_MAX_5X,
+        source=SOURCE_LIVE,
+        confidence=1.0,
+    )
+
+    class _A:
+        name = "a"
+        def __init__(self, snaps): self._s = snaps
+        def snapshot(self, now_s): return list(self._s)
+
+    merged, _warnings = collect_snapshots([_A([blind]), _A([complete])], NOW)
+    got = next(s for s in merged if s.id == "claude_c")
+
+    assert "fable" in {w.key for w in got.windows}, (
+        "the merged snapshot dropped the Fable window that one source knew about; "
+        f"kept only {[w.key for w in got.windows]}"
+    )
+    assert got.min_remaining_fraction("fable") == pytest.approx(0.20, abs=0.01), (
+        "with the Fable window preserved the account must report its real Fable "
+        f"headroom, got {got.min_remaining_fraction('fable')}"
+    )
+
+
+def test_an_account_blind_to_a_scoped_limit_is_excluded_not_treated_as_free() -> None:
+    """When no source can see an account's Fable window, it is UNMEASURED, not free.
+
+    The restore-from-another-source path only helps when some adapter reported the
+    window. In the live failure nothing could: the usage endpoint was rate-limited
+    and returned an empty snapshot, and the statusline is structurally blind to
+    model-scoped limits. So the account genuinely had no Fable window from any
+    source -- and scoring it as unconstrained is the one reading that is certainly
+    wrong.
+
+    The signal that the class is real is the rest of the fleet: if other accounts
+    report a Fable window, Fable is a scoped limit on this plan, and an account
+    missing one cannot be spoken for. If NO account reports one, absence is normal
+    and nothing should be excluded.
+    """
+    from quota_router.cli import exclude_accounts_blind_to_model_class
+
+    seeing = AccountSnapshot(
+        id="claude",
+        windows=(
+            _w("7d", 0.78, length_s=SEVEN_DAY_S, ttr_s=40 * HOUR),
+            _w("fable", 0.96, length_s=SEVEN_DAY_S, ttr_s=40 * HOUR,
+               applies_to=frozenset({"fable"})),
+        ),
+        tier=TIER_MAX_20X,
+        source=SOURCE_LIVE,
+    )
+    blind = AccountSnapshot(
+        id="claude_c",
+        windows=(_w("7d", 0.43, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR),),
+        tier=TIER_MAX_5X,
+        source=SOURCE_LIVE,
+    )
+
+    kept, dropped = exclude_accounts_blind_to_model_class([seeing, blind], "fable")
+    assert [s.id for s in kept] == ["claude"]
+    assert [d["account"] for d in dropped] == ["claude_c"]
+    assert "fable" in dropped[0]["reason"], dropped[0]["reason"]
+
+    # Non-Fable work is unaffected: no account is scoped for opus, so absence is normal.
+    kept, dropped = exclude_accounts_blind_to_model_class([seeing, blind], "opus")
+    assert [s.id for s in kept] == ["claude", "claude_c"]
+    assert dropped == []
+
+    # And when nobody reports a Fable window, absence is normal for everyone.
+    kept, dropped = exclude_accounts_blind_to_model_class([blind], "fable")
+    assert [s.id for s in kept] == ["claude_c"]
+    assert dropped == []

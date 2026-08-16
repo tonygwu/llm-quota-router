@@ -57,6 +57,7 @@ from . import model_classes as mc
 from .config import BANNED_EXEC_ENV, Config, ConfigError, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
+    normalize_model_class,
     QUOTA_ROUTER_CONTRACT_VERSION,
     SOURCE_CACHE,
     AccountSnapshot,
@@ -591,10 +592,39 @@ def _earliest_reset(
     return min(window.resets_at_s for window in windows)
 
 
-def _fits(snapshot: AccountSnapshot, model_class: str | None) -> bool:
-    """Can this account serve the call right now (budget left in every applicable window)?"""
+def _fits(
+    snapshot: AccountSnapshot, model_class: str | None, min_remaining: float = 0.0
+) -> bool:
+    """Does this account satisfy what the CALLER asked for, right now?
+
+    ``min_remaining`` is the caller's own bar. Ignoring it made ``fits`` mean "has
+    some quota left", which is a different and much weaker claim -- a batch harness
+    that set ``--min-remaining 0.50`` still got ``fits: true`` from an account with
+    5% left, so the threshold could not be used as a stop signal. A bar the router
+    quietly stops applying is worse than no bar.
+    """
     remaining = snapshot.min_remaining_fraction(model_class)
-    return remaining is not None and remaining > 0.0
+    return remaining is not None and remaining > max(0.0, min_remaining)
+
+
+def _available_at(
+    snapshots: Sequence[AccountSnapshot], model_class: str | None
+) -> float | None:
+    """Earliest moment any account's applicable windows refill.
+
+    When nothing fits, "no" alone forces the caller to poll blindly. This is the
+    soonest reset across the whole field, so a batch daemon can sleep exactly once
+    instead of waking every 30 minutes to rediscover the same answer.
+
+    Deliberately optimistic: it is the first moment quota *could* exist, not a
+    promise that the caller's whole workload will fit then. A caller that wakes and
+    finds it still does not fit gets a later timestamp and sleeps again, which
+    converges. A pessimistic estimate would strand usable quota.
+    """
+    resets = [
+        r for r in (_earliest_reset(s, model_class) for s in snapshots) if r != float("inf")
+    ]
+    return min(resets) if resets else None
 
 
 def _exhausted_fallback(
@@ -603,6 +633,7 @@ def _exhausted_fallback(
     now_s: float,
     *,
     cause: str | None = None,
+    min_remaining: float = 0.0,
 ) -> Decision:
     """Answer without the decision layer: whoever can serve it, else whoever frees up first.
 
@@ -630,7 +661,10 @@ def _exhausted_fallback(
 
     ordered = sorted(
         snapshots,
-        key=lambda item: (not _fits(item, model_class), _earliest_reset(item, model_class)),
+        key=lambda item: (
+            not _fits(item, model_class, min_remaining),
+            _earliest_reset(item, model_class),
+        ),  # ordering may use the caller's bar; the reported `fits` may not
     )
     winner = ordered[0]
     winner_fits = _fits(winner, model_class)
@@ -654,6 +688,10 @@ def _exhausted_fallback(
             model_class,
             now_s=now_s,
             eligible=True,
+            # Pass the caller's bar through explicitly. Left to its own devices
+            # _breakdown_for computes "has any quota at all", which is a weaker claim
+            # than the caller made and silently turns a threshold into a suggestion.
+            fits=_fits(snapshot, model_class),
             reason=(reason if snapshot is winner else "degraded fallback ordering"),
         )
         for snapshot in ordered
@@ -680,9 +718,10 @@ def _decide(
     model_class = prepared.model.model_class
     now_s = prepared.now_s
     candidates = prepared.candidates
+    bar = config.eligibility.min_remaining
 
     if not candidates:
-        return _exhausted_fallback(prepared.fallback_pool, model_class, now_s)
+        return _exhausted_fallback(prepared.fallback_pool, model_class, now_s, min_remaining=bar)
 
     if deps.rank is None or deps.select is None:
         warnings.append(
@@ -714,7 +753,7 @@ def _decide(
     except Exception as exc:  # noqa: BLE001 - never let scoring take the CLI down
         warnings.append(f"scoring failed: {type(exc).__name__}: {exc}")
         degraded.append({"account": None, "reason": "scoring raised"})
-        return _exhausted_fallback(candidates, model_class, now_s, cause="scoring failed")
+        return _exhausted_fallback(candidates, model_class, now_s, cause="scoring failed", min_remaining=bar)
 
     # ``select`` may be written to take either the ranked breakdowns or the raw snapshots
     # as its subject; both are offered and the first positional parameter's name decides.
@@ -732,17 +771,17 @@ def _decide(
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"selection failed: {type(exc).__name__}: {exc}")
         degraded.append({"account": None, "reason": "selection raised"})
-        return _exhausted_fallback(candidates, model_class, now_s, cause="selection failed")
+        return _exhausted_fallback(candidates, model_class, now_s, cause="selection failed", min_remaining=bar)
 
     if not isinstance(decision, Decision):
         warnings.append(
             f"selection returned {type(decision).__name__}, expected Decision; "
             f"falling back to earliest-reset order"
         )
-        return _exhausted_fallback(candidates, model_class, now_s)
+        return _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
 
     if decision.chosen is None:
-        fallback = _exhausted_fallback(candidates, model_class, now_s)
+        fallback = _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
         return replace(
             fallback,
             excluded=tuple(decision.excluded) + fallback.excluded,
@@ -750,6 +789,58 @@ def _decide(
             reason=decision.reason or fallback.reason,
         )
     return decision
+
+
+
+def exclude_accounts_blind_to_model_class(
+    snapshots: Sequence[AccountSnapshot], model_class: str | None
+) -> tuple[list[AccountSnapshot], list[dict[str, Any]]]:
+    """Drop accounts that cannot observe a scoped limit the rest of the fleet reports.
+
+    A model-scoped window missing from a snapshot has two possible meanings, and
+    they are opposite:
+
+    * the plan has no such limit -- absence is correct, score normally;
+    * this source could not see it -- absence is a blind spot, and scoring the
+      account as unconstrained is certainly wrong.
+
+    The fleet distinguishes them. If any account reports a window scoped to the
+    requested class, that limit is real on this plan, and an account without one is
+    unmeasured rather than free. If none do, absence is normal everywhere.
+
+    This matters because the two error directions are not symmetric: excluding a
+    healthy account costs one routing option, while including a blind one hands a
+    caller an account that will wall out. Observed live -- an account with 20% Fable
+    headroom reported 57% and passed a 50% eligibility gate, because the only source
+    that could answer had been rate-limited.
+    """
+    resolved = normalize_model_class(model_class)
+    if not resolved:
+        return list(snapshots), []
+
+    def sees(snapshot: AccountSnapshot) -> bool:
+        return any(w.applies_to and resolved in w.applies_to for w in snapshot.windows)
+
+    if not any(sees(s) for s in snapshots):
+        return list(snapshots), []
+
+    kept: list[AccountSnapshot] = []
+    dropped: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        if sees(snapshot):
+            kept.append(snapshot)
+            continue
+        dropped.append(
+            {
+                "account": snapshot.id,
+                "reason": (
+                    f"no {resolved} window in this snapshot while other accounts report "
+                    f"one, so its {resolved} limit is unmeasured, not unconstrained "
+                    f"(source {snapshot.source})"
+                ),
+            }
+        )
+    return kept, dropped
 
 
 def _prepare(
@@ -826,6 +917,12 @@ def _prepare(
             )
 
     adjusted = _apply_pileup(snapshots, reserved)
+    # Before eligibility: an account that cannot SEE the requested class's limit must
+    # not be scored as though that limit did not exist.
+    adjusted_list, blind = exclude_accounts_blind_to_model_class(adjusted, model.model_class)
+    adjusted = tuple(adjusted_list)
+    for entry in blind:
+        warnings.append(f"{entry['account']}: {entry['reason']}")
     partition = _partition_candidates(config, adjusted, model.model_class, now_s)
 
     prepared = Prepared(
@@ -998,6 +1095,28 @@ def _exec_env(prepared: Prepared) -> dict[str, str]:
     }
 
 
+
+def _meets_policy(prepared: Prepared) -> bool:
+    """Did the chosen account satisfy every constraint the CALLER supplied?
+
+    Distinct from ``fits`` on purpose. ``fits`` is about the account ("is there
+    budget left?"); this is about the request ("is the answer one you asked for?").
+    They diverge exactly when a policy floor excludes everyone: the router still
+    returns its least-bad option, that option may be perfectly usable, and a caller
+    who set a floor still needs to know the floor was not met.
+
+    Reported by a batch harness that set ``--min-remaining 0.50``, got a winner with
+    5% left and ``fits: true``, and had no way to distinguish that from a real answer.
+    """
+    decision = prepared.decision
+    chosen = decision.chosen if decision is not None else None
+    if not chosen:
+        return False
+    if decision is not None and decision.degraded:
+        return False
+    return any(row.account_id == chosen and row.eligible for row in (decision.ranked or ()))
+
+
 def _pick_payload(prepared: Prepared) -> dict[str, Any]:
     decision = prepared.decision
     snapshots = prepared.snapshot_map
@@ -1020,7 +1139,22 @@ def _pick_payload(prepared: Prepared) -> dict[str, Any]:
             "score": winner.score if winner is not None else 0.0,
             "binding_window": winner.binding_window if winner is not None else None,
             "regime": decision.regime,
+            # `fits` answers "can this account physically serve the call". A policy
+            # floor is not exhaustion, and a consumer must still be able to tell the
+            # two apart -- 20% remaining under a 99% floor is ineligible but usable.
             "fits": winner.fits if winner is not None else False,
+            # `meets_policy` answers the DIFFERENT question a batch caller asks: did
+            # the winner satisfy the constraints I supplied? A threshold that quietly
+            # stops binding cannot be used as a stop signal, so this one is allowed to
+            # say no while `fits` says yes.
+            "meets_policy": _meets_policy(prepared),
+            # Only meaningful when policy was NOT met; offering a retry time alongside
+            # a usable answer would invite callers to wait for no reason.
+            "available_at": (
+                None
+                if _meets_policy(prepared)
+                else _available_at(prepared.snapshots, prepared.model.model_class)
+            ),
             "sticky": decision.sticky_applied,
         },
         "exec": {"env": _exec_env(prepared)},
