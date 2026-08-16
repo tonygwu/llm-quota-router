@@ -340,6 +340,11 @@ class Prepared:
     #: into it would both lie about the account and feed calibration its own output.
     raw_snapshots: tuple[AccountSnapshot, ...] = ()
     candidates: tuple[AccountSnapshot, ...] = ()
+    #: True when the decision came from _exhausted_fallback rather than the scoring
+    #: layer. Distinct from Decision.degraded, which is ALSO set when any input
+    #: snapshot is merely stale -- conflating the two made an unrelated account's
+    #: 48-minute-old cache report meets_policy=false for a perfectly good winner.
+    from_fallback: bool = False
     fallback_pool: tuple[AccountSnapshot, ...] = ()
     decision: Decision = field(default_factory=Decision)
     cli_excluded: tuple[ScoreBreakdown, ...] = ()
@@ -706,6 +711,13 @@ def _exhausted_fallback(
     )
 
 
+def _mark_fallback(flag: list[bool] | None) -> None:
+    """Record that the fallback path ran. Returns None so it composes with `or`."""
+    if flag is not None:
+        flag.append(True)
+    return None
+
+
 def _decide(
     prepared: Prepared,
     deps: Deps,
@@ -713,6 +725,7 @@ def _decide(
     degraded: list[dict[str, Any]],
     *,
     record: bool,
+    fallback_flag: list[bool] | None = None,
 ) -> Decision:
     """Hand the candidates to the pure decision layer and normalize what comes back."""
     config = prepared.config
@@ -722,7 +735,7 @@ def _decide(
     bar = config.eligibility.min_remaining
 
     if not candidates:
-        return _exhausted_fallback(prepared.fallback_pool, model_class, now_s, min_remaining=bar)
+        return _mark_fallback(fallback_flag) or _exhausted_fallback(prepared.fallback_pool, model_class, now_s, min_remaining=bar)
 
     if deps.rank is None or deps.select is None:
         warnings.append(
@@ -730,7 +743,7 @@ def _decide(
             + "; falling back to earliest-reset order"
         )
         degraded.append({"account": None, "reason": "scoring engine unavailable"})
-        return _exhausted_fallback(
+        return _mark_fallback(fallback_flag) or _exhausted_fallback(
             candidates, model_class, now_s, cause="scoring layer unavailable"
         )
 
@@ -754,7 +767,7 @@ def _decide(
     except Exception as exc:  # noqa: BLE001 - never let scoring take the CLI down
         warnings.append(f"scoring failed: {type(exc).__name__}: {exc}")
         degraded.append({"account": None, "reason": "scoring raised"})
-        return _exhausted_fallback(candidates, model_class, now_s, cause="scoring failed", min_remaining=bar)
+        return _mark_fallback(fallback_flag) or _exhausted_fallback(candidates, model_class, now_s, cause="scoring failed", min_remaining=bar)
 
     # ``select`` may be written to take either the ranked breakdowns or the raw snapshots
     # as its subject; both are offered and the first positional parameter's name decides.
@@ -772,14 +785,14 @@ def _decide(
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"selection failed: {type(exc).__name__}: {exc}")
         degraded.append({"account": None, "reason": "selection raised"})
-        return _exhausted_fallback(candidates, model_class, now_s, cause="selection failed", min_remaining=bar)
+        return _mark_fallback(fallback_flag) or _exhausted_fallback(candidates, model_class, now_s, cause="selection failed", min_remaining=bar)
 
     if not isinstance(decision, Decision):
         warnings.append(
             f"selection returned {type(decision).__name__}, expected Decision; "
             f"falling back to earliest-reset order"
         )
-        return _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
+        return _mark_fallback(fallback_flag) or _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
 
     if decision.chosen is None:
         fallback = _exhausted_fallback(candidates, model_class, now_s, min_remaining=bar)
@@ -942,8 +955,13 @@ def _prepare(
 
     records_a_pick = bool(write_state and not getattr(args, "dry_run", False))
 
-    decision = _decide(prepared, deps, warnings, degraded, record=records_a_pick)
+    fallback_flag: list[bool] = []
+    decision = _decide(
+        prepared, deps, warnings, degraded,
+        record=records_a_pick, fallback_flag=fallback_flag,
+    )
     prepared.decision = decision
+    prepared.from_fallback = bool(fallback_flag)
     prepared.cli_excluded = partition.excluded
     prepared.warnings = tuple(warnings) + tuple(decision.warnings)
     prepared.degraded = tuple(degraded)
@@ -1113,7 +1131,10 @@ def _meets_policy(prepared: Prepared) -> bool:
     chosen = decision.chosen if decision is not None else None
     if not chosen:
         return False
-    if decision is not None and decision.degraded:
+    # NOT decision.degraded: that is also set when any input snapshot is stale, which
+    # says nothing about whether the winner satisfies the caller's constraints. Only
+    # the fallback path means "no candidate qualified".
+    if prepared.from_fallback:
         return False
     return any(row.account_id == chosen and row.eligible for row in (decision.ranked or ()))
 

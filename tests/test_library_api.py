@@ -229,3 +229,43 @@ def test_available_at_is_none_when_something_does_fit(tmp_path) -> None:
     )
     assert sel.meets_policy is True
     assert sel.available_at is None, "no retry time is meaningful when the answer fits"
+
+
+def test_a_degraded_input_does_not_by_itself_fail_the_policy_check() -> None:
+    """The bug that stalled a batch consumer for 80 minutes.
+
+    ``Decision.degraded`` is set by the exhausted-fallback path AND by the pure
+    layer whenever any input snapshot is stale -- two very different things.
+    meets_policy read it as "this answer does not satisfy your constraints", so a
+    48-minute-old cache on claude_c made a perfectly good claude_d pick report
+    meets_policy=false with an available_at. A consumer following the documented
+    contract correctly concluded it should wait, and stalled.
+
+    meets_policy is about the REQUEST: was the winner among the eligible
+    candidates the scoring layer ranked. Another account's staleness is unrelated.
+    """
+    from quota_router.cli import Prepared, _meets_policy
+    from quota_router.config import load_config
+    from quota_router.types import Decision, ScoreBreakdown
+
+    def prepared(*, chosen, eligible, degraded, from_fallback):
+        rows = (ScoreBreakdown(account_id="claude_d", score=8.6, eligible=eligible),)
+        return Prepared(
+            config=load_config(env={}),
+            model=__import__("quota_router.model_classes", fromlist=["resolve"]).resolve("opus"),
+            now_s=NOW,
+            decision=Decision(chosen=chosen, ranked=rows, degraded=degraded),
+            from_fallback=from_fallback,
+        )
+
+    # The reported case: eligible winner, but some other account's reading is stale.
+    assert _meets_policy(prepared(
+        chosen="claude_d", eligible=True, degraded=True, from_fallback=False)) is True
+
+    # A genuine fallback still fails policy, which is the case this field exists for.
+    assert _meets_policy(prepared(
+        chosen="claude_d", eligible=True, degraded=True, from_fallback=True)) is False
+
+    # And an ineligible winner fails regardless.
+    assert _meets_policy(prepared(
+        chosen="claude_d", eligible=False, degraded=False, from_fallback=False)) is False
