@@ -330,12 +330,20 @@ def _route(
         )
         return selection, deps.load_config(env=dict(env))
 
-    result = _within_deadline(pick, timeout_s)
-    if result is None:
-        _debug(env, stderr, f"pick exceeded {timeout_s}s; using the default account")
+    attempt = _within_deadline(pick, timeout_s)
+    if not attempt.ok:
+        # Same degradation, deliberately different report: a crash is a bug in the
+        # router and a timeout is a blocked credential read, they have nothing in
+        # common but the outcome, and CL_DEBUG is the only place either is visible.
+        cause = (
+            f"exceeded {timeout_s}s"
+            if attempt.timed_out
+            else f"failed: {type(attempt.error).__name__}: {attempt.error}"
+        )
+        _debug(env, stderr, f"pick {cause}; using the default account")
         return ACCOUNT_CLAUDE, None
 
-    selection, config = result
+    selection, config = attempt.value
     account = choose_account(selection)
     if account is None:
         stderr.write(
@@ -346,7 +354,26 @@ def _route(
     return account, config
 
 
-def _within_deadline(call: Callable[[], Any], timeout_s: float) -> Any | None:
+@dataclass(frozen=True, slots=True)
+class _Attempt:
+    """The outcome of a capped call: an answer, a crash, or a blown deadline.
+
+    All three degrade the same way, so it would be tempting to collapse them into
+    ``None``. They are kept apart because they have nothing else in common: a crash is
+    a bug in the router and a timeout is something blocking on the machine, and the
+    only place either is ever reported is the debug line.
+    """
+
+    value: Any = None
+    error: BaseException | None = None
+    timed_out: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and not self.timed_out
+
+
+def _within_deadline(call: Callable[[], Any], timeout_s: float) -> _Attempt:
     """Run ``call`` on a daemon thread and give up on it after ``timeout_s``.
 
     A thread rather than a signal or a subprocess: the work is a library call that may
@@ -354,9 +381,6 @@ def _within_deadline(call: Callable[[], Any], timeout_s: float) -> Any | None:
     Claude session later does, and re-spawning a process to get a timeout is what the
     shell version had to do. Abandoning the thread is safe because the very next thing
     this process does is ``exec`` itself away, which discards it.
-
-    ``None`` means "no usable answer" -- deadline exceeded *or* the call raised. Both
-    have exactly one correct response here, and it is not to stop the operator working.
     """
     box: dict[str, Any] = {}
 
@@ -369,9 +393,11 @@ def _within_deadline(call: Callable[[], Any], timeout_s: float) -> Any | None:
     thread = threading.Thread(target=work, name="cl-pick", daemon=True)
     thread.start()
     thread.join(timeout_s)
-    if thread.is_alive() or "error" in box:
-        return None
-    return box.get("value")
+    if thread.is_alive():
+        return _Attempt(timed_out=True)
+    if "error" in box:
+        return _Attempt(error=box["error"])
+    return _Attempt(value=box.get("value"))
 
 
 # ======================================================================================

@@ -378,6 +378,38 @@ def test_a_raising_picker_still_starts_a_session(env) -> None:
     assert "CLAUDE_CONFIG_DIR" not in executor.env
 
 
+def test_the_debug_line_names_the_real_cause_of_a_failed_pick(env) -> None:
+    """A crash and a timeout degrade identically and must not be *reported* identically.
+
+    They have completely different fixes -- one is a bug in the router, the other is
+    a blocked credential read -- and CL_DEBUG is the only place either is visible.
+    Reporting a crash as "exceeded 3.0s" sends the reader looking for a hang that
+    never happened.
+    """
+    _, _, err = launch(
+        [], {**env, "CL_DEBUG": "1"}, error=RuntimeError("oracle exploded")
+    )
+
+    assert "oracle exploded" in err
+    assert "exceeded" not in err
+
+
+def test_the_debug_line_reports_a_timeout_as_a_timeout(env) -> None:
+    released = threading.Event()
+
+    def select(**_kwargs):
+        released.wait(30)
+        return selection(_row("claude_b", fits=True))
+
+    try:
+        _, _, err = launch(
+            [], {**env, "CL_DEBUG": "1", "CL_PICK_TIMEOUT_S": "0.1"}, select=select
+        )
+        assert "exceeded" in err
+    finally:
+        released.set()
+
+
 def test_the_pick_books_no_quota(env) -> None:
     """``cl`` is often run and abandoned (wrong directory, changed mind).
 
