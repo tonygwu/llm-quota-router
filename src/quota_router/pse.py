@@ -29,6 +29,22 @@ against 16pp weekly. Cross-checks: the increment-summing estimator read 6.5 on
 the same account (slightly high -- summing loses a little burn to the gap before
 each sample), and a second 20x account read 6.1.
 
+Corroborated since, on two 20x accounts across three nested calibration windows:
+6.0 / 6.2 / 6.1 and 6.3. The windows agreeing matters more than any one of them,
+because disagreement between nested windows is the signature of contamination
+rather than of a wide true range.
+
+**k is per account, and one account is measurably different.** The single 5x
+account reads ~9.8, tight and reproducible across both dense windows, with
+intervals that exclude the 20x value. Do not read that as a discovered law about
+the 5x plan: with one account on that tier, "the tier differs" and "this account
+differs" are the same evidence. Nor is it necessarily k that differs -- ``k`` and
+``tier_scale`` are multiplied together downstream, so if a 5x plan is a quarter
+of a 20x session window but not a quarter of its weekly pool, the whole of that
+error lands in the measured k. Either way the arithmetic is the same, and a
+per-account override is the honest place to put a quantity we can measure but
+cannot decompose.
+
 An earlier value of 11.9 was wrong and is worth recording as such. It came from
 four intervals where the weekly bar moved only 1-3pp, so the 1pp quantum
 dominated, and it was taken before a source-oscillation bug was fixed. It was
