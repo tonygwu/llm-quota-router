@@ -628,7 +628,7 @@ def select(
     _writeback(writeback, resolved_state, record)
 
     reason = sticky_note or (
-        f"{chosen_row.account_id} wins regime {chosen_row.regime}: {chosen_row.reason}"
+        f"{chosen_row.account_id} wins: {chosen_row.reason}"
     )
     return Decision(
         chosen=chosen_row.account_id,
