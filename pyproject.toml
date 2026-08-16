@@ -27,6 +27,11 @@ classifiers = [
 
 [project.scripts]
 quotapick = "quota_router.cli:main"
+# `cl` is the reference consumer: start an interactive Claude Code session on whichever
+# account has the most quota about to expire. It ships here rather than as a loose shell
+# script on PATH so it is covered by this suite -- two of the three bugs found on
+# 2026-08-15 were in the untested wrapper it replaces.
+cl = "quota_router.launcher:main"
 
 [project.optional-dependencies]
 # Test-only; still zero *runtime* deps.

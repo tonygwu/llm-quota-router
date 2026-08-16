@@ -124,8 +124,8 @@ refresh exactly like interactive sessions do.
 
 ## Install
 
-As a **command-line tool** (gives you `quotapick` on PATH, isolated venv, not
-importable elsewhere):
+As a **command-line tool** (gives you `quotapick` and `cl` on PATH, isolated
+venv, not importable elsewhere):
 
 ```sh
 uv tool install git+ssh://git@github.com/tonygwu/llm-quota-router
@@ -167,8 +167,14 @@ env = {**os.environ, **decision.exec_env}
 subprocess.run(["claude", "-p", prompt], env=env)
 ```
 
-Three things that will bite you if missed:
+Four things that will bite you if missed:
 
+- **The winner is not a promise it can serve you — check `fits`.** The objective
+  is quota *about to expire*, so an account whose 5-hour window is fully spent
+  can legitimately rank first: it has the most weekly quota at risk. That is the
+  right answer for a batch job that can wait and a useless one for an
+  interactive session. If you need to run *now*, walk `ranked` for the first
+  entry with `fits: true`, and have a plan for when none do.
 - **`exec_env` is often empty, and that is correct.** The default Claude account
   is selected by the *absence* of `CLAUDE_CONFIG_DIR` — its config lives at
   `~/.claude.json`, outside `~/.claude`, so setting the variable makes the CLI
@@ -192,6 +198,30 @@ From any other language, shell out to `quotapick pick --json` and honor the
 `pick` emits valid JSON and exits 0 on every path except a flag/config error,
 including when every account is exhausted (you get the earliest-reset candidate
 with `fits: false`). Callers should never have to handle a crash.
+
+### `cl` — the reference consumer
+
+`cl` starts an interactive Claude Code session on whichever account has the most
+quota about to expire, in bypass-permissions mode. `claude` stays the raw
+binary; `cl` only adds account selection.
+
+```sh
+cl                        # pick an account, start a session
+cl --resume <id>          # same, routed for the model that session actually used
+cl --model opus[1m] ...   # an explicit --model wins over session detection
+```
+
+It ships in this package (`quota_router.launcher`) rather than as a shell script
+on PATH because it is the worked example of the integration contract above — a
+bug in it gets copied outward — and living here means the suite covers it. Read
+it before writing your own consumer: it is ~150 lines and every non-obvious line
+has the failure that motivated it written next to it.
+
+Environment overrides: `CL_CLAUDE_BIN` (default `~/.local/bin/claude`),
+`CL_PICK_TIMEOUT_S` (default 3 — a wall-clock cap, after which the session
+starts on the default account rather than a terminal hanging on a Keychain
+prompt), `CL_ONLY` (default `claude,claude_b,claude_c,claude_d`), `CL_QUIET`,
+`CL_DEBUG`.
 
 ## Keeping history dense (optional)
 
