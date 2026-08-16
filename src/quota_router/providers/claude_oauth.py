@@ -373,6 +373,16 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         return [], ["usage payload has no limits[] array"]
 
+    # A scoped window that has not started yet reports no reset time. It resets with
+    # the weekly window it is scoped inside, so that timestamp is knowable -- and
+    # dropping the window instead removes the constraint that proves the account can
+    # serve that model class at all.
+    weekly_reset_s: float | None = None
+    for entry in rows:
+        if isinstance(entry, Mapping) and entry.get("kind") == "weekly_all":
+            weekly_reset_s = parse_timestamp(entry.get("resets_at"))
+            break
+
     windows: list[Window] = []
     taken: set[str] = set()
     for index, entry in enumerate(rows):
@@ -394,11 +404,14 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
             continue
         if key in taken:
             key = f"{key}#{index + 1}"
+        resets_at_s = parse_timestamp(entry.get("resets_at"))
+        if resets_at_s is None and kind == _SCOPED_KIND:
+            resets_at_s = weekly_reset_s
         window = make_window(
             key=key,
             used_fraction=pct_to_fraction(entry.get("percent")),
             length_s=length_s,
-            resets_at_s=parse_timestamp(entry.get("resets_at")),
+            resets_at_s=resets_at_s,
             observed_at_s=observed_at_s,
             applies_to=applies_to,
         )

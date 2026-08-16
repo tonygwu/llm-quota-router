@@ -514,3 +514,42 @@ def test_an_account_blind_to_a_scoped_limit_is_excluded_not_treated_as_free() ->
     kept, dropped = exclude_accounts_blind_to_model_class([blind], "fable")
     assert [s.id for s in kept] == ["claude_c"]
     assert dropped == []
+
+
+def test_an_inactive_scoped_window_inherits_the_weekly_reset_instead_of_vanishing() -> None:
+    """A brand-new account's Fable row is ``percent: 0, resets_at: null``.
+
+    That is not missing data -- it means the scoped window has not started yet
+    (``is_active: false``). Dropping it for want of a timestamp removes the very
+    constraint that proves the account CAN serve Fable, and the blind-account rule
+    then excludes it because its siblings do report one.
+
+    Observed the hour a fourth subscription was added: claude_d had 100% Fable
+    headroom and was excluded from every Fable request, which is the exact inverse
+    of the right answer.
+
+    The scoped weekly window resets with the general weekly window, so the
+    timestamp is knowable and must be inherited rather than treated as absent.
+    """
+    from quota_router.providers.claude_oauth import parse_usage_payload
+
+    payload = {
+        "limits": [
+            {"kind": "session", "percent": 0, "resets_at": "2026-08-16T12:00:00+00:00",
+             "scope": None},
+            {"kind": "weekly_all", "percent": 0, "resets_at": "2026-08-18T18:00:00+00:00",
+             "scope": None},
+            {"kind": "weekly_scoped", "percent": 0, "resets_at": None, "is_active": False,
+             "scope": {"model": {"display_name": "Fable"}}},
+        ]
+    }
+    windows, warnings = parse_usage_payload(payload, observed_at_s=NOW)
+    keys = {w.key for w in windows}
+    assert "fable" in keys, f"the Fable window was dropped; got {keys} warnings={warnings}"
+
+    fable = next(w for w in windows if w.key == "fable")
+    weekly = next(w for w in windows if w.key == "7d")
+    assert fable.resets_at_s == weekly.resets_at_s, (
+        "an inactive scoped window resets with the weekly window it is scoped inside"
+    )
+    assert fable.used_fraction == 0.0
