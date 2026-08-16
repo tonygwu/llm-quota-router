@@ -80,6 +80,7 @@ from .types import MODEL_CLASS_FABLE, normalize_model_class
 
 __all__ = [
     "DEFAULT_WEEKLY_TO_SESSION",
+    "MIN_WEEKLY_TO_SESSION",
     "DEFAULT_FABLE_FRACTION",
     "SESSION_LENGTH_S",
     "Plan",
@@ -91,6 +92,13 @@ __all__ = [
 
 #: Measured, not assumed. See the module docstring for provenance and error bars.
 DEFAULT_WEEKLY_TO_SESSION: Final[float] = 6.25
+
+#: The weekly window CONTAINS the session window, so the weekly pool cannot be
+#: smaller than one session budget. A ratio below this is not a conservative
+#: setting -- it is arithmetically impossible, and means either a typo or a
+#: contaminated calibration run. Both the estimator (which refuses to report such a
+#: value) and the config loader (which refuses to accept one) key off this.
+MIN_WEEKLY_TO_SESSION: Final[float] = 1.0
 
 #: Documented by Anthropic as 50% of the weekly allowance for Max plans.
 DEFAULT_FABLE_FRACTION: Final[float] = 0.5

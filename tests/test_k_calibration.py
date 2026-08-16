@@ -484,3 +484,100 @@ def test_a_republished_stale_reading_does_not_launder_an_18_hour_blind_spot() ->
         f"an 18-hour blind spot must be reported as one, not as the 30-minute "
         f"republish cadence; got {est.max_gap_s / 3600:.1f}h"
     )
+
+
+# ======================================================================================
+# The measured k has to reach the scorer
+# ======================================================================================
+
+
+def test_a_per_account_k_overrides_the_default_in_the_scorer() -> None:
+    """``calibrate`` said ADOPT for two releases with nowhere to adopt *to*.
+
+    ``k`` converts a weekly percentage into absolute PSE, so an account whose real
+    ratio is 9.8 has its weekly pool understated by 36% while the default 6.25 is
+    applied to it. That is the whole point of measuring k per account -- and until
+    now ``Plan`` was constructed only by its own default argument, never from
+    config, so the measurement had no path into a routing decision.
+
+    Guard the plumbing end to end: identical snapshots, differing only in the
+    configured ratio, must produce different absolute weekly stocks.
+    """
+    from quota_router.config import AccountConfig, Config
+    from quota_router.scoring import plan_for, stocks_from_snapshot
+    from quota_router.types import AccountSnapshot, Window
+
+    now = 1_000_000.0
+    snap = AccountSnapshot(
+        id="claude_c",
+        provider="claude",
+        tier="max_5x",
+        windows=(
+            Window(
+                key="5h",
+                used_fraction=0.0,
+                resets_at_s=now + HOUR,
+                length_s=FIVE_HOUR,
+                observed_at_s=now,
+            ),
+            Window(
+                key="7d",
+                used_fraction=0.0,
+                resets_at_s=now + 3 * 24 * HOUR,
+                length_s=7 * 24 * HOUR,
+                observed_at_s=now,
+            ),
+        ),
+    )
+
+    default_cfg = Config()
+    tuned_cfg = Config(
+        accounts={"claude_c": AccountConfig(id="claude_c", weekly_to_session=9.8)}
+    )
+
+    default_stocks = stocks_from_snapshot(
+        snap, now, snap.capacity, plan_for(default_cfg, snap.id)
+    )
+    tuned_stocks = stocks_from_snapshot(
+        snap, now, snap.capacity, plan_for(tuned_cfg, snap.id)
+    )
+    assert default_stocks is not None and tuned_stocks is not None
+
+    # weekly capacity = k * tier_scale, and the account is untouched, so remaining
+    # IS the capacity: 6.25 * 0.25 = 1.5625 against 9.8 * 0.25 = 2.45.
+    assert default_stocks.weekly_remaining == pytest.approx(1.5625)
+    assert tuned_stocks.weekly_remaining == pytest.approx(2.45), (
+        f"the configured k never reached the scorer; got "
+        f"{tuned_stocks.weekly_remaining:.4f}"
+    )
+
+
+def test_a_configured_k_round_trips_from_toml(tmp_path) -> None:
+    """The value an operator writes has to survive the loader."""
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[accounts.claude_c]\nweekly_to_session = 9.8\n", encoding="utf-8"
+    )
+    cfg = load_config(env={}, explicit_path=path)
+    assert cfg.accounts["claude_c"].weekly_to_session == pytest.approx(9.8)
+
+
+def test_a_k_below_one_is_rejected_rather_than_quietly_scoring(tmp_path) -> None:
+    """k < 1 says the weekly pool is smaller than the session window it contains.
+
+    That is not a preference to honor; it is a typo or a contaminated calibration
+    run, and accepting it would shrink an account's weekly pool below one session
+    window and make the router refuse work the account can plainly do. The
+    estimator already refuses to *report* such a value; the loader must equally
+    refuse to accept one written by hand.
+    """
+    from quota_router.config import ConfigError, load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[accounts.claude_c]\nweekly_to_session = 0.5\n", encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="weekly_to_session"):
+        load_config(env={}, explicit_path=path)

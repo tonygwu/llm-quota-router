@@ -35,6 +35,7 @@ from types import MappingProxyType
 from typing import Any, Final
 
 from . import model_classes as mc
+from .pse import MIN_WEEKLY_TO_SESSION
 from .types import (
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
@@ -240,6 +241,13 @@ class AccountConfig:
             how accounts are actually keyed.
         provider: Overrides the provider inferred from :attr:`id`.
         enabled: ``False`` removes the account from routing entirely.
+        weekly_to_session: This account's measured weekly:session capacity ratio (k),
+            overriding :data:`quota_router.pse.DEFAULT_WEEKLY_TO_SESSION`. Set it from
+            ``quotapick calibrate``, never by hand: it is the denominator that turns a
+            weekly percentage into absolute PSE, so an account carrying the wrong one
+            has its whole weekly pool mis-sized. Must be >= 1 -- the weekly window
+            contains the session window, so a smaller ratio is arithmetically
+            impossible rather than merely aggressive.
         calls_per_window: Calibration -- how many calls of the baseline model class this
             account's window holds. Drives the pileup reservation cost
             (``multiplier / calls_per_window``); ``quotapick calibrate`` estimates it.
@@ -255,6 +263,7 @@ class AccountConfig:
     identity_email: str | None = None
     provider: str = ""
     enabled: bool = True
+    weekly_to_session: float | None = None
     calls_per_window: float | None = None
     env: Mapping[str, str] = field(default_factory=dict)
     env_var: str | None = None
@@ -811,6 +820,18 @@ def _build_accounts(
                 _as_bool(body["enabled"], section, "enabled")
                 if body.get("enabled") is not None
                 else True
+            ),
+            weekly_to_session=(
+                _as_number(
+                    body["weekly_to_session"],
+                    section,
+                    "weekly_to_session",
+                    # The weekly window contains the session window, so a ratio below
+                    # 1 is not a stricter policy -- it is an impossible measurement.
+                    minimum=MIN_WEEKLY_TO_SESSION,
+                )
+                if body.get("weekly_to_session") is not None
+                else None
             ),
             calls_per_window=(
                 _as_number(

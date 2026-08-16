@@ -58,7 +58,7 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
-from .pse import Plan, Stocks, rank_key, wasted_pse
+from .pse import MIN_WEEKLY_TO_SESSION, Plan, Stocks, rank_key, wasted_pse
 from .types import (
     MODEL_CLASS_FABLE,
     WINDOW_KEY_5H,
@@ -88,6 +88,7 @@ __all__ = [
     "fits",
     "cfg_get",
     "provider_weight",
+    "plan_for",
     "decide_regime",
     "account_score",
     "ranking_sort_key",
@@ -355,6 +356,45 @@ DEFAULT_RATE_PSE_PER_HOUR: Final[float] = 0.04
 _DEADLINE_EPS: Final[float] = 1e-6
 
 
+def plan_for(cfg: Any, account_id: str) -> Plan | None:
+    """The calibrated denominators for one account, or ``None`` to use the defaults.
+
+    ``k`` is measured per account (see :mod:`quota_router.pse`), so an operator who has
+    run ``quotapick calibrate`` can pin a value that differs from the built-in 6.25.
+    Read structurally, like :func:`provider_weight`, so this module keeps its promise
+    not to import the config layer.
+
+    A configured ratio below :data:`MIN_WEEKLY_TO_SESSION` is refused here as well as
+    at load time, because ``cfg`` is ``Any``: a caller passing a hand-built mapping
+    never goes through the TOML loader, and a k of 0.5 would silently shrink an
+    account's weekly pool below a single session window.
+    """
+    accounts = cfg_get(cfg, "accounts")
+    if accounts is None:
+        return None
+    entry = (
+        accounts.get(account_id)
+        if isinstance(accounts, Mapping)
+        else getattr(accounts, account_id, None)
+    )
+    raw = cfg_get(entry, "weekly_to_session")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"weekly_to_session for {account_id!r} must be a real number, got {raw!r}"
+        ) from exc
+    if not math.isfinite(value) or value < MIN_WEEKLY_TO_SESSION:
+        raise ValueError(
+            f"weekly_to_session for {account_id!r} must be finite and >= "
+            f"{MIN_WEEKLY_TO_SESSION:g} (the weekly window contains the session "
+            f"window), got {value!r}"
+        )
+    return Plan(weekly_to_session=value)
+
+
 def stocks_from_snapshot(
     snap: AccountSnapshot, now_s: float, capacity: float, plan: Plan | None = None
 ) -> Stocks | None:
@@ -461,7 +501,7 @@ def account_score(
     # windows are converted to absolute units, so it must NOT be multiplied again
     # here -- doing so would scale a quantity that is already denominated in
     # 20x-equivalents and re-introduce the tier bias this change exists to remove.
-    stocks = stocks_from_snapshot(snap, now_s, capacity)
+    stocks = stocks_from_snapshot(snap, now_s, capacity, plan_for(cfg, snap.id))
     if stocks is not None:
         score, waste_pse, label = pse_objective(
             stocks, now_s, model_class, DEFAULT_RATE_PSE_PER_HOUR

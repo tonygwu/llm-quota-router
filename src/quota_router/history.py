@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from .pse import MIN_WEEKLY_TO_SESSION
 from .types import (
     SOURCE_CACHE,
     AccountSnapshot,
@@ -669,7 +670,11 @@ QUANTUM_PP: Final[float] = 1.0
 #: smaller than a single session budget. An estimate below this is not a measurement,
 #: it is evidence the input was contaminated -- and it must be refused however narrow
 #: its interval, because a tight interval around a wrong number is the dangerous case.
-MIN_PLAUSIBLE_K: Final[float] = 1.0
+#:
+#: Aliased rather than restated: the config loader refuses the same bound on values
+#: written by hand, and one physical fact must not be spelled out in two places where
+#: the copies can drift apart.
+MIN_PLAUSIBLE_K: Final[float] = MIN_WEEKLY_TO_SESSION
 
 #: Below this much observed weekly consumption the quantum dominates and no interval
 #: is worth reporting, however dense the sampling.
