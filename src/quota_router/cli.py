@@ -954,7 +954,24 @@ def _prepare(
                 f"{explain_mod.format_duration(config.pileup.window_s)}"
             )
 
-    adjusted = _apply_pileup(snapshots, reserved)
+    # Pileup exists to stop N concurrent callers converging on one pool. When the
+    # candidate set IS one pool -- pinned with --only, or everything else disabled --
+    # there is nowhere else the router could have sent the work, so the subtraction
+    # has no upside and only makes the account look unservable.
+    #
+    # Reported live: a batch pinned to one account at concurrency 3 accumulated 79
+    # reservations inside the 60s window (0.5% each, from the UNCALIBRATED
+    # calls_per_window default of 200) and drove it to -39.5% reserved while its real
+    # window was ~12% used. Reservations are also released on a timer rather than on
+    # completion, so sustained throughput inflates them without bound -- that is a
+    # separate fault worth fixing, but it cannot bite at all when there is only one
+    # candidate.
+    spreadable = len([a for a in config.enabled_accounts()]) > 1
+    adjusted = _apply_pileup(snapshots, reserved) if spreadable else tuple(snapshots)
+    if not spreadable and reserved:
+        warnings.append(
+            "single candidate: pileup reservations not applied (nothing to spread to)"
+        )
     # Before eligibility: an account that cannot SEE the requested class's limit must
     # not be scored as though that limit did not exist.
     adjusted_list, blind = exclude_accounts_blind_to_model_class(adjusted, model.model_class)

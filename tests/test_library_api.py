@@ -269,3 +269,36 @@ def test_a_degraded_input_does_not_by_itself_fail_the_policy_check() -> None:
     # And an ineligible winner fails regardless.
     assert _meets_policy(prepared(
         chosen="claude_d", eligible=False, degraded=False, from_fallback=False)) is False
+
+
+def test_pinning_to_one_account_does_not_apply_pileup_reservations(tmp_path) -> None:
+    """Pileup exists to spread N callers across pools. With one pool it only subtracts.
+
+    Reported live: a batch pinned to claude_d at concurrency 3 accumulated 79
+    reservations in the 60s window (0.5% each, the uncalibrated default) and drove
+    the account to -39.5% reserved, until the router concluded it could not serve
+    and refused calls. The account's real Fable window was ~12% used.
+
+    Reservations are sized by an UNCALIBRATED per-call cost and expire on a timer
+    rather than on completion, so sustained throughput inflates them without bound.
+    That is worth fixing on its own, but when the candidate set is a single account
+    the whole mechanism is pure cost: there is nowhere else the router could have
+    sent the work.
+    """
+    env = _env(tmp_path)
+    deps = _deps(real_capture())
+
+    # claude_b has ~32% left on its five-hour window in the fixture. 80 reservations
+    # at the 0.5% default is 40% -- more than the account has, so an applied pileup
+    # drives it below zero and the router calls it exhausted.
+    for _ in range(80):
+        select_account(only=["claude_b"], env=env, now_s=NOW, deps=deps, record=True)
+
+    pinned = select_account(only=["claude_b"], env=env, now_s=NOW, deps=deps, record=False)
+    assert pinned.account == "claude_b", (
+        f"pinned to one account, reservations must not make it unservable; got "
+        f"{pinned.account} reason={pinned.reason}"
+    )
+    assert pinned.fits is True, (
+        f"reservations drove the only candidate to unservable; reason={pinned.reason}"
+    )
