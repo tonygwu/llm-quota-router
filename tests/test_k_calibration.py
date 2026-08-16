@@ -399,3 +399,88 @@ def test_both_sources_contribute_instead_of_the_weaker_being_discarded() -> None
     assert est.samples > 100, (
         f"discarding a source halves the usable pairs; got {est.samples}"
     )
+
+
+# ======================================================================================
+# A republished stale reading is not a fresh observation
+# ======================================================================================
+
+
+def obs_rec(t: float, observed_at_s: float, session: float, weekly: float) -> dict:
+    """A history record that distinguishes when it was WRITTEN from when it was READ."""
+    return {
+        "t": t,
+        "accounts": [
+            {
+                "id": "claude",
+                "source": "cache",
+                "windows": [
+                    {
+                        "key": "5h",
+                        "used_fraction": session,
+                        "observed_at_s": observed_at_s,
+                    },
+                    {
+                        "key": "7d",
+                        "used_fraction": weekly,
+                        "observed_at_s": observed_at_s,
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_a_republished_stale_reading_does_not_launder_an_18_hour_blind_spot() -> None:
+    """The gap guard must run on the observation clock, not the record clock.
+
+    Every record carries two timestamps: ``t``, when the router wrote the row, and
+    ``observed_at_s``, when the vendor actually reported those numbers. The cache
+    source republishes the SAME reading on every poll, so a bar that was last truly
+    read 15 hours ago is re-emitted every 30 minutes under a fresh ``t``.
+
+    Measuring gaps on ``t`` therefore reports a dense series that does not exist.
+    When the cache finally refreshes, the pair straddling the refresh looks 30
+    minutes wide and is accepted, when in truth it spans 18 hours and three session
+    resets -- so its weekly movement enters the denominator with no matching session
+    movement, which is precisely the one-way undersampling bias the guard exists to
+    prevent.
+
+    Observed live on ``claude_c``: six identical rows pinned at one 15.5-hour-old
+    reading, then a refresh jumping 18.4 hours and +25pp of weekly consumption. That
+    single laundered pair pulled the account's k from ~9.8 down to 6.2, and made
+    nested calibration windows disagree in a way that looked like tier variation.
+    """
+    burn, k_true, step = 0.03, 8.0, 600.0
+
+    # Six polls, all republishing one reading taken 15.5 hours earlier.
+    stale_obs = -15.5 * HOUR
+    log = [obs_rec(i * 1800.0, stale_obs, 1.0, 0.12) for i in range(6)]
+
+    # The cache refreshes: the observation clock jumps 18.4h, the session bar has
+    # reset unseen, and 25pp of weekly burn appears with nothing to attribute it to.
+    log.append(obs_rec(10800.0, 10500.0, 0.0, 0.37))
+
+    # Then a clean, densely observed run at a known k.
+    session, weekly = 0.0, 0.37
+    for i in range(25):
+        t = 12000.0 + i * step
+        log.append(obs_rec(t, t, session, weekly))
+        session += burn
+        weekly += burn / k_true
+
+    est = estimate_weekly_to_session(log)["claude"]
+
+    assert est.k is not None, f"the clean run should be usable; got {est.reason}"
+    assert est.k == pytest.approx(k_true, rel=0.1), (
+        f"k={est.k:.2f}: the 25pp of weekly burn across the laundered refresh was "
+        f"counted, inflating the denominator to {est.weekly_consumed_pp:.0f}pp"
+    )
+    assert est.weekly_consumed_pp == pytest.approx(9.0, abs=1.0), (
+        f"only the clean run's ~9pp is attributable; got "
+        f"{est.weekly_consumed_pp:.0f}pp"
+    )
+    assert est.max_gap_s >= 18 * HOUR, (
+        f"an 18-hour blind spot must be reported as one, not as the 30-minute "
+        f"republish cadence; got {est.max_gap_s / 3600:.1f}h"
+    )

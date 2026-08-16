@@ -723,6 +723,27 @@ def _account_series(
     Each source's own series is internally consistent, so both contribute -- live
     compared to the previous live reading, cache to the previous cache reading,
     never one to the other.
+
+    THE CLOCK IS ``observed_at_s``, NOT ``t``
+    ----------------------------------------
+    Every row carries two times: ``t``, when this router wrote the row, and
+    ``observed_at_s``, when the vendor actually reported those numbers. They are not
+    interchangeable. The cache source republishes its last reading on every poll, so
+    a bar last truly read fifteen hours ago is re-emitted every thirty minutes under
+    a fresh ``t``.
+
+    Keyed on ``t`` that reads as a dense series which does not exist, and the pair
+    straddling a cache refresh looks thirty minutes wide when it in fact spans
+    eighteen hours and several session resets. The gap guard then accepts it, and
+    its weekly movement lands in the denominator with no matching session movement
+    -- exactly the one-way bias the guard exists to prevent. Live, one such pair
+    pulled an account's k from ~9.8 to 6.2 and made nested calibration windows
+    disagree in a way that looked like a plan-tier difference.
+
+    So rows are keyed by observation time, and a row whose observation time does not
+    ADVANCE is dropped: it is a copy of a reading already counted, not a new sighting
+    of the bar. Rows predating ``observed_at_s`` fall back to ``t``, which is the
+    best available answer for them and leaves their behavior unchanged.
     """
     by_source: dict[str, list[tuple[float, float | None, float | None]]] = {}
     for record in records:
@@ -737,13 +758,27 @@ def _account_series(
                 for w in (snapshot.get("windows") or ())
                 if isinstance(w, Mapping)
             }
-            session = (windows.get("5h") or {}).get("used_fraction")
+            session_window = windows.get("5h") or {}
+            session = session_window.get("used_fraction")
             weekly = (windows.get("7d") or {}).get("used_fraction")
+            observed = session_window.get("observed_at_s")
+            clock = float(observed) if isinstance(observed, (int, float)) else float(t)
             source = str(snapshot.get("source") or "unknown")
-            by_source.setdefault(source, []).append((float(t), session, weekly))
-    for rows in by_source.values():
+            by_source.setdefault(source, []).append((clock, session, weekly))
+
+    deduped: dict[str, list[tuple[float, float | None, float | None]]] = {}
+    for source, rows in by_source.items():
         rows.sort(key=lambda row: row[0])
-    return by_source
+        kept: list[tuple[float, float | None, float | None]] = []
+        for row in rows:
+            # Ties and backward steps are both republished history: the reading was
+            # already counted when it was new, and counting it again would fabricate
+            # sampling density the vendor never gave us.
+            if kept and row[0] <= kept[-1][0]:
+                continue
+            kept.append(row)
+        deduped[source] = kept
+    return deduped
 
 
 def _median_step(times: Sequence[float]) -> float:
