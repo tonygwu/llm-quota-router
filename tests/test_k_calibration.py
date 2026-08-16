@@ -328,10 +328,10 @@ def test_the_adoption_bar_is_reachable_within_a_single_window() -> None:
     """
     from quota_router.history import adoption_ready
 
-    # 7pp of weekly: real, but the interval is still ~14% wide.
-    assert adoption_ready(k=6.4, low=5.97, high=6.89, max_gap_s=400) is False
-    # A full window's worth: ~6% wide, and reachable without spanning a reset.
-    assert adoption_ready(k=6.4, low=6.21, high=6.60, max_gap_s=400) is True
+    # 8pp of weekly: real, but ~29% wide.
+    assert adoption_ready(k=6.2, low=5.40, high=7.23, max_gap_s=400) is False
+    # One full window's worth: ~15%, which is all the precision the decision needs.
+    assert adoption_ready(k=6.2, low=5.78, high=6.68, max_gap_s=400) is True
     # Precise but sampled too sparsely to trust the increments.
-    assert adoption_ready(k=6.4, low=6.21, high=6.60, max_gap_s=3600) is False
+    assert adoption_ready(k=6.2, low=5.78, high=6.68, max_gap_s=3600) is False
     assert adoption_ready(k=None, low=None, high=None, max_gap_s=60) is False

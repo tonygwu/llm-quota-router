@@ -871,11 +871,15 @@ def estimate_weekly_to_session(
     return results
 
 
-#: Interval width, relative to the estimate, at which k is worth adopting. Chosen
-#: against what a single clean window can actually deliver: the 1pp quantum on the
-#: denominator gives ~14% at 7pp of weekly burn and ~6% at a full window, so 10%
-#: is clearable without spanning a five-hour reset.
-ADOPTION_RELATIVE_WIDTH: Final[float] = 0.10
+#: Interval width, relative to the estimate, at which k is worth adopting.
+#:
+#: Set against what the decision is actually sensitive to, not against how precise
+#: the arithmetic could be made. k scales an account's weekly capacity, and the
+#: value it replaces is wrong by about 2x -- so an estimate good to +/-15% captures
+#: essentially the whole benefit, and the difference between 6.2 and 6.4 is routing
+#: noise. One full five-hour window clears 15%; chasing 10% would require spanning
+#: a reset for a third significant figure nothing reads.
+ADOPTION_RELATIVE_WIDTH: Final[float] = 0.15
 
 #: Increments are lost between the last sample before a reset and the reset itself,
 #: so sampling density bounds that one-way loss. At this gap the worst case is ~5%
