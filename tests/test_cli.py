@@ -584,6 +584,62 @@ def test_min_remaining_can_exclude_everyone_without_failing(env):
     assert payload["decision"]["fits"] is True
 
 
+def test_a_floor_excludes_an_account_whose_remaining_is_unknown(env):
+    """An unmeasurable account must not pass a bar it was never measured against.
+
+    ``antigravity_gemini`` publishes no usage windows at all, so
+    ``min_remaining_fraction`` is ``None``. The floor comparison skipped ``None`` and
+    left it a candidate, which is the one outcome a floor exists to prevent: with a 99%
+    bar every account we can actually see was excluded at 20%, and the winner became the
+    single account about which we know nothing. Unknown is not "passes"; it is "has not
+    been shown to pass".
+    """
+    snapshots = real_capture() + (account("antigravity_gemini"),)
+    payload = pick(["pick", "--min-remaining", "0.99"], env, snapshots=snapshots)
+
+    assert payload["decision"]["account"] != "antigravity_gemini"
+    assert "antigravity_gemini" not in {row["account"] for row in payload["ranked"]}
+    excluded = {row["account"]: row for row in payload["excluded"]}
+    assert "antigravity_gemini" in excluded
+    assert "cannot be verified" in excluded["antigravity_gemini"]["reason"]
+    # Nothing cleared the bar, so the answer is a least-bad fallback and must say so --
+    # with a retry time drawn from the accounts that do publish a reset.
+    assert payload["decision"]["meets_policy"] is False
+    assert payload["decision"]["available_at"] is not None
+
+
+def test_no_floor_still_lets_the_scoring_layer_judge_a_window_less_account(env):
+    """The new exclusion is scoped to a floor the caller actually set.
+
+    Without ``--min-remaining`` there is no bar to fail, and window-less pools are
+    already reported by the scoring layer ("no usage windows in snapshot"). Excluding
+    them here too would move that verdict to a layer with a worse reason string.
+    """
+    snapshots = real_capture() + (account("antigravity_gemini"),)
+    payload = pick(["pick"], env, snapshots=snapshots)
+
+    reasons = {row["account"]: row["reason"] for row in payload["excluded"]}
+    assert "cannot be verified" not in reasons.get("antigravity_gemini", "")
+
+
+def test_a_config_file_floor_also_binds_an_unknown_account(env, tmp_path):
+    """A floor is a floor wherever the operator wrote it, not just on the command line.
+
+    The builtin defaults layer always carries ``eligibility.min_remaining``, so "is this
+    key present in the merged config" cannot tell a real floor from our own 2% sanity
+    guard. Provenance is tracked across the file layers instead, and this is the test
+    that would catch it silently collapsing to "always" or "never".
+    """
+    config = tmp_path / "floor.toml"
+    config.write_text("[eligibility]\nmin_remaining = 0.90\n")
+    snapshots = real_capture() + (account("antigravity_gemini"),)
+    payload = pick(["pick", "--config", str(config)], env, snapshots=snapshots)
+
+    reasons = {row["account"]: row["reason"] for row in payload["excluded"]}
+    assert "cannot be verified" in reasons.get("antigravity_gemini", "")
+    assert payload["decision"]["account"] != "antigravity_gemini"
+
+
 def test_a_genuinely_exhausted_field_reports_fits_false(env):
     payload = pick(["pick"], env, snapshots=(
         account("claude", window("five_hour", 1.0, length_s=FIVE_HOURS, resets_in_s=600)),

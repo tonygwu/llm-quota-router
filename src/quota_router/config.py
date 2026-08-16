@@ -388,9 +388,17 @@ class EligibilityConfig:
         min_remaining: An account needs at least this fraction left in every applicable
             window to be eligible. Guards against routing to a pool with a sliver of
             quota that the very next call will exhaust mid-stream.
+        explicit: True when ``min_remaining`` came from ``--min-remaining`` or a config
+            file rather than the built-in default. The two are the same number but not
+            the same claim: the default is *our* sanity guard against a sliver of quota,
+            while an explicit value is a bar the CALLER set and expects to bind. Only the
+            latter justifies rejecting an account whose remaining quota is unknowable --
+            see ``_partition_candidates``. Deliberately absent from ``to_dict``: it is
+            provenance about the request, not part of the config contract.
     """
 
     min_remaining: float = 0.02
+    explicit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,7 +579,12 @@ class Config:
         """
         out = self
         if min_remaining is not None:
-            out = replace(out, eligibility=EligibilityConfig(min_remaining=min_remaining))
+            out = replace(
+                out,
+                eligibility=EligibilityConfig(
+                    min_remaining=min_remaining, explicit=True
+                ),
+            )
         if no_sticky:
             out = replace(out, hysteresis=replace(out.hysteresis, enabled=False))
         if pileup is not None:
@@ -820,7 +833,13 @@ def _build_accounts(
     return accounts
 
 
-def _build(merged: Mapping[str, Any], env: Mapping[str, str] | None, sources: list[str]) -> Config:
+def _build(
+    merged: Mapping[str, Any],
+    env: Mapping[str, str] | None,
+    sources: list[str],
+    *,
+    eligibility_explicit: bool = False,
+) -> Config:
     """Validate a merged mapping into a :class:`Config`."""
     warnings: list[str] = []
     for section in merged:
@@ -909,7 +928,8 @@ def _build(merged: Mapping[str, Any], env: Mapping[str, str] | None, sources: li
                 "min_remaining",
                 minimum=0.0,
                 maximum=1.0,
-            )
+            ),
+            explicit=eligibility_explicit,
         ),
         pileup=PileupConfig(
             enabled=_as_bool(pileup_raw.get("enabled", True), "pileup", "enabled"),
@@ -978,11 +998,21 @@ def load_config(
     if explicit_path is not None:
         layers.append((Path(expand_path(str(explicit_path), env)), True))
 
+    # Provenance, tracked while merging because the merged result cannot carry it:
+    # ``_BUILTIN`` always supplies ``eligibility.min_remaining``, so key-presence in
+    # ``merged`` is true even with zero config files. Only a real file layer means an
+    # operator asked for this bar. Presence of the key, not its value -- a config that
+    # spells out the default 0.02 is still someone asking for that floor.
+    eligibility_explicit = False
+
     for path, required in layers:
         data = _read_toml(path, required=required)
         if data is None:
             continue
+        eligibility = data.get("eligibility")
+        if isinstance(eligibility, Mapping) and "min_remaining" in eligibility:
+            eligibility_explicit = True
         merged = _deep_merge(merged, data)
         sources.append(str(path))
 
-    return _build(merged, env, sources)
+    return _build(merged, env, sources, eligibility_explicit=eligibility_explicit)

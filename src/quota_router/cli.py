@@ -536,7 +536,31 @@ def _partition_candidates(
             reason = snapshot.note or "account is not available"
         else:
             remaining = snapshot.min_remaining_fraction(model_class)
-            if remaining is not None and remaining < min_remaining:
+            if remaining is None:
+                # No applicable window means remaining is UNKNOWN, not plentiful. The
+                # comparison below skipped None, so a window-less pool sailed through
+                # every floor: with --min-remaining 0.99 the three accounts we can
+                # actually read were excluded at 20% and the antigravity pool -- the one
+                # account nobody had measured -- was handed the call. An unknown value
+                # must never satisfy a bar.
+                #
+                # Only when the CALLER set a bar. The built-in 0.02 default is our own
+                # sanity guard, not a request, and window-less pools are already judged
+                # downstream by the scoring layer ("no usage windows in snapshot") --
+                # rejecting them here on the default path would change how the normal
+                # route treats the antigravity pools for no gain. A floor of exactly 0
+                # is likewise nothing to fail.
+                if config.eligibility.explicit and min_remaining > 0.0:
+                    reason = (
+                        "no applicable usage window, so its remaining quota cannot be "
+                        f"verified against the min-remaining floor ({min_remaining:.1%})"
+                    )
+                    # Kept OUT of the fallback pool, unlike an account that is merely
+                    # below the floor. The pool's contract is "name whoever frees up
+                    # first", and that is unanswerable here: no window means no reset,
+                    # so this account never demonstrably clears the bar. Leaving it in
+                    # would let it win the fallback and reinstate the exact bug.
+            elif remaining < min_remaining:
                 reason = (
                     f"only {remaining:.1%} left in its tightest applicable window "
                     f"(min-remaining {min_remaining:.1%})"
@@ -1473,6 +1497,9 @@ def _cmd_calibrate(
                         "session_increment_pp": value.session_increment_pp,
                         "weekly_consumed_pp": value.weekly_consumed_pp,
                         "samples": value.samples,
+                        "max_gap_s": value.max_gap_s,
+                        "span_s": value.span_s,
+                        "dropped_pairs": value.dropped_pairs,
                         "undersampled": value.undersampled,
                         "reason": value.reason,
                     }
@@ -1516,12 +1543,23 @@ def _cmd_calibrate(
         enough = history_mod.adoption_ready(
             k=est.k, low=est.low, high=est.high, max_gap_s=est.max_gap_s
         )
-        verdict = (
-            "ADOPT"
-            if enough
-            else f"keep default (interval {100 * width / est.k:.0f}% wide, want "
-            f"<={100 * history_mod.ADOPTION_RELATIVE_WIDTH:.0f}%)"
-        )
+        # Name the condition that actually failed. Reporting width when density is
+        # the blocker sends the reader off to collect more burn, which will never
+        # help -- the fix is denser sampling, or waiting for sparse history to age
+        # out of the window.
+        if enough:
+            verdict = "ADOPT"
+        elif est.max_gap_s > history_mod.ADOPTION_MAX_GAP_S:
+            verdict = (
+                f"keep default (worst sample gap {est.max_gap_s / 60:.0f}m > "
+                f"{history_mod.ADOPTION_MAX_GAP_S / 60:.0f}m; increments lost to unseen "
+                f"resets bias k low)"
+            )
+        else:
+            verdict = (
+                f"keep default (interval {100 * width / est.k:.0f}% wide, want "
+                f"<={100 * history_mod.ADOPTION_RELATIVE_WIDTH:.0f}%)"
+            )
         stdout.write(
             f"  {account_id}: k={est.k:.1f} [{est.low:.1f}-{est.high:.1f}] "
             f"from {est.session_increment_pp:.0f}pp session / {est.weekly_consumed_pp:.0f}pp "
