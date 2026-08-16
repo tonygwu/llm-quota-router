@@ -1,6 +1,6 @@
 """Value types shared by every layer of the quota router.
 
-This module is the *contract*. Sources (``cswap``, ``~/.claude*/.claude.json``) produce
+This module is the *contract*. Sources (the vendor usage endpoint, ``~/.claude*/.claude.json``) produce
 :class:`AccountSnapshot` objects; scoring turns them into :class:`ScoreBreakdown`
 objects; selection turns those into a :class:`Decision`; the CLI renders it. Nothing
 here knows about subprocesses, files, the environment or the wall clock.
@@ -97,7 +97,7 @@ __all__ = [
     "MODEL_CLASS_FABLE",
     "normalize_model_class",
     # provenance / confidence
-    "SOURCE_CSWAP",
+    "SOURCE_LIVE",
     "SOURCE_CLAUDE_JSON",
     "SOURCE_MANUAL",
     "SOURCE_CACHE",
@@ -292,7 +292,7 @@ TIER_CAPACITY: Final[Mapping[str, float]] = MappingProxyType(
 
 #: Accepted spellings for a tier, including the raw ``organizationRateLimitTier`` values
 #: found in ``~/.claude*/.claude.json`` (the only place the tier is observable -- the
-#: cswap oracle does not report it).
+#: usage endpoint does not report it).
 _TIER_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
     {
         "default_claude_max_20x": TIER_MAX_20X,
@@ -359,7 +359,10 @@ def normalize_model_class(name: Any) -> str | None:
 # Provenance and confidence
 # ======================================================================================
 
-SOURCE_CSWAP: Final[str] = "cswap"
+#: A live read of the vendor usage endpoint using the account's existing access
+#: token. Highest trust: current server-side truth, and obtained without minting
+#: a credential (see providers/claude_oauth.py).
+SOURCE_LIVE: Final[str] = "live"
 SOURCE_CLAUDE_JSON: Final[str] = "claude_json"
 SOURCE_MANUAL: Final[str] = "manual"
 SOURCE_CACHE: Final[str] = "cache"

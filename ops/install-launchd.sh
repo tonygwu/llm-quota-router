@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
 #
-# Install (or remove) the periodic credential-refresh job.
+# Install (or remove) the periodic usage-history poller.
 #
-# The cswap oracle stores COPIES of each account's credentials; the live config dirs
-# keep refreshing their own OAuth tokens while those copies quietly expire. Once a copy
-# expires the oracle reports `relogin_required` and the router -- correctly, but
-# silently -- stops seeing that account. Left alone, the fleet narrows itself.
+# WHAT THIS IS NOW
+# ----------------
+# This job used to re-capture OAuth credentials for an external oracle every 30 minutes.
+# That oracle was removed: reading usage through it redeemed the account's refresh token,
+# and because Anthropic rotates refresh tokens, doing so revoked the copy Claude Code
+# held and logged the operator out. See README "The single-writer rule".
 #
-# This job re-captures every configured account on a cadence shorter than the observed
-# expiry (~7 hours in practice), so the oracle never goes dark on its own.
+# What remains is strictly a READER. It runs `quotapick status`, which reads each
+# account's existing access token and calls the vendor usage endpoint with it. Nothing is
+# minted, nothing is written back to any credential store. Its only purpose is to keep
+# history.jsonl dense, so burn-rate learning has a series to work from even for accounts
+# that are only ever driven headlessly.
+#
+# Safe to not run at all. The router reads usage live on every invocation; this only
+# improves the history it learns from.
 #
 #   ./ops/install-launchd.sh              install and start
 #   ./ops/install-launchd.sh --uninstall  stop and remove
 #   ./ops/install-launchd.sh --print      print the plist, install nothing
 #
-# Env: REFRESH_INTERVAL_S (default 1800)
+# Env: POLL_INTERVAL_S (default 1800)
 
 set -uo pipefail
 
-LABEL="local.llm-quota-router.credential-refresh"
+LABEL="local.llm-quota-router.usage-poll"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/llm-quota-router"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REFRESH="$SCRIPT_DIR/refresh-oracle-credentials.sh"
-INTERVAL="${REFRESH_INTERVAL_S:-1800}"
+INTERVAL="${POLL_INTERVAL_S:-1800}"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
@@ -33,13 +39,13 @@ if [ "${1:-}" = "--uninstall" ]; then
   exit 0
 fi
 
-# Resolve cswap to an ABSOLUTE path and bake it in. launchd's minimal PATH excludes
-# ~/.local/bin (where uv tool / pipx install), so a bare `cswap` would resolve
+# Resolve quotapick to an ABSOLUTE path and bake it in. launchd's minimal PATH excludes
+# ~/.local/bin (where uv tool / pipx install), so a bare `quotapick` would resolve
 # interactively and then fail under the scheduler -- the single most common way a job
 # like this "works when I test it" and never runs.
-CSWAP="${CSWAP_BIN:-$(command -v cswap 2>/dev/null || true)}"
-if [ -z "$CSWAP" ] || [ ! -x "$CSWAP" ]; then
-  echo "error: cswap not found. Install it (uv tool install claude-swap) or set CSWAP_BIN." >&2
+QUOTAPICK="${QUOTAPICK_BIN:-$(command -v quotapick 2>/dev/null || true)}"
+if [ -z "$QUOTAPICK" ] || [ ! -x "$QUOTAPICK" ]; then
+  echo "error: quotapick not found. Install it (uv tool install .) or set QUOTAPICK_BIN." >&2
   exit 1
 fi
 
@@ -51,20 +57,18 @@ read -r -d '' PLIST_XML <<XML
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>${REFRESH}</string>
+    <string>${QUOTAPICK}</string>
+    <string>status</string>
+    <string>--json</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>CSWAP_BIN</key><string>${CSWAP}</string>
-    <key>CLAUDE_B_CONFIG_DIR</key><string>${CLAUDE_B_CONFIG_DIR:-$HOME/.claude-b}</string>
-    <key>CLAUDE_C_CONFIG_DIR</key><string>${CLAUDE_C_CONFIG_DIR:-$HOME/.claude-c}</string>
-    <key>PATH</key><string>$(dirname "$CSWAP"):/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>$(dirname "$QUOTAPICK"):/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StartInterval</key><integer>${INTERVAL}</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>${LOG_DIR}/refresh.log</string>
-  <key>StandardErrorPath</key><string>${LOG_DIR}/refresh.log</string>
+  <key>StandardOutPath</key><string>${LOG_DIR}/usage-poll.log</string>
+  <key>StandardErrorPath</key><string>${LOG_DIR}/usage-poll.log</string>
   <key>ProcessType</key><string>Background</string>
 </dict>
 </plist>
@@ -78,7 +82,6 @@ fi
 mkdir -p "$LOG_DIR" "$(dirname "$PLIST")"
 printf '%s\n' "$PLIST_XML" > "$PLIST"
 
-# Replace any previous copy so re-running is idempotent.
 launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 if launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
   :
@@ -90,6 +93,5 @@ else
 fi
 
 echo "installed ${LABEL}"
-echo "  every ${INTERVAL}s   cswap=${CSWAP}"
-echo "  log: ${LOG_DIR}/refresh.log"
-echo "  status: launchctl list | grep ${LABEL}"
+echo "  every ${INTERVAL}s   quotapick=${QUOTAPICK}"
+echo "  log: ${LOG_DIR}/usage-poll.log"

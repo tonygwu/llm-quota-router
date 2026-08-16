@@ -8,7 +8,7 @@ runner is injectable), never invent data.
 +-------------------------------+---------------------------------------------------+
 | Adapter                       | Source of truth                                   |
 +===============================+===================================================+
-| :class:`ClaudeCswapAdapter`   | ``cswap list --json`` (primary, live)             |
+| :class:`ClaudeOAuthAdapter`   | vendor usage endpoint (primary, live)             |
 | :class:`ClaudeStatuslineAdapter` | ``~/Library/Caches/.../claude*-rate-limits.json`` |
 | :class:`CodexSessionsAdapter` | ``$CODEX_HOME/sessions/**/*.jsonl`` tails         |
 | :class:`AntigravityAdapter`   | nothing observable; failure-learned deadline only |
@@ -31,7 +31,7 @@ from ..types import (
     SOURCE_ASSUMED,
     SOURCE_CACHE,
     SOURCE_CLAUDE_JSON,
-    SOURCE_CSWAP,
+    SOURCE_LIVE,
     SOURCE_MANUAL,
     TIER_UNKNOWN,
     AccountSnapshot,
@@ -46,12 +46,13 @@ from .base import (
     default_runner,
     run_command,
 )
-from .claude_cswap import (
+from .claude_cli_config import (
+    CLAUDE_CONFIG_DIRS_ENV,
     DEFAULT_CLAUDE_CONFIG_DIR_NAMES,
     ClaudeAccountConfig,
-    ClaudeCswapAdapter,
     discover_claude_configs,
 )
+from .claude_oauth import ClaudeOAuthAdapter
 from .claude_statusline import ClaudeStatuslineAdapter
 from .codex_sessions import CodexSessionsAdapter
 
@@ -61,7 +62,7 @@ __all__ = [
     "default_runner",
     "run_command",
     "CommandOutcome",
-    "ClaudeCswapAdapter",
+    "ClaudeOAuthAdapter",
     "ClaudeStatuslineAdapter",
     "ClaudeAccountConfig",
     "discover_claude_configs",
@@ -81,7 +82,7 @@ __all__ = [
 #: idea about) and a missing window silently removes a constraint.
 SOURCE_RANK: Final[Mapping[str, int]] = {
     SOURCE_MANUAL: 4,
-    SOURCE_CSWAP: 3,
+    SOURCE_LIVE: 3,
     SOURCE_CLAUDE_JSON: 2,
     SOURCE_CACHE: 1,
     SOURCE_ASSUMED: 0,
@@ -114,7 +115,6 @@ def claude_configs_from_policy(
       fallback for when that file is unreadable (see ``ClaudeAccountConfig``);
     * ``tier`` -- policy wins when it is set to something other than ``unknown``, which is
       exactly the "config is unreadable, I know what I pay for" case it exists for;
-    * ``cswap_number`` -- carried through as the last-resort positional fallback.
 
     ``config`` is duck-typed (anything exposing ``enabled_accounts()``), so this module
     never has to import the policy layer.
@@ -152,7 +152,6 @@ def claude_configs_from_policy(
     for discovered in discover_claude_configs(config_dirs=dirs, env=env):
         account = policy.get(discovered.account_id)
         declared_tier = normalize_tier(getattr(account, "tier", None))
-        number = getattr(account, "cswap_number", None)
         email = getattr(account, "identity_email", None)
         resolved.append(
             ClaudeAccountConfig(
@@ -162,7 +161,6 @@ def claude_configs_from_policy(
                 tier=declared_tier if declared_tier != TIER_UNKNOWN else discovered.tier,
                 source_path=discovered.source_path,
                 declared_email=email if isinstance(email, str) else None,
-                cswap_number=number if isinstance(number, int) else None,
             )
         )
     return tuple(resolved)
@@ -176,10 +174,10 @@ def build_default_adapters(
     timeout_s: float = 10.0,
     home: Path | str | None = None,
 ) -> tuple[ProviderAdapter, ...]:
-    """The standard adapter set, in preference order (oracle first, guesses last)."""
+    """The standard adapter set, in preference order (live read first, guesses last)."""
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
     return (
-        ClaudeCswapAdapter(
+        ClaudeOAuthAdapter(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
         ),
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
@@ -188,8 +186,17 @@ def build_default_adapters(
     )
 
 
-def _rank(snapshot: AccountSnapshot) -> tuple[int, float, int]:
+def _rank(snapshot: AccountSnapshot) -> tuple[int, int, float, int]:
+    """Merge key for two readings of the same account, highest wins.
+
+    ``has_windows`` outranks ``source`` deliberately. A snapshot with no windows
+    carries no routing information whatever, so preferring it because its *source*
+    is nominally better throws away a usable reading for an unusable one -- e.g. an
+    account whose access token has expired yields a live-but-empty snapshot that
+    would otherwise bury a perfectly good statusline cache.
+    """
     return (
+        1 if snapshot.windows else 0,
         SOURCE_RANK.get(snapshot.source, 0),
         snapshot.confidence,
         len(snapshot.windows),
@@ -250,7 +257,7 @@ def load_snapshots(
         config: The operator's policy object (duck-typed), used for config directories,
             tier overrides and the enabled-account list.
         env: Environment mapping for every path/override lookup.
-        runner: Injected process runner for the cswap oracle.
+        runner: Injected process runner for the Keychain read.
         timeout_s: Oracle timeout.
         accounts: Restrict the result to these accounts -- either ids or objects with an
             ``id``. Defaults to whatever the adapters found.

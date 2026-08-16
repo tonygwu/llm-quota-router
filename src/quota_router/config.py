@@ -235,7 +235,6 @@ class AccountConfig:
         tier: Subscription tier. Usually left unset: the providers layer reads the real
             value out of ``<config_dir>/.claude.json``'s ``organizationRateLimitTier``.
             Setting it here is a manual override for accounts whose config is unreadable.
-        cswap_number: The oracle's positional number, used only as a *fallback* match
             when identity matching fails; positions get reassigned, identities do not.
         identity_email: The account's email, which together with the organization UUID is
             how accounts are actually keyed.
@@ -253,7 +252,6 @@ class AccountConfig:
     id: str
     config_dir: str | None = None
     tier: str = TIER_UNKNOWN
-    cswap_number: int | None = None
     identity_email: str | None = None
     provider: str = ""
     enabled: bool = True
@@ -298,7 +296,6 @@ class AccountConfig:
             "provider": self.provider,
             "config_dir": self.config_dir,
             "tier": self.tier,
-            "cswap_number": self.cswap_number,
             "identity_email": self.identity_email,
             "enabled": self.enabled,
             "calls_per_window": self.calls_per_window,
@@ -399,12 +396,14 @@ class PileupConfig:
 class OracleConfig:
     """How to read ground truth.
 
-    ``cswap`` is an **oracle only**: this package runs ``cswap list --json`` and nothing
-    else. ``cswap run`` / ``switch`` / ``auto`` / ``add`` / ``remove`` mutate the
-    operator's globally-active account and are never invoked from library or CLI code.
+    Ground truth is the vendor usage endpoint, reached with the access token the
+    account already holds. ``command`` is retained only so an existing config file
+    that still sets it keeps parsing; nothing reads it. It was the external oracle
+    binary, which was removed after its usage read was found to redeem -- and so
+    rotate -- the account's refresh token, logging the operator out.
     """
 
-    command: str = "cswap"
+    command: str = ""
     timeout_ms: int = 5000
     use_cache_on_failure: bool = True
 
@@ -661,7 +660,7 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "calls_per_window": 200.0,
             "max_records": 500,
         },
-        "oracle": {"command": "cswap", "timeout_ms": 5000, "use_cache_on_failure": True},
+        "oracle": {"command": "", "timeout_ms": 5000, "use_cache_on_failure": True},
         "exec": {
             "commands": dict(PROVIDER_COMMANDS),
             "env_vars": dict(PROVIDER_CONFIG_DIR_ENV),
@@ -760,11 +759,6 @@ def _build_accounts(
             id=str(account_id),
             config_dir=config_dir,
             tier=tier,
-            cswap_number=(
-                _as_int(body["cswap_number"], section, "cswap_number", minimum=1)
-                if body.get("cswap_number") is not None
-                else None
-            ),
             identity_email=(
                 _as_str(body["identity_email"], section, "identity_email")
                 if body.get("identity_email") is not None
@@ -909,7 +903,7 @@ def _build(merged: Mapping[str, Any], env: Mapping[str, str] | None, sources: li
             ),
         ),
         oracle=OracleConfig(
-            command=_as_str(oracle_raw.get("command", "cswap"), "oracle", "command"),
+            command=_as_str(oracle_raw.get("command", ""), "oracle", "command"),
             timeout_ms=_as_int(
                 oracle_raw.get("timeout_ms", 5000), "oracle", "timeout_ms", minimum=1
             ),

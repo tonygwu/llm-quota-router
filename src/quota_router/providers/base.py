@@ -175,7 +175,7 @@ class ProviderAdapter(Protocol):
     tests are deterministic.
     """
 
-    #: Stable, human-readable adapter name (``"claude_cswap"``, ``"codex_sessions"``...).
+    #: Stable, human-readable adapter name (``"claude_oauth"``, ``"codex_sessions"``...).
     #: Surfaced in warnings and ``--json`` diagnostics.
     name: str
 

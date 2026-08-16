@@ -1,4 +1,4 @@
-"""Contract tests for the three guarantees that are only true if nothing erodes them.
+"""Contract tests for the two guarantees that are only true if nothing erodes them.
 
 Every assertion here protects a property that is *invisible at runtime* until the day it
 matters, which is exactly why it needs a test rather than a comment:
@@ -14,10 +14,10 @@ matters, which is exactly why it needs a test rather than a comment:
    spawns the vendor CLI with that account's own ``CLAUDE_CONFIG_DIR`` instead. Those two
    names may appear in the source only as *blocklist* entries or prose.
 
-3. **cswap is an oracle, not an executor.** The only cswap command this package may ever
-   run is ``cswap list --json``. ``cswap run`` / ``switch`` / ``auto`` / ``add`` /
-   ``remove`` mutate the operator's active account behind the router's back, which would
-   make the routing decision a lie.
+A third guarantee used to live here -- "the external usage oracle is read-only, because
+the only argv we build for it is ``list --json``". It was deleted, not ported; see the
+note at the bottom of this file before writing anything shaped like it again. The
+credential-safety contract that replaced it lives in ``tests/test_no_token_rotation.py``.
 
 The purity and blocklist checks are done on the **AST**, not with a substring grep, so
 that prose in a docstring is not mistaken for behaviour and vice versa.
@@ -28,17 +28,10 @@ from __future__ import annotations
 import ast
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from quota_router.config import BANNED_EXEC_ENV
-from quota_router.providers.base import CommandOutcome
-from quota_router.providers.claude_cswap import (
-    CSWAP_BINARY,
-    CSWAP_LIST_ARGV,
-    ClaudeCswapAdapter,
-)
 
 # ======================================================================================
 # Source access
@@ -46,8 +39,8 @@ from quota_router.providers.claude_cswap import (
 
 PACKAGE_DIR: Path = Path(__file__).resolve().parents[1] / "src" / "quota_router"
 
-#: Every module in the distribution, so the "never proxy" / "oracle only" sweeps cannot be
-#: dodged by putting the offending line in a file nobody thought to list.
+#: Every module in the distribution, so the "never proxy" sweep cannot be dodged by
+#: putting the offending line in a file nobody thought to list.
 ALL_MODULES: tuple[Path, ...] = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 
 #: The modules that must stay pure, and what each is allowed to import from the package.
@@ -64,8 +57,8 @@ def _parse(path: Path) -> ast.Module:
 def _docstring_nodes(tree: ast.Module) -> set[int]:
     """``id()`` of every string constant that is a module/class/function docstring.
 
-    Prose is allowed to say "we never emit ANTHROPIC_BASE_URL" or "never run cswap
-    switch"; code is not. Separating the two is the whole point of doing this on the AST.
+    Prose is allowed to say "we never emit ANTHROPIC_BASE_URL"; code is not. Separating
+    the two is the whole point of doing this on the AST.
     """
     found: set[int] = set()
     for node in ast.walk(tree):
@@ -283,71 +276,36 @@ def test_the_exec_environment_strips_proxy_variables_even_if_inherited() -> None
 
 
 # ======================================================================================
-# 3. cswap is an oracle, not an executor
+# 3. REMOVED -- "the external usage oracle is an oracle, not an executor"
 # ======================================================================================
-
-#: Subcommands that would make cswap change the operator's state instead of report it.
-MUTATING_CSWAP_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"run", "switch", "auto", "add", "remove"}
-)
-
-
-def test_the_only_cswap_argv_is_list_json() -> None:
-    assert CSWAP_LIST_ARGV == ("list", "--json")
-
-
-def test_the_adapter_argv_property_is_read_only_by_construction() -> None:
-    adapter = ClaudeCswapAdapter(runner=lambda argv, **kw: None, configs=())
-    assert adapter.argv == (CSWAP_BINARY, "list", "--json")
-    assert not MUTATING_CSWAP_SUBCOMMANDS & set(adapter.argv)
-
-
-def test_the_adapter_actually_runs_only_cswap_list_json() -> None:
-    """Functional proof: drive a real ``snapshot()`` and record every argv it spawns."""
-    spawned: list[list[str]] = []
-
-    def recording_runner(argv: Any, **kwargs: Any) -> CommandOutcome:
-        spawned.append(list(argv))
-        raise FileNotFoundError(argv[0])  # run_command flattens this into a failed outcome
-
-    adapter = ClaudeCswapAdapter(runner=recording_runner, configs=())
-    adapter.snapshot(now_s=1_786_740_238.0)
-
-    assert spawned, "the adapter never invoked the oracle at all"
-    for argv in spawned:
-        assert argv[1:] == ["list", "--json"], (
-            f"the adapter spawned {argv!r}; cswap is an oracle and the only permitted "
-            f"invocation is `cswap list --json`"
-        )
-        assert not MUTATING_CSWAP_SUBCOMMANDS & set(argv[1:])
-
-
-@pytest.mark.parametrize(
-    "path", ALL_MODULES, ids=lambda p: str(p.relative_to(PACKAGE_DIR))
-)
-def test_no_module_builds_a_mutating_cswap_command(path: Path) -> None:
-    """No executable string anywhere may pair the cswap binary with a mutating verb.
-
-    Checked as whole string literals so that ordinary English in a comment, or an
-    unrelated identifier containing "run", cannot trip it -- and so that an actual
-    ``("cswap", "switch")`` argv cannot slip through.
-    """
-    strings = _code_strings(path)
-    for text in strings:
-        lowered = text.strip().lower()
-        for verb in MUTATING_CSWAP_SUBCOMMANDS:
-            assert lowered != f"cswap {verb}", (
-                f"{_module_id(path)} contains the command string {text!r}"
-            )
-            assert not lowered.startswith(f"cswap {verb} "), (
-                f"{_module_id(path)} contains the command string {text!r}"
-            )
-
-    # A bare mutating verb is only dangerous in the module that knows the cswap binary,
-    # where it could be concatenated into an argv.
-    if "cswap" in _module_id(path):
-        bare = {t.strip().lower() for t in strings} & MUTATING_CSWAP_SUBCOMMANDS
-        assert not bare, (
-            f"{_module_id(path)} contains bare cswap subcommand literal(s) {sorted(bare)}; "
-            f"the oracle-only guarantee means `list` and `--json` are the only verbs"
-        )
+#
+# This section held four tests asserting that the only argv this package ever built for
+# the external usage oracle was its read-only `list --json` form, and that no module
+# concatenated a mutating verb (run / switch / auto / add / remove) onto the binary name.
+# They were deleted on 2026-08-15 rather than ported, because the behaviour they asserted
+# no longer exists AND the contract they encoded was wrong on its own terms.
+#
+# WHY IT WAS WRONG. The tests were green the entire time the oracle was destroying the
+# operator's logins. The oracle read usage by first redeeming the account's OAuth refresh
+# token; Anthropic rotates refresh tokens, so that single act invalidated the copy Claude
+# Code held, and the oracle stored the replacement in its own keychain entry instead of
+# the one Claude Code reads. Two accounts were blanked to "Not logged in". The damage was
+# done *by the blessed read-only subcommand*, server-side, before any output was printed.
+#
+# The lesson is not "we picked the wrong verbs". It is that an argv-shaped assertion can
+# only see the shape of a call, never its effect: `list --json` is read-only on disk and
+# mutating on the server, and no amount of inspecting the command line distinguishes the
+# two. A test like this reads as safety and delivers none, which is worse than no test,
+# because it is why nobody looked further.
+#
+# DO NOT RE-ADD ANYTHING SHAPED LIKE THIS. If you are reaching for a guard here, the
+# question to ask is not "which subcommands do we invoke" but "can any code path in this
+# package cause a credential to be reissued". That is enforced structurally in
+# tests/test_no_token_rotation.py, which bans the rotation wire markers (grant_type,
+# refresh_token, oauth/token) and the rotating dependency itself from executable code
+# outright -- no invocation of it is safe, so there is no argv to audit. The usage read
+# now goes through quota_router.providers.claude_oauth: read the access token already in
+# the keychain, GET the usage endpoint with it, mint nothing. Single writer -- exactly one
+# process on this machine may redeem a refresh token, and that process is Claude Code.
+#
+# Sections 1 and 2 above are unrelated to any of this and remain live contracts.

@@ -29,8 +29,8 @@ What this package will never do
   Execution is always "spawn the vendor's own CLI with that account's own
   ``CLAUDE_CONFIG_DIR``". Anthropic blocked OAuth proxying on 2026-04-04 and routing
   around that is neither supported nor attempted.
-* **It never lets the oracle drive.** ``cswap`` is read-only ground truth via
-  ``cswap list --json``; ``cswap run`` / ``switch`` / ``auto`` / ``add`` / ``remove`` are
+* **It never mints a credential.** Usage is read with the access token an
+  account already holds. Redeeming a refresh token rotates it, and any path that
   never invoked from library or CLI code. Switching the *global* active account behind
   the operator's back is exactly the failure this router exists to avoid.
 
@@ -79,7 +79,7 @@ from .types import (
     SOURCE_ASSUMED,
     SOURCE_CACHE,
     SOURCE_CLAUDE_JSON,
-    SOURCE_CSWAP,
+    SOURCE_LIVE,
     SOURCE_MANUAL,
     SOURCE_UNKNOWN,
     TIER_CAPACITY,
@@ -143,7 +143,7 @@ __all__ = [
     "MODEL_CLASS_FABLE",
     "normalize_model_class",
     # provenance / confidence
-    "SOURCE_CSWAP",
+    "SOURCE_LIVE",
     "SOURCE_CLAUDE_JSON",
     "SOURCE_MANUAL",
     "SOURCE_CACHE",

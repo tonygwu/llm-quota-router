@@ -28,8 +28,8 @@ order, so every eligible candidate is reported in order, not just the winner.
 ``ANTHROPIC_BASE_URL`` and ``ANTHROPIC_AUTH_TOKEN`` are never emitted, and ``exec``
 actively *removes* them from the child environment if the operator's shell has them set.
 
-**cswap is an oracle.** The only invocation this package ever makes is
-``cswap list --json`` (in the providers layer); ``run``/``switch``/``auto``/``add``/
+**This package never mints a credential.** It reads the access token an account
+already holds and calls the vendor usage endpoint with it; it never redeems a
 ``remove`` change the globally-active account and are never called.
 
 ``main()`` takes ``argv``/``env``/``stdout``/``stderr``/``now_s`` so the whole CLI is
@@ -143,7 +143,7 @@ def _load_engine() -> tuple[Callable[..., Any] | None, Callable[..., Any] | None
 def _load_oracle() -> tuple[Callable[..., Any] | None, str | None]:
     """Bind the providers layer into a single ``(**kwargs) -> (snapshots, warnings)`` call.
 
-    The providers layer is a *set* of adapters (cswap, the statusline cache, codex
+    The providers layer is a *set* of adapters (live usage, the statusline cache, codex
     sessions, antigravity) merged by account id, so the binding is "build the standard
     adapters, then collect". Adapters are consulted in preference order and a failing one
     is absorbed there, which is why this layer can treat the result as ground truth or
@@ -194,19 +194,18 @@ def _configure_adapters(
     environment, ``--timeout-ms``, and the operator's own ``[accounts.*] config_dir``
     entries so a non-standard directory is actually discovered.
 
-    ``[oracle] command`` and the timeout are applied **only** to the cswap adapter. Two
-    adapters declare a ``binary`` parameter, and handing ``cswap`` to the Antigravity one
-    would point it at the wrong program entirely. An adapter that cannot be rebuilt is
-    kept exactly as the providers layer constructed it.
+    The timeout is applied **only** to the live-usage adapter. It reads the
+    Keychain and calls the vendor usage endpoint, so it is the one adapter with a
+    latency budget worth configuring; the others read local files. An adapter that
+    cannot be rebuilt is kept exactly as the providers layer constructed it.
     """
-    cswap_cls = getattr(providers, "ClaudeCswapAdapter", None)
+    live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
     out: list[Any] = []
 
     for adapter in adapters:
         cls = type(adapter)
         settings: dict[str, Any] = {"env": env, "runner": run}
-        if cswap_cls is not None and cls is cswap_cls and config is not None:
-            settings["binary"] = config.oracle.command
+        if live_cls is not None and cls is live_cls and config is not None:
             settings["timeout_s"] = timeout_s
             dirs = {
                 account.id: account.config_dir

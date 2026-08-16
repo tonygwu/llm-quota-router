@@ -410,7 +410,7 @@ def _normalize_model_label(label: str) -> tuple[str | None, str | None]:
     """``"Fable 5"`` -> ``("fable", "Fable 5")``; account-level labels -> ``(None, label)``.
 
     A trailing version token is dropped so the class lines up with the window names the
-    oracle publishes (cswap scopes its window by ``"Fable"``, not ``"Fable 5"``).
+    usage endpoint publishes (it scopes its window by ``"Fable"``, not ``"Fable 5"``).
     """
     cleaned = label.strip().strip("'\"").strip()
     if not cleaned:

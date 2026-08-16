@@ -72,29 +72,46 @@ credentials.
 - **Not a rate-limit bypass.** It selects among accounts you are already
   authorized to use and stops when they are exhausted. It cannot and does not
   raise any limit.
+- **Not a credential manager.** It never mints, refreshes, rotates, or writes a
+  token. It reads the access token an account already holds and nothing else.
+  See [The single-writer rule](#the-single-writer-rule) for why that boundary is
+  load-bearing rather than fastidious.
 
 These are enforced by tests, not merely by intent: the suite asserts that no
-exec plan ever carries a proxy environment variable, and that no library or CLI
-code path invokes an account-mutating command.
+exec plan ever carries a proxy environment variable, and that no module contains
+refresh-token machinery or a rotating dependency in executable code.
 
-## Relationship to `claude-swap`
+## The single-writer rule
 
-[`claude-swap`](https://github.com/realiti4/claude-swap) (MIT) already solved
-the hard, drift-prone parts: polling each account's usage, Keychain access,
-per-model rows, and safe switching. This project **depends on it as a quota
-oracle** and reimplements none of that.
+Anthropic's OAuth **rotates refresh tokens**: redeeming one invalidates it and
+issues a replacement. Only one holder can win that exchange.
 
-**`cswap` is an oracle here, never an executor. That is a contract guarantee,
-not an implementation detail.** Only `cswap list --json` is ever invoked.
-Execution always goes through the vendor CLI under a per-invocation
-`CLAUDE_CONFIG_DIR`, because that is what keeps concurrent runs against
-*different* accounts genuinely parallel — credential swapping serializes them
-behind a lock, which would roughly double the wall-clock of a fan-out workload.
-Do not "simplify" this by adopting `cswap run`.
+So exactly one process on the machine may redeem a refresh token, and that
+process is the vendor's own CLI. **This package is a pure reader.** It reads the
+access token the account already holds out of the Keychain and calls the usage
+endpoint with it. It never performs a token exchange.
 
-The genuine difference in scope: `cswap` switches the **global default
-account**; this switches **per invocation**, across providers, using
-deadline-aware scoring.
+This is not a style preference. An earlier version of this project delegated
+usage reads to [`claude-swap`](https://github.com/realiti4/claude-swap), which
+redeems the refresh token before every read and stores the replacement in its own
+keychain namespace rather than writing it back to the entry the vendor CLI reads.
+The CLI was left holding a revoked token and blanked the login on its next
+launch. Two of this operator's three accounts were destroyed that way before the
+mechanism was understood.
+
+The lesson worth carrying: the old contract said "`cswap` is an oracle; the only
+permitted invocation is `cswap list --json`", and a test enforced exactly that.
+The contract was satisfied and the accounts still died, because the invocation
+was read-only *on disk* and mutating *on the server*. **No argv-shaped assertion
+can see that distinction.** The replacement guard bans the dependency outright
+and bans refresh-token machinery from executable code
+(`tests/test_no_token_rotation.py`).
+
+What we give up: an access token lives about eight hours. If one has expired we
+report the account `unknown` rather than mint a new one, so an account nobody has
+touched in a day goes dark. In practice the gap is narrow -- any account the
+router routes work to is refreshed by that traffic, and headless `claude -p` runs
+refresh exactly like interactive sessions do.
 
 ## Install
 
@@ -126,45 +143,36 @@ From any other language, shell out to `quotapick pick --json` and honor the
 including when every account is exhausted (you get the earliest-reset candidate
 with `fits: false`). Callers should never have to handle a crash.
 
-## Keeping the oracle fresh
+## Keeping history dense (optional)
 
-`cswap` stores a **copy** of each account's credentials. The live config dirs keep
-refreshing their own OAuth tokens; those copies do not. After a few hours a copy
-expires, `cswap` reports `usageStatus: "relogin_required"`, and the router — correctly,
-but silently — stops seeing that account. Observed in practice: two of three accounts
-went dark within roughly seven hours of registration.
-
-The router degrades safely (it warns and skips rather than guessing), but a skipped
-account is an invisible one, so left alone the fleet narrows itself.
+The router reads usage live on every invocation, so nothing needs to run on a
+schedule for it to work. The optional poller exists only to keep `history.jsonl`
+dense, which is what burn-rate learning reads:
 
 ```sh
-./ops/refresh-oracle-credentials.sh --check   # report status, mutate nothing
-./ops/refresh-oracle-credentials.sh           # re-capture every configured account
-./ops/install-launchd.sh                      # do it every 30 min (macOS)
+./ops/install-launchd.sh              # `quotapick status` every 30 min
 ./ops/install-launchd.sh --uninstall
 ```
 
-Re-capturing is idempotent and non-destructive: it copies credentials *into* cswap's
-own registry and never changes which account is globally active, so concurrent spawns
-against different accounts stay isolated.
-
-**This is operator tooling, deliberately outside `src/`.** The package's oracle-only
-guarantee — `cswap list --json` and nothing else — is about the *router* never mutating
-account state while making a routing decision, and `tests/test_portability.py` enforces
-it across the package. Refreshing the oracle's own credential cache is a separate,
-explicitly-invoked maintenance action, so it lives in `ops/` where that rule does not
-and should not reach.
+It is a reader like everything else here: it mints nothing and writes to no
+credential store. Skipping it costs you learning quality, never correctness.
 
 ## Design notes
 
 - **Pure core.** `scoring.py` and `select.py` import only stdlib and the type
   module, take `now_s` as a parameter, and touch no filesystem, clock, or
   environment. A portability test enforces it.
-- **Degrades, never fails.** Per account: a live oracle reading, then a cached
-  statusline reading with confidence decaying by age, then a synthesized
+- **Degrades, never fails.** Per account: a live usage-endpoint reading, then a
+  cached statusline reading with confidence decaying by age, then a synthesized
   estimate shrunk toward the sibling mean. Unknown accounts are never buried —
   shrinking toward the mean rather than scaling by confidence keeps them
   eligible, and an exploration bonus occasionally probes a dark one.
+- **Usage reads are cached for two minutes.** The endpoint rate-limits (HTTP 429
+  under development-rate probing), and the router runs once per LLM call across
+  every account, so an uncached read throttles itself within minutes. When the
+  endpoint is unreachable a cache up to 15 minutes old is served *and labelled as
+  such*; past that the account reports `unknown` rather than route on numbers old
+  enough to be wrong.
 - **`history.jsonl` is load-bearing.** Statusline caches only refresh during
   *interactive* sessions, so an account you drive only headlessly reports
   nothing. Every snapshot the router fetches is appended to its own history,

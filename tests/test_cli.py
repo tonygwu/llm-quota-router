@@ -30,6 +30,8 @@ from quota_router.types import (
     QUOTA_ROUTER_CONTRACT_VERSION,
     REGIME_A,
     REGIME_B,
+    SOURCE_CACHE,
+    SOURCE_LIVE,
     AccountSnapshot,
     Decision,
     ScoreBreakdown,
@@ -73,15 +75,17 @@ def window(
 
 def account(account_id: str, *windows: Window, tier: str = "max_20x", **kwargs) -> AccountSnapshot:
     return AccountSnapshot(
-        id=account_id, windows=windows, tier=tier, source="cswap", **kwargs
+        id=account_id, windows=windows, tier=tier, source=SOURCE_LIVE, **kwargs
     )
 
 
 def real_capture() -> tuple[AccountSnapshot, ...]:
-    """The three accounts exactly as captured from ``cswap list --json``.
+    """The three accounts exactly as captured in the committed usage fixture.
 
-    Percentages are *used* percent; ``sevenDay``/``scoped`` carry the upstream pacing
-    baseline, ``fiveHour`` does not (it is derived from the reset time instead).
+    Percentages are *used* percent; the seven-day and model-scoped windows carry an
+    upstream pacing baseline, the five-hour one does not (it is derived from the reset
+    time instead). Both shapes still occur: the statusline adapter publishes a baseline,
+    the live usage endpoint does not, so the CLI must keep handling each.
     """
 
     def build(account_id, tier, five, five_reset, seven, seven_expected, seven_reset, fable):
@@ -229,7 +233,7 @@ def test_excluded_entries_carry_a_reason(env):
 def test_ranked_rows_report_provenance_and_age(env):
     payload = pick(["pick"], env, snapshots=real_capture())
     row = payload["ranked"][0]
-    assert row["source"] == "cswap"
+    assert row["source"] == SOURCE_LIVE
     assert row["age_s"] == pytest.approx(0.0)
 
 
@@ -289,11 +293,11 @@ def test_exec_removes_inherited_proxy_variables_from_the_child(env):
 
 def test_oracle_failure_still_produces_a_decision(env):
     def explode(**kwargs):
-        raise RuntimeError("cswap exploded")
+        raise RuntimeError("usage read exploded")
 
     payload = pick(["pick"], env, deps=cli.Deps(load_snapshots=explode))
     assert payload["contract_version"] == 1
-    assert any("cswap exploded" in warning for warning in payload["warnings"])
+    assert any("usage read exploded" in warning for warning in payload["warnings"])
     assert payload["degraded"]
 
 
@@ -941,19 +945,19 @@ def test_history_is_replayed_when_the_oracle_goes_away(env):
     pick(["pick"], env, snapshots=real_capture())
 
     def explode(**kwargs):
-        raise RuntimeError("cswap is gone")
+        raise RuntimeError("the usage endpoint is unreachable")
 
     payload = pick(["pick"], env, deps=cli.Deps(load_snapshots=explode), now_s=NOW + 60)
     assert payload["decision"]["account"] is not None
     assert any("replaying the history snapshot" in w for w in payload["warnings"])
-    assert all(row["source"] == "cache" for row in payload["ranked"])
+    assert all(row["source"] == SOURCE_CACHE for row in payload["ranked"])
 
 
 def test_a_stale_cache_is_not_believed(env):
     pick(["pick"], env, snapshots=real_capture())
 
     def explode(**kwargs):
-        raise RuntimeError("cswap is gone")
+        raise RuntimeError("the usage endpoint is unreachable")
 
     payload = pick(
         ["pick"], env, deps=cli.Deps(load_snapshots=explode), now_s=NOW + 86_400
@@ -1157,9 +1161,12 @@ def test_explain_handles_having_no_choice_at_all():
 def test_live_pick_against_the_real_oracle(tmp_path):
     """End to end on the operator's own machine, reading real quota.
 
-    Reads only: the providers layer's single permitted invocation is ``cswap list
-    --json``. State and history are redirected into the test's temp dir so a live run
-    never disturbs the operator's real router state.
+    Reads only, in the strong sense that matters here: the providers layer reads the
+    access token the account already holds out of the Keychain and GETs the vendor
+    usage endpoint with it. It never redeems a refresh token, so a live run cannot
+    rotate -- and therefore cannot revoke -- the operator's real login. State and
+    history are redirected into the test's temp dir so a live run never disturbs the
+    operator's real router state either.
     """
     import os
 

@@ -36,7 +36,7 @@ from quota_router.types import (
     MODEL_CLASS_FABLE,
     REGIME_A,
     REGIME_B,
-    SOURCE_CSWAP,
+    SOURCE_LIVE,
     TIER_MAX_5X,
     TIER_MAX_20X,
     AccountSnapshot,
@@ -73,7 +73,7 @@ def win(
 
 
 def acct(account_id: str, *windows: Window, tier: str = TIER_MAX_20X) -> AccountSnapshot:
-    return AccountSnapshot(id=account_id, windows=windows, tier=tier, source=SOURCE_CSWAP)
+    return AccountSnapshot(id=account_id, windows=windows, tier=tier, source=SOURCE_LIVE)
 
 
 # --------------------------------------------------------------------------------------

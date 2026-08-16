@@ -3,7 +3,7 @@
 Claude Code's statusline hook writes what the vendor told it about the current account's
 limits into ``~/Library/Caches/twin-networking/claude{,-b,-c}-rate-limits.json``. That
 file costs nothing to read and needs no subprocess, which makes it the natural standby
-for when :mod:`~quota_router.providers.claude_cswap` cannot run (binary missing, oracle
+for when :mod:`~quota_router.providers.claude_live usage` cannot run (binary missing, oracle
 timing out, the operator offline).
 
 Verified shape::
@@ -24,7 +24,7 @@ adds later (say a per-model ``"fable"`` bucket) becomes a model-scoped
 safe direction -- an extra window can only constrain routing further, never loosen it.
 
 Because this is a cache, snapshots are stamped ``SOURCE_CACHE`` and their confidence
-decays with age; a caller that has both this and cswap should prefer cswap.
+decays with age; a caller that has both this and live usage should prefer live usage.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from .base import (
     pct_to_fraction,
     read_json_file,
 )
-from .claude_cswap import ClaudeAccountConfig, discover_claude_configs
+from .claude_cli_config import ClaudeAccountConfig, discover_claude_configs
 
 __all__ = [
     "DEFAULT_STATUSLINE_DIR",
@@ -153,7 +153,7 @@ def _resolve_window_shape(
     """Map a ``rate_limits`` key onto ``(window key, length, applies_to)``.
 
     Known account-wide keys normalize onto the shared ``"5h"`` / ``"7d"`` vocabulary so
-    that a statusline snapshot and a cswap snapshot describe the same window with the
+    that a statusline snapshot and a live usage snapshot describe the same window with the
     same name. Anything else is treated as model-scoped: the key minus a recognized
     window suffix is the model class, so ``"fable"`` and ``"fable_seven_day"`` both gate
     on ``fable`` while keeping distinct keys.

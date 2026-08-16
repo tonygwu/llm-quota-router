@@ -37,7 +37,7 @@ from quota_router.types import (
     REGIME_A,
     REGIME_B,
     SOURCE_CACHE,
-    SOURCE_CSWAP,
+    SOURCE_LIVE,
     TIER_MAX_5X,
     TIER_MAX_20X,
     AccountSnapshot,
@@ -85,7 +85,7 @@ def acct(
     tier: str = TIER_MAX_20X,
     confidence: float = 1.0,
     available: bool = True,
-    source: str = SOURCE_CSWAP,
+    source: str = SOURCE_LIVE,
 ) -> AccountSnapshot:
     """Build an :class:`AccountSnapshot` with sane test defaults."""
     return AccountSnapshot(
@@ -516,7 +516,12 @@ def _epoch(iso: str) -> float:
 
 
 def _snapshot_from_fixture(account: dict, account_id: str, tier: str = TIER_MAX_20X):
-    """Mirror of what the oracle layer will do -- local so these tests own no other file."""
+    """Build windows from the captured payload -- local so these tests own no other file.
+
+    A provider that publishes a pacing baseline (the statusline reader) lands exactly
+    here; the live usage endpoint publishes none and lets ``Window`` derive one. Both
+    reach ``select`` as plain windows, which is the only thing this file is testing.
+    """
     observed = _epoch(account["usageFetchedAt"])
     usage = account["usage"]
     windows = [
@@ -550,7 +555,7 @@ def _snapshot_from_fixture(account: dict, account_id: str, tier: str = TIER_MAX_
             )
         )
     return AccountSnapshot(
-        id=account_id, windows=tuple(windows), tier=tier, source=SOURCE_CSWAP, confidence=1.0
+        id=account_id, windows=tuple(windows), tier=tier, source=SOURCE_LIVE, confidence=1.0
     )
 
 
