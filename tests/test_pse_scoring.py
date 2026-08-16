@@ -567,3 +567,35 @@ def test_an_inactive_scoped_window_inherits_the_weekly_reset_instead_of_vanishin
         "timestamp is jitter and must not be tracked separately"
     )
     assert fable.used_fraction == 0.0
+
+
+def test_a_stale_but_complete_reading_beats_a_fresh_blind_one() -> None:
+    """Staleness must lower confidence, not erase the model-scoped window.
+
+    claude_c's access token expired (the account had not been used, so Claude Code
+    had not refreshed it), and its cached usage payload was 40 minutes old against
+    a 15-minute stale bound -- so the adapter refused it, the statusline cache
+    served instead, and the statusline cannot see Fable at all. The blind-account
+    rule then excluded the ONLY account with Fable headroom from every Fable
+    request.
+
+    The refused cache read session 49 / weekly 48 / fable 86, which matched the
+    vendor's own UI exactly. A 40-minute-old complete reading is far better than a
+    fresh one that is blind to the binding constraint, and the router had it the
+    whole time.
+
+    Age still matters -- it just belongs in confidence. Beyond the length of the
+    five-hour window a reading may describe a window that has since reset, which is
+    genuinely wrong rather than merely old, and that is where refusal belongs.
+    """
+    from quota_router.providers.base import FIVE_HOUR_S as _SESSION_LEN
+    from quota_router.providers.claude_oauth import DEFAULT_USAGE_STALE_MAX_S
+
+    assert DEFAULT_USAGE_STALE_MAX_S >= 40 * 60, (
+        "a 40-minute-old complete reading must still be usable; refusing it loses "
+        "the model-scoped window and excludes the account entirely"
+    )
+    assert DEFAULT_USAGE_STALE_MAX_S <= _SESSION_LEN, (
+        "beyond one session window the reading may describe a window that has since "
+        "reset, which is wrong rather than stale"
+    )

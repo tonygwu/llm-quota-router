@@ -1744,7 +1744,13 @@ def test_a_throttled_endpoint_serves_the_recent_cache_and_says_so(tmp_path: Path
 
 
 def test_a_cache_older_than_the_stale_bound_is_refused(tmp_path: Path) -> None:
-    """Past the bound we go dark rather than route on numbers old enough to be wrong."""
+    """Past ONE SESSION WINDOW the reading may describe a window that has reset.
+
+    The bound was 15 minutes, which was the wrong trade: refusing a stale payload
+    does not fall back to nothing, it falls back to the statusline cache, which
+    cannot see model-scoped windows at all. Age belongs in confidence; refusal
+    belongs where the numbers could be about a different window entirely.
+    """
     config = make_config(tmp_path)
     runner = _keychain_with_token((NOW + 86400) * 1000)
 
@@ -1756,7 +1762,7 @@ def test_a_cache_older_than_the_stale_bound_is_refused(tmp_path: Path) -> None:
     )
     snapshot = ClaudeOAuthAdapter(
         runner=runner, opener=throttled, home=tmp_path, configs=[config]
-    ).snapshot(NOW + 901)[0]
+    ).snapshot(NOW + 5 * 3600 + 1)[0]
 
     assert snapshot.available is False
     assert snapshot.windows == ()

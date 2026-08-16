@@ -109,9 +109,19 @@ _UNKNOWN_TIER_CONFIDENCE: Final[float] = 0.6
 DEFAULT_USAGE_TTL_S: Final[float] = 120.0
 
 #: How long a *stale* cached payload may still be served when the endpoint is
-#: unreachable or throttling. Beyond this we report unavailable rather than route
-#: on numbers old enough to be wrong.
-DEFAULT_USAGE_STALE_MAX_S: Final[float] = 900.0
+#: unreachable, throttling, or the access token has expired.
+#:
+#: Bounded by the five-hour window, not by a tighter freshness preference. The
+#: original 15 minutes was the wrong trade in the wrong direction: refusing a stale
+#: reading does not fall back to nothing, it falls back to the *statusline cache*,
+#: which is structurally blind to model-scoped windows. Observed live -- a
+#: 40-minute-old payload reading fable=86% was refused, the blind source served
+#: instead, and the only account with Fable headroom was excluded from every Fable
+#: request. Age belongs in confidence, which already decays.
+#:
+#: One session length is the real boundary: past it the reading may describe a
+#: window that has since reset, which is wrong rather than merely old.
+DEFAULT_USAGE_STALE_MAX_S: Final[float] = 5 * 3600.0
 
 #: Backoff assumed when a 429 arrives without a parseable ``Retry-After``. Never
 #: zero: retrying immediately is what the server just asked us not to do.
