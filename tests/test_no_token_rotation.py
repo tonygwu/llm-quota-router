@@ -193,3 +193,31 @@ def test_a_security_binary_that_never_ran_is_reported_as_such() -> None:
 
     absent = read_access_token("/nonexistent/.claude-x", runner=no_entry)
     assert absent.problem == "no Keychain entry found for this config dir"
+
+
+# --------------------------------------------------------------------------
+# 5. The default account is selected by ABSENCE of CLAUDE_CONFIG_DIR.
+# --------------------------------------------------------------------------
+
+
+def test_the_default_account_exec_plan_must_not_set_claude_config_dir() -> None:
+    """Setting CLAUDE_CONFIG_DIR=~/.claude is not a no-op -- it breaks the account.
+
+    Account A's config lives at ``~/.claude.json``, OUTSIDE ``~/.claude``. Setting
+    the variable makes the CLI look *inside* the directory, find nothing, and
+    scaffold a brand-new empty account -- plus a stray Keychain entry keyed by
+    ``sha256(~/.claude)``. Observed doing exactly that on this machine.
+
+    The default account is therefore selected by the variable's ABSENCE. An exec
+    plan that names it is worse than one that omits it.
+    """
+    from quota_router.config import load_config
+
+    cfg = load_config(env={})
+    account = cfg.accounts.get("claude")
+    assert account is not None
+    env = dict(account.exec_env())
+    assert "CLAUDE_CONFIG_DIR" not in env, (
+        "the default Claude account must be selected by unsetting CLAUDE_CONFIG_DIR, "
+        f"not by pointing it at the config dir; got {env!r}"
+    )

@@ -58,7 +58,11 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
+from .pse import Plan, Stocks, rank_key, wasted_pse
 from .types import (
+    MODEL_CLASS_FABLE,
+    WINDOW_KEY_5H,
+    WINDOW_KEY_7D,
     DEFAULT_PROVIDER_WEIGHTS,
     REGIME_A,
     REGIME_B,
@@ -325,6 +329,79 @@ def decide_regime(
     return REGIME_B
 
 
+
+# ======================================================================================
+# PSE-normalized objective
+# ======================================================================================
+
+#: The five-hour window caps consumption at one PSE per five hours, so this is the
+#: physical ceiling on any sustained rate. Nothing above it is achievable, whatever
+#: the caller passes.
+MAX_SUSTAINED_RATE_PSE_PER_HOUR: Final[float] = 1.0 / 5.0
+
+#: Expected *average* consumption when the caller supplies none, in PSE/hour.
+#: Derived rather than guessed: flat-out is 0.20 PSE/h, and a person working eight
+#: hours out of a 42-hour stretch is at a ~20% duty cycle, so 0.2 x 0.2 = 0.04.
+#:
+#: This is the single most consequential tunable in the scorer. Too high and the
+#: waste term never fires -- every account looks like it will be fully consumed, the
+#: objective degenerates to earliest-deadline-first, and the tool stops doing the one
+#: thing it exists for. An earlier draft of this constant was 2.0, ten times the
+#: physical maximum, which silently disabled waste accounting entirely.
+DEFAULT_RATE_PSE_PER_HOUR: Final[float] = 0.04
+
+#: Any positive waste must dominate the deadline tie-break, so the deadline term is
+#: kept far below the smallest waste worth acting on.
+_DEADLINE_EPS: Final[float] = 1e-6
+
+
+def stocks_from_snapshot(
+    snap: AccountSnapshot, now_s: float, capacity: float, plan: Plan | None = None
+) -> Stocks | None:
+    """Convert one snapshot's windows into absolute PSE stocks.
+
+    Returns ``None`` when the account publishes no weekly window, because without
+    it there is no denominator to normalize against and any number we produced
+    would be invented.
+    """
+    by_key = {w.key: w for w in snap.windows}
+    weekly = by_key.get(WINDOW_KEY_7D)
+    if weekly is None:
+        return None
+    session = by_key.get(WINDOW_KEY_5H)
+    fable = next(
+        (w for w in snap.windows if w.applies_to and MODEL_CLASS_FABLE in w.applies_to), None
+    )
+    return Stocks.from_fractions(
+        session_used=session.used_fraction if session else 0.0,
+        weekly_used=weekly.used_fraction,
+        fable_used=fable.used_fraction if fable else 0.0,
+        tier_scale=capacity,
+        session_reset_s=(session.resets_at_s if session else now_s) or now_s,
+        weekly_reset_s=weekly.resets_at_s or now_s,
+        plan=plan,
+    )
+
+
+def pse_objective(
+    stocks: Stocks, now_s: float, model_class: str | None, rate: float
+) -> tuple[float, float, str]:
+    """Flatten the lexicographic rank key into one float the existing sort can use.
+
+    Returns ``(score, waste, label)``. Waste dominates; when nothing will be wasted
+    the deadline term orders by earliest reset, which is the ordering that keeps the
+    most future options open.
+    """
+    rate = min(rate, MAX_SUSTAINED_RATE_PSE_PER_HOUR)
+    waste, neg_horizon, _avail = rank_key(
+        stocks, now_s=now_s, rate_pse_per_hour=rate, model_class=model_class
+    )
+    if waste > 0.0:
+        return waste, waste, "at risk of expiring"
+    hours = max(1e-6, -neg_horizon / 3600.0)
+    return _DEADLINE_EPS / hours, 0.0, "nothing wasted; earliest deadline first"
+
+
 def account_score(
     snap: AccountSnapshot,
     now_s: float,
@@ -378,10 +455,22 @@ def account_score(
         )
 
     resolved = normalize_regime(regime) or (REGIME_A if slack > 0.0 else REGIME_B)
-    objective = slack if resolved == REGIME_A else remaining
-    label = "min_slack" if resolved == REGIME_A else "min_remaining"
-    score = weight * capacity * objective
     binding = binding_window_key(snap, now_s, model_class)
+
+    # PSE-normalized objective. Capacity is folded in as the tier scale when the
+    # windows are converted to absolute units, so it must NOT be multiplied again
+    # here -- doing so would scale a quantity that is already denominated in
+    # 20x-equivalents and re-introduce the tier bias this change exists to remove.
+    stocks = stocks_from_snapshot(snap, now_s, capacity)
+    if stocks is not None:
+        score, waste_pse, label = pse_objective(
+            stocks, now_s, model_class, DEFAULT_RATE_PSE_PER_HOUR
+        )
+        objective = waste_pse
+    else:
+        objective = slack if resolved == REGIME_A else remaining
+        label = "min_slack (no weekly window; cannot normalize)"
+        score = weight * capacity * objective
 
     return ScoreBreakdown(
         account_id=snap.id,
@@ -395,8 +484,8 @@ def account_score(
         per_window=rows,
         eligible=True,
         reason=(
-            f"regime {resolved}: {weight:.2f} weight x {capacity:.2f} capacity x "
-            f"{objective:+.4f} {label} = {score:+.4f} (binding {binding})"
+            f"{objective:.3f} PSE {label} "
+            f"(binding {binding}, tier scale {capacity:.2f})"
         ),
         min_remaining=remaining,
     )

@@ -762,11 +762,12 @@ def test_status_does_not_record_a_pick(env, tmp_path):
     assert all(record["chosen"] is None for record in records)
 
 
-def test_explain_names_the_binding_window_and_the_regime(env):
+def test_explain_names_the_binding_window_and_the_objective(env):
+    """The regime split is gone; what the operator needs named is the objective."""
     code, out, _ = run(["explain"], env, snapshots=real_capture())
     assert code == cli.EXIT_OK
     assert "binds" in out
-    assert "regime" in out
+    assert "PSE at risk of expiring" in out
 
 
 def test_explain_json_is_the_decision_contract(env):
@@ -1088,7 +1089,7 @@ def test_explain_renders_the_canonical_one_liner():
 
     assert explain_decision(decision, margin=0.15) == (
         "claude_b won: 7d binds (0.44 slack = 0.61 remaining - 0.17 expected over 4.1h "
-        "to reset); beat claude by 48% > 15% margin"
+        "to reset); objective: spend the pool with the most quota about to expire; beat claude by 48% > 15% margin"
     )
 
 
@@ -1129,7 +1130,7 @@ def test_explain_reports_a_scarcity_decision_differently():
     line = explain_decision(decision)
     assert "fable binds" in line
     assert "0.12 remaining" in line
-    assert "nobody has surplus" in line, "regime B is 'no surplus', not 'nobody is behind'"
+    assert "earliest deadline first" in line, "regime B is 'no surplus', not 'nobody is behind'"
 
 
 def test_explain_does_not_quote_a_margin_that_did_not_decide_anything():
@@ -1143,7 +1144,7 @@ def test_explain_does_not_quote_a_margin_that_did_not_decide_anything():
     decision = Decision(chosen="claude", ranked=(winner, runner_up), regime=REGIME_B)
 
     line = explain_decision(decision, margin=-0.03)
-    assert "beat codex on weight x capacity" in line
+    assert "on the tier-normalized objective" in line
     assert "margin" not in line, "the margin was not the test that ran"
 
 

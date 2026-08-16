@@ -45,8 +45,9 @@ ALL_MODULES: tuple[Path, ...] = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 
 #: The modules that must stay pure, and what each is allowed to import from the package.
 PURE_MODULES: dict[str, frozenset[str]] = {
-    "scoring.py": frozenset({"types"}),
-    "select.py": frozenset({"types", "scoring"}),
+    "pse.py": frozenset({"types"}),
+    "scoring.py": frozenset({"types", "pse"}),
+    "select.py": frozenset({"types", "scoring", "pse"}),
 }
 
 

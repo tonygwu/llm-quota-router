@@ -505,7 +505,9 @@ def test_scoring_module_is_pure() -> None:
         elif isinstance(node, ast.ImportFrom):
             roots.add(("." * node.level) + (node.module or "").split(".")[0])
 
-    assert roots <= {"__future__", "math", "collections", "typing", "dataclasses", ".types"}, roots
+    # ``.pse`` is itself a pure module (stdlib + .types only, enforced by
+    # tests/test_portability.py), so depending on it does not compromise purity.
+    assert roots <= {"__future__", "math", "collections", "typing", "dataclasses", ".types", ".pse"}, roots
     forbidden_roots = ("os", "sys", "subprocess", "pathlib", "time", "datetime", "socket")
     for forbidden in forbidden_roots:
         assert forbidden not in roots

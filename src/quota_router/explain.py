@@ -205,8 +205,13 @@ def explain_decision(
     verb = "kept (sticky)" if decision.sticky_applied else "won"
     parts.append(f"{winner.account_id} {verb}: {explain_account(winner, regime=regime)}")
 
-    if regime == REGIME_B:
-        parts.append("regime B: nobody has surplus, spending from who can serve it")
+    # The objective is expiring quota, measured in PSE. The regime split it used to
+    # report is gone: it existed only because the old slack term could go negative,
+    # and every term in the PSE objective is non-negative by construction.
+    if winner.score > 0.0:
+        parts.append("objective: spend the pool with the most quota about to expire")
+    else:
+        parts.append("no account will waste quota at the assumed rate; earliest deadline first")
     if not winner.fits:
         parts.append("WARNING: no candidate fits; this is the earliest to reset")
 
@@ -230,9 +235,10 @@ def explain_decision(
             # capacity. Saying "beat X by -1%" would be true and useless; the margin is
             # not what decided this, so quoting it would misreport the test that ran.
             parts.append(
-                f"beat {runner.account_id} on weight x capacity "
-                f"({winner.score:.3f} vs {runner.score:.3f} score) despite "
-                f"{format_percent(-delta)} less to spend"
+                f"beat {runner.account_id} on the tier-normalized objective "
+                f"({winner.score:.3f} vs {runner.score:.3f} PSE at risk) despite "
+                f"{format_percent(-delta)} less by raw percentage -- percentages across "
+                f"tiers and windows are not comparable, PSE are"
             )
 
     line = "; ".join(parts)
@@ -318,11 +324,7 @@ def explain_verbose(
     """Full rendering: headline, ranked table, per-window arithmetic, exclusions."""
     blocks: list[str] = [explain_decision(decision, margin=margin)]
 
-    if decision.regime:
-        blocks.append(
-            f"regime {decision.regime} "
-            f"({'surplus: spend what would expire' if decision.regime == REGIME_A else 'scarcity: spend what can serve'})"
-        )
+    blocks.append("objective: PSE at risk of expiring before reset (tier-normalized)")
 
     table = format_ranked_table(decision)
     if table:

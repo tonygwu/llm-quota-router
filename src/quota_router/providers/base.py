@@ -34,6 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ..types import WINDOW_KEY_5H as _WINDOW_KEY_5H
+from ..types import WINDOW_KEY_7D as _WINDOW_KEY_7D
+
 from ..types import AccountSnapshot, Window
 
 __all__ = [
@@ -67,9 +70,9 @@ __all__ = [
 # ======================================================================================
 
 #: Account-wide rolling 5-hour window.
-WINDOW_KEY_5H: str = "5h"
+WINDOW_KEY_5H: str = _WINDOW_KEY_5H
 #: Account-wide rolling 7-day window.
-WINDOW_KEY_7D: str = "7d"
+WINDOW_KEY_7D: str = _WINDOW_KEY_7D
 
 FIVE_HOUR_S: float = 5 * 3600.0
 SEVEN_DAY_S: float = 7 * 86400.0

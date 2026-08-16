@@ -284,10 +284,25 @@ class AccountConfig:
         method cannot be the thing that leaks a proxy variable.
         """
         out: dict[str, str] = {}
-        if self.config_dir:
+        if self.config_dir and not self.is_default_config_dir:
             out[self.config_dir_env_var] = self.config_dir
         out.update(self.env)
         return out
+
+    @property
+    def is_default_config_dir(self) -> bool:
+        """True when this account is the CLI's own default, selected by absence.
+
+        Claude Code keeps the default account's config at ``~/.claude.json``,
+        *outside* ``~/.claude``. Pointing CLAUDE_CONFIG_DIR at the directory makes it
+        look inside, find nothing, and scaffold a fresh empty account -- so naming
+        the default dir in an exec plan actively breaks the account it selects.
+        Selecting it means leaving the variable unset.
+        """
+        if self.provider != "claude":
+            return False
+        expanded = os.path.expanduser(self.config_dir or "")
+        return bool(expanded) and expanded == os.path.join(os.path.expanduser("~"), ".claude")
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping (plain types only)."""

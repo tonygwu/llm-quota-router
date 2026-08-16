@@ -16,40 +16,49 @@ throw away the perishable half.
 
 ## The rule
 
+Percentages are the only thing the vendor publishes, and they are **not comparable
+to each other**: 89% of a five-hour budget and 23% of a weekly budget have
+different denominators, and a 20x account's percentage point is four times a 5x
+account's. So the first step is always to convert into one absolute unit.
+
+The unit is the **PSE**: one Max-20x five-hour budget.
+
 ```
-slack(account, window) = remaining_fraction - expected_demand_before_reset
-    expected_demand    = burn_rate * time_to_reset
-    burn_rate prior    = 1 / window_length          (uniform pacing prior)
+session capacity = 1.0                x tier_scale     (20x -> 1.0, 5x -> 0.25)
+weekly capacity  = weekly_to_session  x tier_scale     (k ~ 12, calibrated)
+fable capacity   = fable_fraction     x weekly         (0.5, documented)
 
-min_slack(account)  = min over applicable windows of slack
-capacity(account)   = tier capacity ratio
+fable_remaining  = min(fable sub-cap remaining, weekly remaining)
 
-REGIME A - any candidate has min_slack > 0:
-    score = provider_weight * capacity * min_slack      -> argmax
-REGIME B - every candidate has min_slack <= 0:
-    score = provider_weight * capacity * min_remaining  -> argmax
+absorbable = min( what the 5h window supplies over the horizon,
+                  your working rate x the horizon )
+
+waste      = max(0, weekly_remaining - absorbable)      ->  argmax
 ```
 
-**When anyone has surplus, spend from the pool with the most quota at risk of
-expiring unused. When nobody does, spend from the pool that can actually serve
-the call.**
+**Spend from the pool carrying the most quota that will expire unused.** When no
+account will waste anything, drain the one whose window resets soonest.
 
-Three details that are easy to get wrong:
+Four details that are easy to get wrong:
 
-- **`min` across windows.** A five-hour window throttles access to weekly
-  surplus, so an account is only as good as its tightest *applicable* window.
-  Windows scoped to a model class (a Fable-specific weekly allowance, or
-  Codex's per-model buckets) are skipped when you ask for a different class —
-  which is the whole mechanism by which model choice gates routing.
-- **Two regimes, not one formula.** Multiplying a *negative* slack by a
-  capacity ratio moves it toward zero, which makes a smaller account look
-  *better* under scarcity. Surplus and deficit are different objectives:
-  minimize waste versus maximize served requests.
-- **The hysteresis margin applies to unscaled slack.** An additive epsilon on a
-  capacity-scaled score is four times stricter for a quarter-size account —
-  an accidental bias, not a policy.
+- **Fable is a constraint, not a pile.** Fable work draws down its own sub-cap
+  *and* the shared weekly pool, so its true availability is the minimum of the
+  two. Modelling it as an independent bucket overstates every account whose
+  weekly pool is nearly dry.
+- **The five-hour window is a flow, not a stock.** It refills every five hours,
+  so a nearly-full window about to reset is not "about to be wasted" -- it is
+  about to be replaced. Valuing it as a stock makes the router chase windows it
+  cannot fill.
+- **Absorbable is capped by your own rate.** The five-hour window caps
+  consumption at one PSE per five hours, so 0.20 PSE/hour is the physical
+  ceiling on any sustained rate. Anything above that is not a workload, it is an
+  arithmetic error.
+- **No regime switch.** An earlier version needed one because its objective could
+  go negative, and multiplying a negative by a tier capacity ratio inverts the
+  ordering -- making a smaller account look *better* under scarcity. Every term
+  here is non-negative by construction, so that failure mode cannot arise.
 
-Use-it-or-lose-it policies oscillate, so a switch requires clearing a margin
+Use-it-or-lose-it policies oscillate, so a switch still requires clearing a margin
 *and* a minimum dwell measured in **calls, not seconds** (bursts of invocations
 land inside the same second).
 

@@ -91,6 +91,8 @@ __all__ = [
     "TIER_UNKNOWN",
     "TIER_CAPACITY",
     "UNKNOWN_TIER_CAPACITY",
+    "WINDOW_KEY_5H",
+    "WINDOW_KEY_7D",
     "normalize_tier",
     "capacity_for_tier",
     # model classes
@@ -278,6 +280,12 @@ TIER_UNKNOWN: Final[str] = "unknown"
 #: an unknown tier must neither flatter nor punish an account, and the resulting
 #: uncertainty is expressed through :attr:`AccountSnapshot.confidence` instead.
 UNKNOWN_TIER_CAPACITY: Final[float] = 1.0
+
+#: Canonical window keys. These live here rather than in the providers layer because
+#: the pure scoring core has to name them to normalize units, and the pure core may
+#: not import the providers layer.
+WINDOW_KEY_5H: Final[str] = "5h"
+WINDOW_KEY_7D: Final[str] = "7d"
 
 #: Tier -> capacity ratio. A window fraction is *relative to that account's own budget*,
 #: so a 0.4 slack on a max_5x account is worth a quarter of a 0.4 slack on a max_20x one.
