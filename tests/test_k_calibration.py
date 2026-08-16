@@ -312,3 +312,26 @@ def test_a_fourth_claude_account_is_canonical_not_a_fallback() -> None:
     assert account.config_dir and account.config_dir.endswith(".claude-d")
     # A slot account, unlike the default, IS selected by naming its directory.
     assert account.exec_env().get("CLAUDE_CONFIG_DIR", "").endswith(".claude-d")
+
+
+def test_the_adoption_bar_is_reachable_within_a_single_window() -> None:
+    """A gate that demands more weekly burn than a window can produce never fires.
+
+    One full five-hour window is 100pp of session, which is only 100/k pp of
+    weekly -- about 17pp at k=6, and just 8pp at k=12. An absolute threshold of
+    20pp weekly is therefore unreachable at ANY plausible k without spanning a
+    reset, which is the contamination a clean measurement is trying to avoid.
+
+    Precision is what actually matters, and it is bounded by the 1pp quantum on
+    the denominator: ~14% relative at 7pp, ~6% at a full window. So the bar is
+    relative interval width, which a single clean window can clear.
+    """
+    from quota_router.history import adoption_ready
+
+    # 7pp of weekly: real, but the interval is still ~14% wide.
+    assert adoption_ready(k=6.4, low=5.97, high=6.89, max_gap_s=400) is False
+    # A full window's worth: ~6% wide, and reachable without spanning a reset.
+    assert adoption_ready(k=6.4, low=6.21, high=6.60, max_gap_s=400) is True
+    # Precise but sampled too sparsely to trust the increments.
+    assert adoption_ready(k=6.4, low=6.21, high=6.60, max_gap_s=3600) is False
+    assert adoption_ready(k=None, low=None, high=None, max_gap_s=60) is False

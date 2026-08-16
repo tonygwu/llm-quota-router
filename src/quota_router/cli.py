@@ -1491,17 +1491,15 @@ def _cmd_calibrate(
             stdout.write(f"  {account_id}: not usable yet -- {est.reason}\n")
             continue
         width = est.high - est.low
-        # Three conditions, not one. A narrow interval is necessary but nowhere near
-        # sufficient: seven hours of a log that also captured the operator's own
-        # testing produced tight intervals around values that were plainly wrong
-        # (0.1 and 2.6 against a hand-measured ~12). Demand a real observation span
-        # and a substantial share of a weekly cycle before recommending a swap.
         span_h = est.span_s / 3600.0
-        enough = width < 4.0 and est.weekly_consumed_pp >= 20.0 and span_h >= 24.0
+        enough = history_mod.adoption_ready(
+            k=est.k, low=est.low, high=est.high, max_gap_s=est.max_gap_s
+        )
         verdict = (
             "ADOPT"
             if enough
-            else "keep default (needs >=24h of clean sampling and >=20pp of weekly burn)"
+            else f"keep default (interval {100 * width / est.k:.0f}% wide, want "
+            f"<={100 * history_mod.ADOPTION_RELATIVE_WIDTH:.0f}%)"
         )
         stdout.write(
             f"  {account_id}: k={est.k:.1f} [{est.low:.1f}-{est.high:.1f}] "

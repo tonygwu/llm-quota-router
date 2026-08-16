@@ -869,3 +869,33 @@ def estimate_weekly_to_session(
             reason=reason,
         )
     return results
+
+
+#: Interval width, relative to the estimate, at which k is worth adopting. Chosen
+#: against what a single clean window can actually deliver: the 1pp quantum on the
+#: denominator gives ~14% at 7pp of weekly burn and ~6% at a full window, so 10%
+#: is clearable without spanning a five-hour reset.
+ADOPTION_RELATIVE_WIDTH: Final[float] = 0.10
+
+#: Increments are lost between the last sample before a reset and the reset itself,
+#: so sampling density bounds that one-way loss. At this gap the worst case is ~5%
+#: of a window.
+ADOPTION_MAX_GAP_S: Final[float] = 900.0
+
+
+def adoption_ready(
+    *, k: float | None, low: float | None, high: float | None, max_gap_s: float
+) -> bool:
+    """Is this estimate precise enough, and sampled densely enough, to adopt?
+
+    Gates on RELATIVE precision rather than an absolute amount of observed burn.
+    An absolute weekly threshold cannot work: one five-hour window can only move
+    the weekly bar by 100/k pp -- about 17pp at k=6 and 8pp at k=12 -- so any bar
+    above that is unreachable without spanning a reset, and spanning a reset is
+    precisely what a clean measurement avoids.
+    """
+    if k is None or low is None or high is None or k <= 0:
+        return False
+    if max_gap_s > ADOPTION_MAX_GAP_S:
+        return False
+    return (high - low) / k <= ADOPTION_RELATIVE_WIDTH
