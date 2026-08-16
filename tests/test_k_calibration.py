@@ -335,3 +335,67 @@ def test_the_adoption_bar_is_reachable_within_a_single_window() -> None:
     # Precise but sampled too sparsely to trust the increments.
     assert adoption_ready(k=6.2, low=5.78, high=6.68, max_gap_s=3600) is False
     assert adoption_ready(k=None, low=None, high=None, max_gap_s=60) is False
+
+
+def test_both_sources_contribute_instead_of_the_weaker_being_discarded() -> None:
+    """Same-source SEGMENTS, not a single dominant source.
+
+    Comparing readings across sources manufactures consumption, because the
+    statusline cache lags the live endpoint by a constant offset -- so the first fix
+    was to compare only same-source pairs, implemented as "pick the source with the
+    most readings and drop the rest".
+
+    That starved claude_c. Its access token expires whenever the account goes
+    unused, so its readings alternate between live and cache, and discarding the
+    minority source left 60-90 minute holes in what looked like a dense series. The
+    density guard then refused every estimate, and the account swung between k=4.0
+    and k=9.4 depending on the window.
+
+    The offset only invalidates CROSS-source comparisons. Each source's own series
+    is internally consistent, so both can contribute -- comparing live to the
+    previous live reading, and cache to the previous cache reading, never one to the
+    other.
+    """
+    log = []
+    session = weekly = 0.0
+    k = 8.0
+    burn = 0.02
+    for i in range(120):
+        # Sources alternate every sample. Under the old rule half the data was
+        # thrown away and the survivors were 30 minutes apart.
+        live = i % 2 == 0
+        offset = 0.0 if live else -0.03  # the cache lags by a constant
+        log.append(
+            {
+                "t": i * 900.0,
+                "accounts": [
+                    {
+                        "id": "claude_c",
+                        "source": "live" if live else "cache",
+                        "windows": [
+                            {"key": "5h", "used_fraction": max(0.0, session + offset)},
+                            {"key": "7d", "used_fraction": max(0.0, weekly + offset / k)},
+                        ],
+                    }
+                ],
+            }
+        )
+        session += burn
+        weekly += burn / k
+
+    est = estimate_weekly_to_session(log)["claude_c"]
+    assert est.k is not None, est.reason
+    assert est.k == pytest.approx(k, rel=0.15), est.k
+
+    # The accuracy was never the problem -- one source alone still recovers k. What
+    # discarding half the readings costs is DENSITY: the survivors are twice as far
+    # apart, and the adoption guard refuses anything sampled more sparsely than
+    # 15 minutes. Samples arrive every 900s; using both sources must see that,
+    # not the 1800s spacing of one.
+    assert est.max_gap_s == pytest.approx(900.0, abs=1.0), (
+        f"both sources should be used, giving 900s spacing; got {est.max_gap_s}s "
+        f"which is the spacing of a single source"
+    )
+    assert est.samples > 100, (
+        f"discarding a source halves the usable pairs; got {est.samples}"
+    )

@@ -704,14 +704,25 @@ class WeeklyToSessionEstimate:
 
 def _account_series(
     records: Iterable[Mapping[str, Any]], account: str
-) -> list[tuple[float, float | None, float | None]]:
-    """Timestamped (session, weekly) readings for one account, from ONE source.
+) -> dict[str, list[tuple[float, float | None, float | None]]]:
+    """Timestamped (session, weekly) readings for one account, grouped BY SOURCE.
 
-    Sources disagree -- the statusline cache lags the live endpoint -- so a log that
-    alternates between them makes the bars oscillate. Summing increases across a flip
-    counts the same difference again on every alternation, manufacturing consumption
-    out of nothing. Only readings from the same source are comparable, so the richest
-    single source wins and the rest are discarded.
+    Sources disagree by a constant offset -- the statusline cache lags the live
+    endpoint -- so comparing a reading from one against a reading from the other
+    manufactures consumption out of the offset. Only same-source comparisons are
+    valid.
+
+    Grouping rather than choosing is what matters here. An earlier version picked
+    the source with the most readings and discarded the rest, which was correct
+    about the offset and wrong about the cost: an account whose token expires when
+    idle alternates between sources, so half its readings were thrown away and the
+    survivors were twice as far apart. The estimates stayed accurate but the density
+    guard refused all of them, and the account swung between k=4.0 and k=9.4
+    depending on the window.
+
+    Each source's own series is internally consistent, so both contribute -- live
+    compared to the previous live reading, cache to the previous cache reading,
+    never one to the other.
     """
     by_source: dict[str, list[tuple[float, float | None, float | None]]] = {}
     for record in records:
@@ -730,19 +741,19 @@ def _account_series(
             weekly = (windows.get("7d") or {}).get("used_fraction")
             source = str(snapshot.get("source") or "unknown")
             by_source.setdefault(source, []).append((float(t), session, weekly))
-    if not by_source:
-        return []
-    # Prefer the source with the most readings; ties break toward the live endpoint,
-    # which is the only one that observes model-scoped windows.
-    best = max(by_source, key=lambda s: (len(by_source[s]), s == "live"))
-    out = by_source[best]
-    out.sort(key=lambda row: row[0])
-    return out
+    for rows in by_source.values():
+        rows.sort(key=lambda row: row[0])
+    return by_source
 
 
-def _median_step(series: Sequence[tuple[float, Any, Any]]) -> float:
-    """Typical gap between samples, used to bound the one-way sampling loss."""
-    gaps = sorted(b[0] - a[0] for a, b in zip(series, series[1:]))
+def _median_step(times: Sequence[float]) -> float:
+    """Typical gap between samples, used to bound the one-way sampling loss.
+
+    Taken across ALL sources' readings, because that is the cadence at which the
+    bars are actually observed -- which is what determines how much burn can accrue
+    unseen before a reset.
+    """
+    gaps = sorted(b - a for a, b in zip(times, times[1:]))
     return gaps[len(gaps) // 2] if gaps else 0.0
 
 
@@ -774,18 +785,35 @@ def estimate_weekly_to_session(
 
     results: dict[str, WeeklyToSessionEstimate] = {}
     for account in accounts:
-        series = _account_series(materialized, account)
+        by_source = _account_series(materialized, account)
         session_pp = weekly_pp = 0.0
         resets = 0
         max_gap = 0.0
         pairs = 0
-        session_runs = 1
-        weekly_runs = 1
+        # Each source is its own contiguous run: the first pair inside a source has
+        # no predecessor to telescope against, so every source contributes one
+        # endpoint's worth of quantization error.
+        session_runs = max(1, len(by_source))
+        weekly_runs = max(1, len(by_source))
 
         gap_limit = MAX_GAP_FRACTION_OF_WINDOW * FIVE_HOUR_S
         dropped = 0
-        total_pairs = max(0, len(series) - 1)
-        for (t0, s0, w0), (t1, s1, w1) in zip(series, series[1:]):
+        total_pairs = sum(max(0, len(rows) - 1) for rows in by_source.values())
+        all_times = sorted(row[0] for rows in by_source.values() for row in rows)
+        # Observation density is a property of the readings, not of any one source.
+        # The guard asks how long the bar could have moved UNSEEN -- and a reading
+        # from either source is a sighting. Measuring within a source instead
+        # reports the spacing of that source alone, which on an account whose
+        # readings alternate is double the real cadence and refuses estimates that
+        # are perfectly well sampled.
+        #
+        # The per-pair `gap_limit` below stays within-source, because that is the
+        # interval over which THAT series could have lost increments.
+        max_gap = max((b - a for a, b in zip(all_times, all_times[1:])), default=0.0)
+        pairs_iter = [
+            (a, b) for rows in by_source.values() for a, b in zip(rows, rows[1:])
+        ]
+        for (t0, s0, w0), (t1, s1, w1) in pairs_iter:
             gap = t1 - t0
             if gap > gap_limit:
                 # Not evidence: we cannot know what happened inside the gap. Excluding
@@ -795,7 +823,6 @@ def estimate_weekly_to_session(
                 session_runs += 1
                 weekly_runs += 1
                 continue
-            max_gap = max(max_gap, gap)
             if s0 is not None and s1 is not None:
                 if s1 >= s0:
                     session_pp += (s1 - s0) * 100.0
@@ -848,7 +875,7 @@ def estimate_weekly_to_session(
             # shorter interval -- so it belongs in the interval rather than being
             # averaged away. Without it a 15-minute cadence reports k ~11.4 against a
             # true 12.0 and the interval confidently excludes the right answer.
-            typical_step = _median_step(series)
+            typical_step = _median_step(all_times)
             if typical_step > 0.0:
                 lost = min(0.5, typical_step / FIVE_HOUR_S)
                 high = high / max(1e-9, 1.0 - lost)
@@ -863,7 +890,7 @@ def estimate_weekly_to_session(
             samples=pairs,
             session_resets_seen=resets,
             max_gap_s=max_gap,
-            span_s=(series[-1][0] - series[0][0]) if len(series) > 1 else 0.0,
+            span_s=(all_times[-1] - all_times[0]) if len(all_times) > 1 else 0.0,
             dropped_pairs=dropped,
             undersampled=undersampled,
             reason=reason,
