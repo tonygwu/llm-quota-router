@@ -233,3 +233,170 @@ def test_waste_is_bounded_by_your_rate_when_the_horizon_is_long_enough_to_refill
 def test_nothing_is_wasted_when_the_deadline_is_far_enough_away() -> None:
     s = stocks(session_used=0.0, weekly_used=0.5, weekly_reset_in=6 * DAY)
     assert wasted_pse(s, now_s=NOW, rate_pse_per_hour=2.0) == pytest.approx(0.0)
+
+
+# ======================================================================================
+# Full-path integration: the shape that real accounts actually have.
+#
+# WHY THIS SECTION EXISTS
+# -----------------------
+# Everything above tests ``pse.py`` in isolation. That left a hole: nothing ran the
+# *whole* scoring path -- account_score / rank -- against a snapshot carrying a
+# model-scoped Fable window, because no fixture in the suite had one.
+#
+# A missing ``MODEL_CLASS_FABLE`` import in scoring.py slipped through 390 passing
+# tests because of exactly that. The name is only evaluated when a snapshot has a
+# window with a truthy ``applies_to``, so a suite full of 5h/7d-only fixtures never
+# reaches it. It would have shipped and fired on the first live account.
+# ======================================================================================
+
+from quota_router.scoring import account_score, rank, stocks_from_snapshot  # noqa: E402
+from quota_router.types import (  # noqa: E402
+    SOURCE_LIVE,
+    TIER_MAX_5X,
+    TIER_MAX_20X,
+    AccountSnapshot,
+    Window,
+)
+
+FIVE_HOUR_S = 5 * 3600.0
+SEVEN_DAY_S = 7 * 24 * 3600.0
+
+
+def _w(key: str, used: float, *, length_s: float, ttr_s: float, applies_to=None) -> Window:
+    return Window(
+        key=key,
+        used_fraction=used,
+        length_s=length_s,
+        resets_at_s=NOW + ttr_s,
+        observed_at_s=NOW,
+        applies_to=applies_to,
+    )
+
+
+def realistic(
+    account_id: str,
+    *,
+    session_used: float,
+    weekly_used: float,
+    fable_used: float,
+    weekly_ttr_h: float,
+    session_ttr_h: float = 2.0,
+    tier: str = TIER_MAX_20X,
+) -> AccountSnapshot:
+    """A snapshot shaped like what the live usage endpoint actually returns.
+
+    Three windows, and critically the third is **model-scoped** -- the shape the
+    rest of the suite was missing.
+    """
+    return AccountSnapshot(
+        id=account_id,
+        windows=(
+            _w("5h", session_used, length_s=FIVE_HOUR_S, ttr_s=session_ttr_h * HOUR),
+            _w("7d", weekly_used, length_s=SEVEN_DAY_S, ttr_s=weekly_ttr_h * HOUR),
+            _w(
+                "fable",
+                fable_used,
+                length_s=SEVEN_DAY_S,
+                ttr_s=weekly_ttr_h * HOUR,
+                applies_to=frozenset({"fable"}),
+            ),
+        ),
+        tier=tier,
+        source=SOURCE_LIVE,
+    )
+
+
+def test_the_full_path_scores_a_snapshot_carrying_a_model_scoped_window() -> None:
+    """The regression the suite was missing: score a snapshot WITH a Fable window.
+
+    If ``MODEL_CLASS_FABLE`` is ever unimported from scoring.py again, this raises
+    NameError rather than passing quietly.
+    """
+    snap = realistic("claude", session_used=0.11, weekly_used=0.77, fable_used=0.96, weekly_ttr_h=42.0)
+
+    stocks = stocks_from_snapshot(snap, NOW, 1.0)
+    assert stocks is not None, "a snapshot with a 7d window must normalize"
+
+    for model_class in (None, "opus", "fable"):
+        row = account_score(snap, NOW, None, model_class)
+        assert row.eligible, f"{model_class}: {row.reason}"
+
+
+def test_the_full_path_uses_pse_and_does_not_silently_fall_back() -> None:
+    """Pin that the normalized objective is what actually ran.
+
+    The scorer keeps a fallback for snapshots with no weekly window. A silent
+    fallback would still produce a plausible ranking, so the reason string is
+    asserted rather than merely the ordering.
+    """
+    snap = realistic("claude", session_used=0.11, weekly_used=0.77, fable_used=0.96, weekly_ttr_h=42.0)
+    row = account_score(snap, NOW, None, "opus")
+    assert "PSE" in row.reason, row.reason
+    assert "cannot normalize" not in row.reason, row.reason
+
+
+def test_the_fable_window_constrains_a_fable_request_but_not_an_opus_one() -> None:
+    """The model-scoped window must gate Fable work and be invisible to everything else."""
+    snap = realistic("claude", session_used=0.0, weekly_used=0.20, fable_used=0.99, weekly_ttr_h=42.0)
+    stocks = stocks_from_snapshot(snap, NOW, 1.0)
+    assert stocks is not None
+
+    fable_avail = available_pse(
+        stocks, now_s=NOW, horizon_s=5 * HOUR, rate_pse_per_hour=0.2, model_class="fable"
+    )
+    opus_avail = available_pse(
+        stocks, now_s=NOW, horizon_s=5 * HOUR, rate_pse_per_hour=0.2, model_class="opus"
+    )
+    assert fable_avail < opus_avail, (
+        "a 99%-consumed Fable sub-cap must restrict Fable work while leaving "
+        f"opus work alone; got fable={fable_avail} opus={opus_avail}"
+    )
+
+
+def test_ranking_across_realistic_accounts_prefers_the_soonest_deadline_with_quota_at_risk() -> None:
+    """End-to-end over three accounts shaped like the operator's real fleet."""
+    fleet = [
+        realistic("claude", session_used=0.11, weekly_used=0.77, fable_used=0.96, weekly_ttr_h=42.0),
+        realistic("claude_b", session_used=0.00, weekly_used=0.74, fable_used=0.95, weekly_ttr_h=75.0),
+        realistic(
+            "claude_c", session_used=0.00, weekly_used=0.43, fable_used=0.78,
+            weekly_ttr_h=140.0, tier=TIER_MAX_5X,
+        ),
+    ]
+    ranked = rank(fleet, NOW, None, "opus")
+    assert [r.account_id for r in ranked][0] == "claude", (
+        "the account whose weekly pool expires soonest with quota still on it should "
+        f"win; got {[(r.account_id, round(r.score, 4)) for r in ranked]}"
+    )
+
+
+def test_a_five_x_account_cannot_serve_more_than_a_quarter_window_of_work() -> None:
+    """Throughput, not quota: a max_5x window holds 0.25 PSE however full the weekly is.
+
+    This is why a fixed job-size gate would exclude the 5x account from every heavy
+    interactive launch -- worth pinning, because it looks like a bug when it happens.
+    """
+    rich_but_small = realistic(
+        "claude_c", session_used=0.0, weekly_used=0.10, fable_used=0.10,
+        weekly_ttr_h=140.0, session_ttr_h=5.0, tier=TIER_MAX_5X,
+    )
+    stocks = stocks_from_snapshot(rich_but_small, NOW, 0.25)
+    assert stocks is not None
+    # Horizon ends exactly when the window does, so no refill is counted. Over a
+    # LONGER horizon the answer is legitimately larger -- the window is a flow, not
+    # a stock -- which is why the horizon and the window boundary must line up to
+    # measure "one window's worth".
+    got = available_pse(
+        stocks, now_s=NOW, horizon_s=5 * HOUR, rate_pse_per_hour=1.0, model_class=None
+    )
+    assert got == pytest.approx(0.25), (
+        f"a 5x window holds 0.25 PSE however full the weekly is, got {got}"
+    )
+
+    # And confirm the flow behaviour explicitly, so the bound above is not mistaken
+    # for a hard ceiling on what the account can ever supply.
+    over_two_windows = available_pse(
+        stocks, now_s=NOW, horizon_s=10 * HOUR, rate_pse_per_hour=1.0, model_class=None
+    )
+    assert over_two_windows == pytest.approx(0.50), over_two_windows
