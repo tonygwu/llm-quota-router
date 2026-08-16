@@ -539,7 +539,12 @@ def test_an_inactive_scoped_window_inherits_the_weekly_reset_instead_of_vanishin
              "scope": None},
             {"kind": "weekly_all", "percent": 0, "resets_at": "2026-08-18T18:00:00+00:00",
              "scope": None},
-            {"kind": "weekly_scoped", "percent": 0, "resets_at": None, "is_active": False,
+            # A row that DOES carry its own timestamp, differing by a second. Live
+            # payloads disagree between weekly_all and weekly_scoped by microseconds
+            # to ~1s -- serialization jitter around the same instant, not a real
+            # separate deadline.
+            {"kind": "weekly_scoped", "percent": 0,
+             "resets_at": "2026-08-18T17:59:59+00:00", "is_active": False,
              "scope": {"model": {"display_name": "Fable"}}},
         ]
     }
@@ -550,6 +555,7 @@ def test_an_inactive_scoped_window_inherits_the_weekly_reset_instead_of_vanishin
     fable = next(w for w in windows if w.key == "fable")
     weekly = next(w for w in windows if w.key == "7d")
     assert fable.resets_at_s == weekly.resets_at_s, (
-        "an inactive scoped window resets with the weekly window it is scoped inside"
+        "a scoped weekly window resets WITH the weekly window it sits inside; its own "
+        "timestamp is jitter and must not be tracked separately"
     )
     assert fable.used_fraction == 0.0

@@ -373,10 +373,16 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         return [], ["usage payload has no limits[] array"]
 
-    # A scoped window that has not started yet reports no reset time. It resets with
-    # the weekly window it is scoped inside, so that timestamp is knowable -- and
-    # dropping the window instead removes the constraint that proves the account can
-    # serve that model class at all.
+    # A scoped weekly window resets WITH the weekly window it sits inside -- there is
+    # no separate Fable deadline to track. The payload nominally carries one, but it
+    # disagrees with weekly_all by microseconds to about a second across live accounts,
+    # which is serialization jitter around a single instant, and on a brand-new account
+    # it is null entirely because the window has not started.
+    #
+    # Tracking it separately bought nothing and cost twice: the null dropped the window
+    # outright (excluding the account with the MOST headroom for that model class), and
+    # the jitter could make the scoped and weekly windows sort differently for no real
+    # reason. So weekly_all is authoritative for both.
     weekly_reset_s: float | None = None
     for entry in rows:
         if isinstance(entry, Mapping) and entry.get("kind") == "weekly_all":
@@ -404,9 +410,10 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
             continue
         if key in taken:
             key = f"{key}#{index + 1}"
-        resets_at_s = parse_timestamp(entry.get("resets_at"))
-        if resets_at_s is None and kind == _SCOPED_KIND:
-            resets_at_s = weekly_reset_s
+        if kind == _SCOPED_KIND:
+            resets_at_s = weekly_reset_s or parse_timestamp(entry.get("resets_at"))
+        else:
+            resets_at_s = parse_timestamp(entry.get("resets_at"))
         window = make_window(
             key=key,
             used_fraction=pct_to_fraction(entry.get("percent")),
