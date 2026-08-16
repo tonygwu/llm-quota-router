@@ -124,26 +124,67 @@ refresh exactly like interactive sessions do.
 
 ## Install
 
+As a **command-line tool** (gives you `quotapick` on PATH, isolated venv, not
+importable elsewhere):
+
 ```sh
-uv tool install llm-quota-router     # or: pipx install llm-quota-router
+uv tool install git+ssh://git@github.com/tonygwu/llm-quota-router
 ```
+
+As a **library dependency** of another project (this is what you want if you are
+going to `import quota_router`):
+
+```sh
+uv add git+ssh://git@github.com/tonygwu/llm-quota-router
+# or: uv pip install git+ssh://git@github.com/tonygwu/llm-quota-router
+```
+
+Those are different things. `uv tool install` deliberately isolates the package,
+so it will *not* satisfy an `import` in your project.
+
+Zero runtime dependencies, Python >= 3.12.
 
 ## Use
 
+From the command line:
+
 ```sh
-quotapick pick --model fable --json      # decision + full ranking as JSON
-quotapick explain --model fable          # why that account won
 quotapick status                         # every pool at a glance
-quotapick exec --model opus -- claude -p "..."   # pick, then run
+quotapick explain --model fable          # why that account won
+quotapick pick --model fable --json      # decision + full ranking as JSON
+quotapick exec --only claude_b -- claude -p "..."   # pick, then run
 ```
 
 From Python:
 
 ```python
+import os, subprocess
 from quota_router import select_account
-decision = select_account(model="fable")
+
+decision = select_account(model="fable", only=["claude", "claude_b", "claude_c"])
+
 env = {**os.environ, **decision.exec_env}
+subprocess.run(["claude", "-p", prompt], env=env)
 ```
+
+Three things that will bite you if missed:
+
+- **`exec_env` is often empty, and that is correct.** The default Claude account
+  is selected by the *absence* of `CLAUDE_CONFIG_DIR` — its config lives at
+  `~/.claude.json`, outside `~/.claude`, so setting the variable makes the CLI
+  scaffold a brand-new empty account. Merge the overlay; never require it to be
+  non-empty.
+- **Mapping provider to binary is your job.** `exec_env` is an environment
+  overlay, not a command. The router says *which account*; it does not know
+  whether you meant `claude -p` or `codex exec`, and it will not translate one
+  into the other. Branch on `decision.provider`.
+- **`--model` does not restrict providers.** It gates which of an account's own
+  quota windows are counted. To constrain the provider, use `only`.
+
+`select_account` never raises on routing failure — an unreachable endpoint, an
+exhausted fleet, and a malformed config all come back as a degraded `Selection`
+with `warnings`. Pass `record=False` when you are only inspecting, so a decision
+you never act on does not book anyone's quota.
 
 From any other language, shell out to `quotapick pick --json` and honor the
 `exec.env` block — that is the whole integration surface.

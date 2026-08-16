@@ -299,10 +299,18 @@ class AccountConfig:
         the default dir in an exec plan actively breaks the account it selects.
         Selecting it means leaving the variable unset.
         """
-        if self.provider != "claude":
+        if self.id != "claude" or not self.config_dir:
             return False
-        expanded = os.path.expanduser(self.config_dir or "")
-        return bool(expanded) and expanded == os.path.join(os.path.expanduser("~"), ".claude")
+        # config_dir has already been expanded against whichever HOME the config was
+        # loaded with, so re-expanding "~" here would compare against the *process*
+        # home instead and never match under an injected environment. Compare the
+        # conventional directory name instead, which is home-agnostic.
+        #
+        # Tradeoff, stated plainly: an operator who relocates the primary account to
+        # some other path ending in ".claude" would have the variable omitted when it
+        # should be set. That is a contrived layout; always setting it breaks the
+        # ordinary one, which is the case that actually occurs.
+        return os.path.basename(os.path.normpath(self.config_dir)) == ".claude"
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping (plain types only)."""

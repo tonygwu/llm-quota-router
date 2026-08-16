@@ -243,9 +243,12 @@ def test_ranked_rows_report_provenance_and_age(env):
 
 
 def test_exec_env_never_contains_proxy_variables(env):
-    payload = pick(["pick"], env, snapshots=real_capture())
+    # Pinned to a slot account on purpose: the default account's plan is correctly
+    # EMPTY (it is selected by the absence of CLAUDE_CONFIG_DIR), which would make
+    # the "no banned keys" assertion vacuously true.
+    payload = pick(["pick", "--only", "claude_b"], env, snapshots=real_capture())
     exec_env = payload["exec"]["env"]
-    assert exec_env, "a winning claude account must still get its config dir"
+    assert exec_env, "a slot account must still get its config dir"
     for banned in BANNED_EXEC_ENV:
         assert banned not in exec_env
     assert set(exec_env) == {"CLAUDE_CONFIG_DIR"}
@@ -276,14 +279,17 @@ def test_exec_removes_inherited_proxy_variables_from_the_child(env):
     deps = cli.Deps(
         load_snapshots=lambda **kw: (list(real_capture()), []), run=runner
     )
-    code, _, _ = run(["exec", "--", "claude", "-p", "hi"], env, deps=deps)
+    code, _, _ = run(
+        ["exec", "--only", "claude_b", "--", "claude", "-p", "hi"], env, deps=deps
+    )
 
     assert code == 0
     _, kwargs = runner.calls[0]
     child_env = kwargs["env"]
     for banned in BANNED_EXEC_ENV:
         assert banned not in child_env
-    assert child_env["CLAUDE_CONFIG_DIR"].endswith(".claude")
+    # A slot account, so the overlay is non-empty and the scrub is observable.
+    assert child_env["CLAUDE_CONFIG_DIR"].endswith(".claude-b")
 
 
 # ======================================================================================
@@ -694,7 +700,10 @@ def test_exec_spawns_the_requested_command_with_the_account_config_dir(env):
 
     argv, kwargs = runner.calls[0]
     assert argv == ["claude", "-p", "hello"]
-    assert kwargs["env"]["CLAUDE_CONFIG_DIR"].endswith(".claude")
+    # The default account is selected by the variable's ABSENCE: its config lives at
+    # ~/.claude.json, outside ~/.claude, so naming the directory makes the CLI
+    # scaffold a fresh empty account instead of using the real one.
+    assert "CLAUDE_CONFIG_DIR" not in kwargs["env"]
 
 
 def test_exec_defaults_to_the_providers_own_cli(env):
@@ -832,7 +841,10 @@ def test_runs_with_no_configuration_at_all(env):
     """Zero-config is a requirement: the builtin layer must be sufficient."""
     payload = pick(["pick"], env, snapshots=real_capture())
     assert payload["decision"]["account"]
-    assert payload["exec"]["env"]["CLAUDE_CONFIG_DIR"]
+    # The default account's overlay is empty by design, so zero-config is proven by
+    # a slot account getting its directory, not by the winner carrying one.
+    slot = pick(["pick", "--only", "claude_c"], env, snapshots=real_capture())
+    assert slot["exec"]["env"]["CLAUDE_CONFIG_DIR"]
 
 
 def test_layers_apply_in_order_with_the_named_file_winning(env, tmp_path):
@@ -885,7 +897,7 @@ def test_deep_merge_keeps_untouched_builtin_values(env, tmp_path):
     config = tmp_path / "partial.toml"
     config.write_text("[providers]\ncodex = 0.1\n")
     payload = pick(["pick", "--config", str(config)], env, snapshots=real_capture())
-    assert payload["exec"]["env"]["CLAUDE_CONFIG_DIR"], "builtin accounts must survive"
+    assert payload["decision"]["account"], "builtin accounts must survive the merge"
 
 
 def test_account_config_dir_is_expanded(env, tmp_path):
