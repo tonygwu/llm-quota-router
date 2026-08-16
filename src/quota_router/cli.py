@@ -54,6 +54,7 @@ from typing import Any, Callable, Final, TextIO
 from . import explain as explain_mod
 from . import history as history_mod
 from . import model_classes as mc
+from . import pse
 from .config import BANNED_EXEC_ENV, Config, ConfigError, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
@@ -1433,6 +1434,7 @@ def _cmd_calibrate(
         )
     )
     results = history_mod.calibrate(records, window_key=args.window)
+    k_results = history_mod.estimate_weekly_to_session(records)
 
     if getattr(args, "json", False):
         _dump_json(
@@ -1442,6 +1444,19 @@ def _cmd_calibrate(
                 "records": len(records),
                 "window": args.window,
                 "accounts": {key: value.to_dict() for key, value in results.items()},
+                "weekly_to_session": {
+                    key: {
+                        "k": value.k,
+                        "low": value.low,
+                        "high": value.high,
+                        "session_increment_pp": value.session_increment_pp,
+                        "weekly_consumed_pp": value.weekly_consumed_pp,
+                        "samples": value.samples,
+                        "undersampled": value.undersampled,
+                        "reason": value.reason,
+                    }
+                    for key, value in k_results.items()
+                },
             },
             stdout,
         )
@@ -1463,6 +1478,35 @@ def _cmd_calibrate(
             f"{account_id}: ~{calibration.calls_per_window:g} calls/window "
             f"({calibration.demand:g} weighted picks over {calibration.consumed:.1%} "
             f"of the window, {calibration.samples} samples)\n"
+        )
+
+    stdout.write(
+        f"\nk (weekly:session capacity ratio) -- default {pse.DEFAULT_WEEKLY_TO_SESSION:g}, "
+        f"hand-measured +/-2:\n"
+    )
+    for account_id, est in k_results.items():
+        if not account_id.startswith("claude"):
+            continue
+        if est.k is None:
+            stdout.write(f"  {account_id}: not usable yet -- {est.reason}\n")
+            continue
+        width = est.high - est.low
+        # Three conditions, not one. A narrow interval is necessary but nowhere near
+        # sufficient: seven hours of a log that also captured the operator's own
+        # testing produced tight intervals around values that were plainly wrong
+        # (0.1 and 2.6 against a hand-measured ~12). Demand a real observation span
+        # and a substantial share of a weekly cycle before recommending a swap.
+        span_h = est.max_gap_s and (est.samples * est.max_gap_s / 3600.0)
+        enough = width < 4.0 and est.weekly_consumed_pp >= 20.0 and (span_h or 0) >= 24.0
+        verdict = (
+            "ADOPT"
+            if enough
+            else "keep default (needs >=24h of clean sampling and >=20pp of weekly burn)"
+        )
+        stdout.write(
+            f"  {account_id}: k={est.k:.1f} [{est.low:.1f}-{est.high:.1f}] "
+            f"from {est.session_increment_pp:.0f}pp session / {est.weekly_consumed_pp:.0f}pp "
+            f"weekly over {est.samples} samples -> {verdict}\n"
         )
 
     usable = {k: v for k, v in results.items() if v.calls_per_window is not None}

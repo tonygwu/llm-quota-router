@@ -25,6 +25,8 @@ IO failures come back as warnings on the result object.
 
 from __future__ import annotations
 
+import math
+
 import json
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -647,3 +649,221 @@ def calibrate(
             reason=reason,
         )
     return out
+
+
+# ======================================================================================
+# k -- the weekly:session capacity ratio
+# ======================================================================================
+
+#: A sample gap beyond this fraction of the five-hour window means the bar could have
+#: risen and reset unseen, losing that rise permanently. Two samples per window is the
+#: floor at which increments are still attributable.
+MAX_GAP_FRACTION_OF_WINDOW: Final[float] = 0.4
+
+#: Both bars are integer percentages, so any single reading carries +/-0.5pp. A
+#: contiguous run of increments telescopes to (last - first), leaving two endpoints of
+#: error per run rather than two per sample.
+QUANTUM_PP: Final[float] = 1.0
+
+#: The weekly window CONTAINS the session window, so the weekly budget cannot be
+#: smaller than a single session budget. An estimate below this is not a measurement,
+#: it is evidence the input was contaminated -- and it must be refused however narrow
+#: its interval, because a tight interval around a wrong number is the dangerous case.
+MIN_PLAUSIBLE_K: Final[float] = 1.0
+
+#: Below this much observed weekly consumption the quantum dominates and no interval
+#: is worth reporting, however dense the sampling.
+MIN_WEEKLY_CONSUMED_PP: Final[float] = 5.0
+
+FIVE_HOUR_S: Final[float] = 5 * 3600.0
+
+
+@dataclass(frozen=True, slots=True)
+class WeeklyToSessionEstimate:
+    """Estimated ``k`` for one account, with the evidence that produced it.
+
+    ``k`` is ``None`` whenever the evidence cannot support a point estimate. That is
+    the important case: both ways this measurement fails bias it LOW and leave no
+    outward sign, so answering anyway would be confidently wrong.
+    """
+
+    account: str
+    k: float | None
+    low: float | None
+    high: float | None
+    session_increment_pp: float
+    weekly_consumed_pp: float
+    samples: int
+    session_resets_seen: int
+    max_gap_s: float
+    dropped_pairs: int
+    undersampled: bool
+    reason: str | None = None
+
+
+def _account_series(
+    records: Iterable[Mapping[str, Any]], account: str
+) -> list[tuple[float, float | None, float | None]]:
+    """Timestamped (session, weekly) readings for one account, from ONE source.
+
+    Sources disagree -- the statusline cache lags the live endpoint -- so a log that
+    alternates between them makes the bars oscillate. Summing increases across a flip
+    counts the same difference again on every alternation, manufacturing consumption
+    out of nothing. Only readings from the same source are comparable, so the richest
+    single source wins and the rest are discarded.
+    """
+    by_source: dict[str, list[tuple[float, float | None, float | None]]] = {}
+    for record in records:
+        t = record.get("t")
+        if not isinstance(t, (int, float)):
+            continue
+        for snapshot in record.get("accounts") or ():
+            if not isinstance(snapshot, Mapping) or snapshot.get("id") != account:
+                continue
+            windows = {
+                w.get("key"): w
+                for w in (snapshot.get("windows") or ())
+                if isinstance(w, Mapping)
+            }
+            session = (windows.get("5h") or {}).get("used_fraction")
+            weekly = (windows.get("7d") or {}).get("used_fraction")
+            source = str(snapshot.get("source") or "unknown")
+            by_source.setdefault(source, []).append((float(t), session, weekly))
+    if not by_source:
+        return []
+    # Prefer the source with the most readings; ties break toward the live endpoint,
+    # which is the only one that observes model-scoped windows.
+    best = max(by_source, key=lambda s: (len(by_source[s]), s == "live"))
+    out = by_source[best]
+    out.sort(key=lambda row: row[0])
+    return out
+
+
+def _median_step(series: Sequence[tuple[float, Any, Any]]) -> float:
+    """Typical gap between samples, used to bound the one-way sampling loss."""
+    gaps = sorted(b[0] - a[0] for a, b in zip(series, series[1:]))
+    return gaps[len(gaps) // 2] if gaps else 0.0
+
+
+def estimate_weekly_to_session(
+    records: Iterable[Mapping[str, Any]],
+) -> dict[str, WeeklyToSessionEstimate]:
+    """Estimate ``k`` per account: five-hour increments over weekly consumption.
+
+    Both bars measure the *same* work against different denominators, so the ratio
+    of how fast they move is the ratio of their capacities. Increments are summed
+    rather than differenced end-to-end because the five-hour bar resets and a
+    difference across a rollover is meaningless.
+
+    Two guards, because both failure modes are silent and both bias low:
+
+    * a sample gap large relative to the five-hour window means increments may have
+      been lost to an unseen reset -- refuse rather than under-report;
+    * a thin weekly denominator means the integer quantum dominates -- refuse
+      rather than report noise.
+    """
+    materialized = list(records)
+    accounts: list[str] = []
+    for record in materialized:
+        for snapshot in record.get("accounts") or ():
+            if isinstance(snapshot, Mapping):
+                account = snapshot.get("id")
+                if isinstance(account, str) and account not in accounts:
+                    accounts.append(account)
+
+    results: dict[str, WeeklyToSessionEstimate] = {}
+    for account in accounts:
+        series = _account_series(materialized, account)
+        session_pp = weekly_pp = 0.0
+        resets = 0
+        max_gap = 0.0
+        pairs = 0
+        session_runs = 1
+        weekly_runs = 1
+
+        gap_limit = MAX_GAP_FRACTION_OF_WINDOW * FIVE_HOUR_S
+        dropped = 0
+        total_pairs = max(0, len(series) - 1)
+        for (t0, s0, w0), (t1, s1, w1) in zip(series, series[1:]):
+            gap = t1 - t0
+            if gap > gap_limit:
+                # Not evidence: we cannot know what happened inside the gap. Excluding
+                # it from numerator AND denominator keeps the ratio unbiased, whereas
+                # counting it would attribute a partial rise to a full interval.
+                dropped += 1
+                session_runs += 1
+                weekly_runs += 1
+                continue
+            max_gap = max(max_gap, gap)
+            if s0 is not None and s1 is not None:
+                if s1 >= s0:
+                    session_pp += (s1 - s0) * 100.0
+                else:
+                    resets += 1
+                    session_runs += 1
+            if w0 is not None and w1 is not None:
+                if w1 >= w0:
+                    weekly_pp += (w1 - w0) * 100.0
+                else:
+                    weekly_runs += 1
+            pairs += 1
+
+        undersampled = total_pairs > 0 and pairs == 0
+        reason: str | None = None
+        k = low = high = None
+
+        if total_pairs == 0:
+            reason = "no consecutive samples for this account"
+        elif undersampled:
+            reason = (
+                f"every sample gap exceeds {gap_limit / 60:.0f}m; the session bar can "
+                f"rise and reset unseen, which loses the rise and biases k low"
+            )
+        elif weekly_pp < MIN_WEEKLY_CONSUMED_PP:
+            reason = (
+                f"only {weekly_pp:.1f}pp of weekly consumption observed; below "
+                f"{MIN_WEEKLY_CONSUMED_PP:.0f}pp the 1pp quantum dominates the ratio"
+            )
+        elif session_pp <= 0.0:
+            reason = "no session-window increase observed"
+        elif session_pp / weekly_pp < MIN_PLAUSIBLE_K:
+            reason = (
+                f"k={session_pp / weekly_pp:.2f} is physically impossible (< "
+                f"{MIN_PLAUSIBLE_K:g}); the weekly window contains the session window, "
+                f"so the input is contaminated -- {session_pp:.0f}pp session against "
+                f"{weekly_pp:.0f}pp weekly"
+            )
+        else:
+            session_err = QUANTUM_PP * math.sqrt(session_runs)
+            weekly_err = QUANTUM_PP * math.sqrt(weekly_runs)
+            k = session_pp / weekly_pp
+            low = max(0.0, session_pp - session_err) / (weekly_pp + weekly_err)
+            high = (session_pp + session_err) / max(1e-9, weekly_pp - weekly_err)
+
+            # Discrete sampling loses burn ONE WAY. Whatever accrues between the last
+            # sample of a window and its reset is never observed, so every estimate is
+            # biased low by at most one sampling interval per window. It is bounded,
+            # one-directional, and does not shrink with more samples -- only with a
+            # shorter interval -- so it belongs in the interval rather than being
+            # averaged away. Without it a 15-minute cadence reports k ~11.4 against a
+            # true 12.0 and the interval confidently excludes the right answer.
+            typical_step = _median_step(series)
+            if typical_step > 0.0:
+                lost = min(0.5, typical_step / FIVE_HOUR_S)
+                high = high / max(1e-9, 1.0 - lost)
+
+        results[account] = WeeklyToSessionEstimate(
+            account=account,
+            k=k,
+            low=low,
+            high=high,
+            session_increment_pp=session_pp,
+            weekly_consumed_pp=weekly_pp,
+            samples=pairs,
+            session_resets_seen=resets,
+            max_gap_s=max_gap,
+            dropped_pairs=dropped,
+            undersampled=undersampled,
+            reason=reason,
+        )
+    return results
