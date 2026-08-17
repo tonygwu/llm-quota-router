@@ -730,6 +730,13 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
 
 _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset(_BUILTIN)
 
+#: Top-level *scalar* settings. Kept separate from :data:`_KNOWN_SECTIONS`, which is
+#: derived from the builtin defaults and therefore lists only tables. A scalar has no
+#: builtin entry to be derived from, so without this it reads as an unknown section and
+#: is reported as ignored -- while being applied normally. A false "ignored" is worse
+#: than a missing warning: it invites someone to "fix" a config that was already right.
+_KNOWN_TOP_LEVEL_KEYS: Final[frozenset[str]] = frozenset({"fallback_model"})
+
 
 # ======================================================================================
 # Loading
@@ -878,11 +885,10 @@ def _build(
     """Validate a merged mapping into a :class:`Config`."""
     warnings: list[str] = []
     for section in merged:
-        if section not in _KNOWN_SECTIONS:
-            warnings.append(
-                f"unknown config section [{section}] ignored "
-                f"(known sections: {', '.join(sorted(_KNOWN_SECTIONS))})"
-            )
+        if section in _KNOWN_SECTIONS or section in _KNOWN_TOP_LEVEL_KEYS:
+            continue
+        known = ", ".join(sorted(_KNOWN_SECTIONS | _KNOWN_TOP_LEVEL_KEYS))
+        warnings.append(f"unknown config setting [{section}] ignored (known: {known})")
 
     hysteresis_raw = _as_table(merged.get("hysteresis", {}), "hysteresis")
     staleness_raw = _as_table(merged.get("staleness", {}), "staleness")

@@ -775,3 +775,33 @@ def test_a_model_that_still_fits_is_left_alone(env, home) -> None:
     assert code == 0
     assert "--model" not in executor.argv
     assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")
+
+
+def test_fallback_model_is_not_reported_as_an_unknown_section(tmp_path) -> None:
+    """A working setting that warns "ignored" teaches the operator to distrust it.
+
+    ``_KNOWN_SECTIONS`` is derived from the builtin defaults, which contain only
+    tables. ``fallback_model`` is a top-level *scalar* with no builtin entry, so the
+    validator called it an unknown section and said it was ignored -- while ``_build``
+    read and applied it perfectly well. Both halves are bad: the warning is false, and
+    it is the kind of false that makes someone "fix" a config that was already right.
+    """
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('fallback_model = "opus[1m]"\n', encoding="utf-8")
+    cfg = load_config(env={}, explicit_path=path)
+
+    assert cfg.fallback_model == "opus[1m]"
+    assert not [w for w in cfg.warnings if "fallback_model" in w], cfg.warnings
+
+
+def test_a_genuinely_unknown_top_level_key_still_warns(tmp_path) -> None:
+    """Widening the allow-list must not turn the validator off."""
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('falback_model = "opus[1m]"\n', encoding="utf-8")  # typo, on purpose
+    cfg = load_config(env={}, explicit_path=path)
+
+    assert any("falback_model" in w for w in cfg.warnings), cfg.warnings
