@@ -999,10 +999,6 @@ ADOPTION_RELATIVE_WIDTH: Final[float] = 0.15
 #: one session window.
 ADOPTION_MAX_STEP_S: Final[float] = 900.0
 
-#: Backwards-compatible alias. The old name said "gap" while the quantity that
-#: matters is the typical step; kept so an external caller does not break on a rename.
-ADOPTION_MAX_GAP_S: Final[float] = ADOPTION_MAX_STEP_S
-
 
 def adoption_ready(
     *,
