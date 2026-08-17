@@ -524,6 +524,36 @@ class Partition:
     fallback_pool: tuple[AccountSnapshot, ...] = ()
 
 
+def unreadable_reason(snapshot: AccountSnapshot) -> str | None:
+    """Why nothing could be read for this account -- ``None`` when it *was* read.
+
+    A failed usage read and an empty measurement are the same shape and opposite
+    facts. The OAuth provider reports a failure as ``windows=()``, ``available=False``,
+    ``confidence=0.0`` and a ``note`` naming the cause ("access token expired"), but it
+    still labels ``source`` as ``live`` -- that field describes the attempt, not the
+    outcome -- so ``note`` plus ``available`` is the only honest signal downstream.
+
+    Observed live: an account with 53% of its Fable quota left went dark on an expired
+    token, was dropped from the candidate set before eligibility ever ran, and appeared
+    in neither ``ranked`` nor ``excluded`` nor ``degraded``. The router then picked an
+    account that was 97% spent, and the only trace was a warning about a missing Fable
+    window -- which is a data-shape complaint, not the truth. An unread account's
+    remaining quota is UNKNOWN: not zero, not full, and never silently absent.
+
+    ``confidence`` alone cannot be the test: the Antigravity pools publish no windows at
+    ``confidence=0.0`` by design and are perfectly routable, so ``available=False`` with
+    nothing measured is what separates "we could not look" from "there is nothing to
+    look at".
+    """
+    if snapshot.windows or snapshot.available:
+        return None
+    detail = (snapshot.note or "").strip() or "the source gave no cause"
+    return (
+        "unreadable: no usage reading was obtained for this account, so its remaining "
+        f"quota is unknown rather than free -- {detail}"
+    )
+
+
 def _partition_candidates(
     config: Config,
     snapshots: Sequence[AccountSnapshot],
@@ -549,7 +579,15 @@ def _partition_candidates(
         if account is not None and not account.enabled:
             reason = "disabled by configuration or --only/--exclude"
         elif not snapshot.available:
-            reason = snapshot.note or "account is not available"
+            # An unread account gets a reason that says so in as many words. The bare
+            # note ("acct@example.com: access token expired") reads as an aside next to
+            # "only 0.0% left in its tightest applicable window", and the two demand
+            # opposite responses: one needs a login, the other needs a wait.
+            reason = (
+                unreadable_reason(snapshot)
+                or snapshot.note
+                or "account is not available"
+            )
         else:
             remaining = snapshot.min_remaining_fraction(model_class)
             if remaining is None:
@@ -889,6 +927,16 @@ def exclude_accounts_blind_to_model_class(
         if sees(snapshot):
             kept.append(snapshot)
             continue
+        if unreadable_reason(snapshot) is not None:
+            # An account nobody could read has no windows of any kind, so it trivially
+            # fails ``sees`` -- but "no fable window while other accounts report one"
+            # blames the data shape and sends the reader hunting for a parsing bug when
+            # the truth was an expired token. Worse, consuming it here dropped it from
+            # the pipeline entirely: it reached neither ranked nor excluded, and a dark
+            # account is exactly the thing an operator most needs to see. Hand it on to
+            # the eligibility pass, which reports the cause the provider recorded.
+            kept.append(snapshot)
+            continue
         dropped.append(
             {
                 "account": snapshot.id,
@@ -943,6 +991,14 @@ def _prepare(
     snapshots = _fetch_snapshots(config, deps, env, now_s, warnings, degraded)
 
     for snapshot in snapshots:
+        # An account the router could not read is degraded data, not merely an
+        # ineligible candidate: the fleet is smaller than it looks and the operator has
+        # something to fix. Reported here rather than at eligibility so it survives even
+        # on the paths that never reach the decision layer, and so `status --json` --
+        # which renders no exclusions at all -- still names it.
+        unreadable = unreadable_reason(snapshot)
+        if unreadable is not None:
+            degraded.append({"account": snapshot.id, "reason": unreadable})
         age = snapshot.staleness_s(now_s)
         if age is not None and age > config.staleness.max_age_s:
             degraded.append(

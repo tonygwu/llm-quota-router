@@ -167,7 +167,7 @@ env = {**os.environ, **decision.exec_env}
 subprocess.run(["claude", "-p", prompt], env=env)
 ```
 
-Four things that will bite you if missed:
+Five things that will bite you if missed:
 
 - **The winner is not a promise it can serve you — check `fits`.** The objective
   is quota *about to expire*, so an account whose 5-hour window is fully spent
@@ -186,6 +186,13 @@ Four things that will bite you if missed:
   into the other. Branch on `decision.provider`.
 - **`--model` does not restrict providers.** It gates which of an account's own
   quota windows are counted. To constrain the provider, use `only`.
+- **An account the router could not read is reported, not omitted.** Its
+  `excluded` row and a `degraded` entry both carry a reason beginning
+  `unreadable:` and naming the cause the provider recorded — typically an expired
+  OAuth access token (see [Waking a dark account](#waking-a-dark-account)). Its
+  `remaining` is `null`, not `0`: the quota is unknown, not spent. Treat that
+  differently from an exhausted account — one needs a login, the other only needs
+  time.
 
 `select_account` never raises on routing failure — an unreachable endpoint, an
 exhausted fleet, and a malformed config all come back as a degraded `Selection`

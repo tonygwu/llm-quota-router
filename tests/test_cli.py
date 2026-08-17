@@ -30,6 +30,7 @@ from quota_router.types import (
     QUOTA_ROUTER_CONTRACT_VERSION,
     REGIME_A,
     REGIME_B,
+    SOURCE_ASSUMED,
     SOURCE_CACHE,
     SOURCE_LIVE,
     AccountSnapshot,
@@ -654,6 +655,195 @@ def test_a_missing_decision_layer_does_not_claim_healthy_accounts_are_spent(env,
         "the scoring layer being absent says nothing about whether the account works"
     )
     assert "out of quota" not in payload["decision"]["reason"]
+
+
+# ======================================================================================
+# Unreadable accounts: a failed read is not an empty measurement
+# ======================================================================================
+
+
+def dark(account_id: str, note: str) -> AccountSnapshot:
+    """An account whose usage read failed, exactly as the OAuth provider reports it.
+
+    No windows, ``available=False``, ``confidence=0.0``, and a ``note`` naming the real
+    cause. ``source`` stays ``live`` because the provider labels the attempt, not the
+    outcome -- so nothing downstream may key off it to detect the failure.
+    """
+    return AccountSnapshot(
+        id=account_id,
+        windows=(),
+        tier="max_20x",
+        source=SOURCE_LIVE,
+        confidence=0.0,
+        available=False,
+        note=note,
+    )
+
+
+def test_an_unreadable_account_is_excluded_by_name_not_silently_dropped(env):
+    """A dark account must appear in the output, or nobody knows it went dark.
+
+    Live failure: ``cl --model fable`` routed to the account with 97% of its Fable
+    quota spent over one with 47% left, because the better account's OAuth access
+    token had expired and its usage read failed. The account appeared in neither
+    ``ranked`` nor ``excluded`` nor ``degraded`` -- it simply vanished, so the
+    operator had no way to see that a quarter of the fleet was invisible.
+    """
+    payload = pick(
+        ["pick", "--model", "fable"],
+        env,
+        snapshots=(*real_capture(), dark("claude_d", "acct4@example.com: access token expired")),
+    )
+
+    excluded = {row["account"]: row for row in payload["excluded"]}
+    assert "claude_d" in excluded, (
+        f"the dark account vanished from the audit trail: {payload['excluded']}"
+    )
+    assert "claude_d" not in {row["account"] for row in payload["ranked"]}
+    degraded = {entry["account"]: entry["reason"] for entry in payload["degraded"]}
+    assert "claude_d" in degraded, (
+        f"an account nobody could read is degraded telemetry: {payload['degraded']}"
+    )
+
+
+def test_an_unreadable_account_says_it_was_unread_not_that_it_lacks_a_window(env):
+    """The reason must name the failed read, not blame the shape of the data.
+
+    The only trace the live incident left was ``no fable window in this snapshot
+    while other accounts report one, so its fable limit is unmeasured`` -- which
+    sends the reader hunting for a window-parsing bug when the truth was "the token
+    expired". The provider already puts the true cause in ``note``; surfacing
+    anything else is a misdiagnosis dressed as an explanation.
+    """
+    payload = pick(
+        ["pick", "--model", "fable"],
+        env,
+        snapshots=(*real_capture(), dark("claude_d", "acct4@example.com: access token expired")),
+    )
+
+    reason = {row["account"]: row["reason"] for row in payload["excluded"]}["claude_d"]
+    assert "access token expired" in reason, reason
+    assert "acct4@example.com" in reason, reason
+    assert "unmeasured" not in reason, reason
+    # The verdict has to make the claim itself, not lean on a note that happens to
+    # read like one. Passing the raw note through is what the code did before, and it
+    # renders as an aside next to the exhaustion reason rather than as a diagnosis.
+    assert "unreadable" in reason, reason
+    assert "unknown" in reason, reason
+
+    joined = " | ".join(payload["warnings"]) + " | ".join(
+        entry["reason"] for entry in payload["degraded"]
+    )
+    assert "unmeasured, not unconstrained" not in joined, (
+        f"the blind-to-a-scoped-class warning misdiagnosed a failed read: {joined}"
+    )
+
+
+def test_a_read_failure_with_no_cause_recorded_still_reports_the_failure(env):
+    """The verdict cannot depend on the source having written a good note.
+
+    A provider that fails without recording why is the case where echoing ``note``
+    degenerates completely: it leaves "account is not available", which is true of a
+    disabled account, a logged-out one and an unread one alike. The one fact the
+    router does know -- that it obtained no reading, so this account's headroom is
+    unknown rather than zero -- has to be stated by the router itself.
+    """
+    blank = AccountSnapshot(
+        id="claude_d", windows=(), tier="max_20x", source=SOURCE_LIVE,
+        confidence=0.0, available=False, note=None,
+    )
+    payload = pick(["pick", "--model", "fable"], env, snapshots=(*real_capture(), blank))
+
+    reason = {row["account"]: row["reason"] for row in payload["excluded"]}["claude_d"]
+    assert "unreadable" in reason, reason
+    assert "unknown" in reason, reason
+
+
+def test_an_unread_account_reads_differently_from_a_spent_one(env):
+    """"Could not be read" and "measured, and empty" must not look alike.
+
+    They call for opposite responses: an exhausted account needs a wait, an unread
+    one needs a login. An operator who cannot tell them apart from the output waits
+    for a reset that will never come, because the account was never spent at all.
+    """
+    spent = account(
+        "claude_c",
+        window("seven_day", 1.0, expected_used=0.95),
+        window("scoped:fable", 1.0, expected_used=0.95, applies_to={"fable"}),
+    )
+    payload = pick(
+        ["pick", "--model", "fable", "--min-remaining", "0.10"],
+        env,
+        snapshots=(
+            *real_capture()[:2],
+            spent,
+            dark("claude_d", "acct4@example.com: access token expired"),
+        ),
+    )
+
+    reasons = {row["account"]: row["reason"] for row in payload["excluded"]}
+    assert "left in its tightest applicable window" in reasons["claude_c"], reasons
+    assert "left in its tightest applicable window" not in reasons["claude_d"], reasons
+    assert "unreadable" in reasons["claude_d"], reasons
+    assert "unreadable" not in reasons["claude_c"], reasons
+    # And the numeric columns must not quietly agree either: the spent account is
+    # measured at zero, the unread one has no measurement to report.
+    by_id = {row["account"]: row for row in payload["excluded"]}
+    assert by_id["claude_c"]["remaining"] == 0.0
+    assert by_id["claude_d"]["remaining"] is None, (
+        "an unread account's remaining quota is unknown, and 0.0 would read as spent"
+    )
+
+
+def test_an_account_that_was_read_but_lacks_the_scoped_window_still_warns(env):
+    """The unmeasured warning is right for its own case and must keep firing.
+
+    An account we read successfully that reports no Fable window while its siblings
+    do IS unmeasured for Fable, and scoring it as unconstrained is the bug that
+    warning exists to prevent. Narrowing it to exclude failed reads must not quietly
+    turn it off for the genuine case.
+    """
+    readable_but_blind = account(
+        "claude_d", window("seven_day", 0.43, expected_used=0.50)
+    )
+    payload = pick(
+        ["pick", "--model", "fable"],
+        env,
+        snapshots=(*real_capture(), readable_but_blind),
+    )
+
+    joined = " | ".join(payload["warnings"])
+    assert "unmeasured, not unconstrained" in joined, joined
+    assert "claude_d" not in {row["account"] for row in payload["ranked"]}
+
+
+def test_a_pool_that_is_unobservable_by_design_is_blind_not_unread(env):
+    """Letting unread accounts through the blind filter must not let pools through too.
+
+    The Antigravity pools publish no windows at ``confidence=0.0`` on purpose and are
+    perfectly routable, so "no windows" cannot be the test for a failed read --
+    ``available`` is. Get that wrong and a pool nobody has measured sails past the
+    blind-account rule and gets handed a Fable call it cannot be shown to serve, which
+    is the exact bug that rule exists to prevent.
+    """
+    pool = AccountSnapshot(
+        id="antigravity_gemini",
+        windows=(),
+        tier="unknown",
+        source=SOURCE_ASSUMED,
+        confidence=0.0,
+        available=True,
+        note="no usage API; unobservable, no failure-learned deadline",
+    )
+    payload = pick(["pick", "--model", "fable"], env, snapshots=(*real_capture(), pool))
+
+    assert "antigravity_gemini" not in {row["account"] for row in payload["ranked"]}
+    joined = " | ".join(payload["warnings"])
+    assert "antigravity_gemini" in joined and "unmeasured, not unconstrained" in joined, joined
+    degraded = " | ".join(entry["reason"] for entry in payload["degraded"])
+    assert "unreadable" not in degraded, (
+        f"an unobservable-by-design pool is not a failed read: {degraded}"
+    )
 
 
 # ======================================================================================
