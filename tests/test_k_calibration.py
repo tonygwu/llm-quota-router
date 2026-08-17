@@ -635,3 +635,51 @@ def test_pruning_still_works_on_a_sane_clock(tmp_path) -> None:
 
     survivors = sorted(p.name for p in tmp_path.glob("history-*.jsonl"))
     assert survivors == ["history-2026-08-15.jsonl"], survivors
+
+
+# ======================================================================================
+# The adoption gate must be reachable by the process that produces the data
+# ======================================================================================
+
+
+def test_a_series_sampled_at_the_pollers_own_cadence_can_be_adopted() -> None:
+    """The second unreachable gate in this file's history.
+
+    ``ADOPTION_MAX_GAP_S`` was 900s and the usage poller's ``StartInterval`` is 900s,
+    so the gate demanded data denser than the process producing it. launchd jitter
+    alone put every real gap over the line, and live every account reported "worst
+    sample gap 30m > 15m" while no estimate was ever adopted. Like the 20pp weekly
+    bar before it, that reads as "not enough evidence yet" rather than as a bug, which
+    is exactly why it survived.
+
+    It also gated on the wrong statistic. The one-way sampling loss it cites is
+    already folded into the interval via ``typical_step``, and any pair spanning more
+    than ``MAX_GAP_FRACTION_OF_WINDOW`` of a window is dropped from both numerator and
+    denominator before it can bias anything. What a single huge gap actually costs is
+    *data*, and less data shows up as a wider interval -- which the width gate already
+    catches. So the density question is about the series' typical rhythm, not its
+    worst hiccup.
+    """
+    from quota_router.history import adoption_ready
+
+    # A clean series at exactly the poller's cadence, with one 40-minute hiccup of the
+    # kind an overnight sleep or a launchd stall produces.
+    assert adoption_ready(k=6.3, low=5.9, high=6.6, max_gap_s=40 * 60, median_step_s=900.0), (
+        "a series sampled at the poller's own interval must be adoptable; a single "
+        "stall is a hole in the data, not a reason to distrust the rhythm"
+    )
+
+
+def test_a_genuinely_sparse_series_is_still_refused() -> None:
+    """Loosening the worst-gap bound must not switch density checking off."""
+    from quota_router.history import adoption_ready
+
+    assert not adoption_ready(
+        k=6.3, low=5.9, high=6.6, max_gap_s=3 * HOUR, median_step_s=3 * HOUR
+    ), "a series whose TYPICAL step is three hours loses whole windows unseen"
+
+
+def test_the_width_gate_still_binds_independently_of_density() -> None:
+    from quota_router.history import adoption_ready
+
+    assert not adoption_ready(k=6.3, low=4.0, high=9.0, max_gap_s=60.0, median_step_s=60.0)

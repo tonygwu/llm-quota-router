@@ -725,6 +725,9 @@ class WeeklyToSessionEstimate:
     samples: int
     session_resets_seen: int
     max_gap_s: float
+    #: Typical spacing between readings. This, not the worst gap, is what the
+    #: adoption gate judges density on -- see `adoption_ready`.
+    median_step_s: float
     span_s: float
     dropped_pairs: int
     undersampled: bool
@@ -954,6 +957,7 @@ def estimate_weekly_to_session(
             samples=pairs,
             session_resets_seen=resets,
             max_gap_s=max_gap,
+            median_step_s=_median_step(all_times),
             span_s=(all_times[-1] - all_times[0]) if len(all_times) > 1 else 0.0,
             dropped_pairs=dropped,
             undersampled=undersampled,
@@ -973,13 +977,31 @@ def estimate_weekly_to_session(
 ADOPTION_RELATIVE_WIDTH: Final[float] = 0.15
 
 #: Increments are lost between the last sample before a reset and the reset itself,
-#: so sampling density bounds that one-way loss. At this gap the worst case is ~5%
-#: of a window.
-ADOPTION_MAX_GAP_S: Final[float] = 900.0
+#: so sampling density bounds that one-way loss. At this cadence the worst case is
+#: ~5% of a window.
+#:
+#: Applied to the series' TYPICAL step, not its worst gap. Applied to the worst gap
+#: this was the second unreachable gate in this file's history: it equalled the usage
+#: poller's own ``StartInterval``, so the bar demanded data denser than the process
+#: producing it and launchd jitter alone cleared it every time. Live, every account
+#: reported "worst sample gap 30m > 15m" and nothing was ever adopted -- which reads
+#: as "not enough evidence yet" rather than as a bug, which is why it survived. The
+#: first such gate wanted 20pp of weekly movement, which no plausible k permits inside
+#: one session window.
+ADOPTION_MAX_STEP_S: Final[float] = 900.0
+
+#: Backwards-compatible alias. The old name said "gap" while the quantity that
+#: matters is the typical step; kept so an external caller does not break on a rename.
+ADOPTION_MAX_GAP_S: Final[float] = ADOPTION_MAX_STEP_S
 
 
 def adoption_ready(
-    *, k: float | None, low: float | None, high: float | None, max_gap_s: float
+    *,
+    k: float | None,
+    low: float | None,
+    high: float | None,
+    max_gap_s: float,
+    median_step_s: float | None = None,
 ) -> bool:
     """Is this estimate precise enough, and sampled densely enough, to adopt?
 
@@ -988,9 +1010,25 @@ def adoption_ready(
     the weekly bar by 100/k pp -- about 17pp at k=6 and 8pp at k=12 -- so any bar
     above that is unreachable without spanning a reset, and spanning a reset is
     precisely what a clean measurement avoids.
+
+    Density is judged on the **typical** step rather than the worst gap, because the
+    worst gap is not what the estimate is exposed to:
+
+    * the one-way loss this bound exists to cap is already folded into the interval,
+      from ``typical_step`` -- gating on the worst gap as well double-counts it;
+    * any pair spanning more than ``MAX_GAP_FRACTION_OF_WINDOW`` of a window is
+      dropped from numerator AND denominator before it can bias the ratio;
+    * so what one huge gap actually costs is *data*, and less data widens the
+      interval, which the width gate below already refuses.
+
+    An overnight sleep or a stalled launchd job leaves one enormous gap in an
+    otherwise perfectly sampled week. That is a hole, not a reason to distrust the
+    rhythm around it. ``median_step_s`` omitted falls back to the old worst-gap
+    behaviour so an existing caller keeps its semantics rather than silently loosening.
     """
     if k is None or low is None or high is None or k <= 0:
         return False
-    if max_gap_s > ADOPTION_MAX_GAP_S:
+    density = median_step_s if median_step_s is not None else max_gap_s
+    if density > ADOPTION_MAX_STEP_S:
         return False
     return (high - low) / k <= ADOPTION_RELATIVE_WIDTH

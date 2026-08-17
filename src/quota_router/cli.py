@@ -1648,7 +1648,11 @@ def _cmd_calibrate(
         width = est.high - est.low
         span_h = est.span_s / 3600.0
         enough = history_mod.adoption_ready(
-            k=est.k, low=est.low, high=est.high, max_gap_s=est.max_gap_s
+            k=est.k,
+            low=est.low,
+            high=est.high,
+            max_gap_s=est.max_gap_s,
+            median_step_s=est.median_step_s,
         )
         # Name the condition that actually failed. Reporting width when density is
         # the blocker sends the reader off to collect more burn, which will never
@@ -1656,7 +1660,7 @@ def _cmd_calibrate(
         # out of the window.
         if enough:
             verdict = "ADOPT"
-        elif est.max_gap_s > history_mod.ADOPTION_MAX_GAP_S:
+        elif est.median_step_s > history_mod.ADOPTION_MAX_STEP_S:
             verdict = (
                 f"keep default (worst sample gap {est.max_gap_s / 60:.0f}m > "
                 f"{history_mod.ADOPTION_MAX_GAP_S / 60:.0f}m; increments lost to unseen "

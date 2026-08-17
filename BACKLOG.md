@@ -49,25 +49,7 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-## 2. The k adoption gate cannot fire on poller-only data
-
-`ADOPTION_MAX_GAP_S` is 900s. The usage poller's `StartInterval` is 900s. The gate
-therefore requires the data to be denser than the process producing it, and launchd
-scheduling jitter alone puts every real gap over the line. Live, every account reports
-"worst sample gap 30m > 15m" and no estimate is ever adopted; the one account that ever
-passed had dense interactive traffic, not poller data.
-
-The bar should be expressed relative to the sampling cadence rather than as an absolute
-that silently duplicates it.
-
-**This is the second unreachable gate in this file's history** (the first required 20pp
-of weekly movement, which no plausible k permits within one session window). Both read
-as "not enough evidence yet" rather than as a bug, which is what made them survive.
-
-**Closes when:** the gate is derived from the observed cadence, and a test asserts a
-clean series sampled at the poller's own interval actually passes.
-
-## 3. `calibrate` recommends a `calls_per_window` adoption we believe is harmful
+## 2. `calibrate` recommends a `calls_per_window` adoption we believe is harmful
 
 It prints a paste-ready config stanza. Adopting it is a bad idea, for a reason the
 estimator cannot fix: the numerator counts only picks the router made, while the
@@ -84,7 +66,7 @@ reservation.
 stated and the pileup consequence quantified. A tool that recommends an action its own
 authors consider harmful is worse than one that stays quiet.
 
-## 4. Pileup reservations expire on a timer, not on completion
+## 3. Pileup reservations expire on a timer, not on completion
 
 Each pick books a reservation that decays after 60s. Nothing releases it when the call
 finishes, and nothing reconciles it once the usage endpoint reflects the real burn — so
@@ -98,7 +80,7 @@ must adopt — worth designing before building.
 **Closes when:** a reservation is released by the event that made it obsolete, and a
 test covers the overlap window where both signals are present.
 
-## 5. `calibrate --days` filters on a different clock than it measures on
+## 4. `calibrate --days` filters on a different clock than it measures on
 
 `--days N` selects records by write time; the series is now keyed on observation time.
 A stale republished reading can therefore pull data older than the requested window into
@@ -110,7 +92,7 @@ reader to trust a window boundary the tool is not enforcing.
 **Closes when:** both the filter and the series use the observation clock, or the
 reported span is labelled as what it is.
 
-## 6. Small, but each one costs trust
+## 5. Small, but each one costs trust
 
 - **The adoption message can print "interval 15% wide, want <=15%"** and then refuse.
   The true value is 15.9%, rounded for display before being compared. It reads as the
@@ -126,6 +108,15 @@ reported span is labelled as what it is.
 ---
 
 ## Closed
+
+- **The k adoption gate could not fire on poller-only data.** `ADOPTION_MAX_GAP_S`
+  equalled the usage poller's own `StartInterval`, so the bar demanded data denser than
+  the process producing it. It also judged the wrong statistic: the one-way sampling
+  loss it cited is already folded into the interval, and pairs spanning a large gap are
+  dropped before they can bias anything, so a single overnight stall cost *data*, not
+  accuracy — and less data already shows up as a wider interval. Now gates on the
+  series' typical step. Second unreachable gate in this file's history; both read as
+  "not enough evidence yet" rather than as bugs, which is what let them survive.
 
 - **An idle account became unreadable, and unreadable meant unroutable** (`fe189f3`).
   Access tokens are renewed only by using an account, and this tool will not redeem a
