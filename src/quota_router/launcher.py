@@ -58,6 +58,7 @@ import json
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Final, Mapping, NoReturn, Sequence, TextIO
@@ -291,6 +292,20 @@ def detect_model(argv: Sequence[str], *, home: Path) -> str | None:
 # ======================================================================================
 
 
+@dataclass(frozen=True, slots=True)
+class _Route:
+    """Where the session is going, and on what -- possibly not what was asked for."""
+
+    account: str
+    config: Config | None
+    model: str | None
+    #: The model that could not be served anywhere, when a substitution happened.
+    #: Non-``None`` is the ONLY condition under which ``cl`` passes ``--model``.
+    substituted_from: str | None = None
+    #: When the original model becomes available again, if the router knew.
+    available_at: float | None = None
+
+
 def choose_account(selection: Selection) -> str | None:
     """The top-ranked account that can serve a call right now, or ``None``.
 
@@ -353,7 +368,7 @@ def _route(
     model: str | None,
     deps: Deps,
     stderr: TextIO,
-) -> tuple[str, Config | None]:
+) -> _Route:
     """Ask the router for an account, capped and fully insulated.
 
     Returns the account id to launch on, falling back to the default account on every
@@ -363,9 +378,9 @@ def _route(
     timeout_s = _float_env(env, "CL_PICK_TIMEOUT_S", DEFAULT_PICK_TIMEOUT_S)
     only = _list_env(env, "CL_ONLY", DEFAULT_ONLY)
 
-    def pick() -> tuple[Selection, Config]:
-        selection = deps.select(
-            model=model,
+    def pick_with(which: str | None) -> Selection:
+        return deps.select(
+            model=which,
             only=only,
             # --dry-run in the shell version: this launcher may be run and then
             # abandoned (wrong directory, changed mind), and a session that never
@@ -373,7 +388,9 @@ def _route(
             record=False,
             env=dict(env),
         )
-        return selection, deps.load_config(env=dict(env))
+
+    def pick() -> tuple[Selection, Config]:
+        return pick_with(model), deps.load_config(env=dict(env))
 
     attempt = _within_deadline(pick, timeout_s)
     if not attempt.ok:
@@ -386,17 +403,35 @@ def _route(
             else f"failed: {type(attempt.error).__name__}: {attempt.error}"
         )
         _debug(env, stderr, f"pick {cause}; using the default account")
-        return ACCOUNT_CLAUDE, None
+        return _Route(ACCOUNT_CLAUDE, None, model)
 
     selection, config = attempt.value
     account = choose_account(selection)
-    if account is None:
-        stderr.write(
-            f"{_YELLOW}{_PROG}: no account can serve this right now; using the "
-            f"default. Check `quotapick status`.{_RESET}\n"
-        )
-        return ACCOUNT_CLAUDE, config
-    return account, config
+    if account is not None:
+        return _Route(account, config, model)
+
+    # Nothing can serve the requested model. Before giving up, see whether the
+    # operator declared something to fall back to.
+    fallback = getattr(config, "fallback_model", None) if config else None
+    explicit, _resume = _scan_args(argv)
+    if fallback and not explicit and fallback != model:
+        retry = _within_deadline(lambda: pick_with(fallback), timeout_s)
+        if retry.ok:
+            alternative = choose_account(retry.value)
+            if alternative is not None:
+                return _Route(
+                    alternative,
+                    config,
+                    fallback,
+                    substituted_from=model,
+                    available_at=selection.available_at,
+                )
+
+    stderr.write(
+        f"{_YELLOW}{_PROG}: no account can serve this right now; using the "
+        f"default. Check `quotapick status`.{_RESET}\n"
+    )
+    return _Route(ACCOUNT_CLAUDE, config, model)
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +506,24 @@ def _list_env(env: Mapping[str, str], name: str, default: Sequence[str]) -> list
     return values or list(default)
 
 
+def _reset_hint(available_at: float | None) -> str:
+    """`` (back in 42m)`` when the router knew, empty when it did not.
+
+    Rendered as a duration rather than a clock time on purpose: the reset is a
+    wall-clock instant in some timezone, and formatting it locally is how a stamp ends
+    up an hour off. A duration is unambiguous wherever it is read.
+    """
+    if available_at is None:
+        return ""
+    remaining = available_at - time.time()
+    if remaining <= 0:
+        return ""
+    minutes = int(remaining // 60)
+    if minutes < 60:
+        return f" (back in {max(1, minutes)}m)"
+    return f" (back in {minutes // 60}h{minutes % 60:02d}m)"
+
+
 def _debug(env: Mapping[str, str], stderr: TextIO, message: str) -> None:
     if env.get("CL_DEBUG"):
         stderr.write(f"{_PROG}: {message}\n")
@@ -498,7 +551,8 @@ def main(
     model = detect_model(args, home=home)
     _debug(environ, err, f"model={model or '<none>'}")
 
-    account, config = _route(args, environ, model, resolved, err)
+    route = _route(args, environ, model, resolved, err)
+    account, config, model = route.account, route.config, route.model
     launch_env = child_env(account, environ, config)
 
     binary = os.path.expanduser(environ.get("CL_CLAUDE_BIN") or DEFAULT_CLAUDE_BIN)
@@ -510,8 +564,21 @@ def main(
     if not environ.get("CL_QUIET"):
         suffix = f" · {model}" if model else ""
         err.write(f"{_DIM}{_PROG} → {account}{suffix}{_RESET}\n")
+    if route.substituted_from:
+        # Always shown, CL_QUIET or not: the session is about to run something other
+        # than what was asked for, and a capability downgrade nobody notices is worse
+        # than a launch that fails outright.
+        err.write(
+            f"{_YELLOW}{_PROG}: {route.substituted_from} is exhausted on every "
+            f"account; substituted {model}{_reset_hint(route.available_at)}.{_RESET}\n"
+        )
 
-    command = [binary, BYPASS_FLAG, *args]
+    # The ONLY place --model is injected. Detection elsewhere is a prediction used to
+    # score the pick; here it is a deliberate override, and an override that is not
+    # passed through does not happen. Safe from colliding with the operator's own
+    # --model because a substitution is never attempted when one was given.
+    override = ["--model", model] if (route.substituted_from and model) else []
+    command = [binary, BYPASS_FLAG, *override, *args]
     try:
         resolved.exec_(binary, command, launch_env)
     except OSError as exc:

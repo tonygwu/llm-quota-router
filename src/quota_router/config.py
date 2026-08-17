@@ -481,6 +481,19 @@ class Config:
     pileup: PileupConfig = field(default_factory=PileupConfig)
     oracle: OracleConfig = field(default_factory=OracleConfig)
     exec: ExecConfig = field(default_factory=ExecConfig)
+    #: Model to fall back to when the requested one is exhausted on every account.
+    #:
+    #: Read by ``cl`` only, and **opt-in**: unset means "tell me and start anyway",
+    #: never "quietly run something weaker". Substituting a model changes what the
+    #: session can do, which is not a decision a quota router should make on the
+    #: operator's behalf by default.
+    #:
+    #: Passed to the CLI verbatim, and that is the point: the value here is a
+    #: *selection* (``"opus[1m]"``), whereas a transcript records only the server's
+    #: *stamp* (``"claude-opus-5"``), from which the variant cannot be recovered. This
+    #: is the one place ``cl`` injects ``--model``, because an override that is not
+    #: passed through is not an override.
+    fallback_model: str | None = None
     #: Files that were actually read, in application order.
     sources: tuple[str, ...] = ()
     #: Non-fatal complaints (unknown sections, unrecognized tiers, ...).
@@ -982,6 +995,11 @@ def _build(
             or dict(PROVIDER_COMMANDS),
             env_vars=_as_str_table(exec_raw.get("env_vars", {}), "exec.env_vars")
             or dict(PROVIDER_CONFIG_DIR_ENV),
+        ),
+        fallback_model=(
+            _as_str(merged["fallback_model"], "", "fallback_model") or None
+            if merged.get("fallback_model") is not None
+            else None
         ),
         sources=tuple(sources),
         warnings=tuple(warnings),

@@ -111,7 +111,7 @@ def env(home) -> dict[str, str]:
     return {"HOME": str(home), "PATH": "/usr/bin:/bin"}
 
 
-def launch(argv, env, *, answer=None, error=None, select=None, stderr=None):
+def launch(argv, env, *, answer=None, error=None, select=None, stderr=None, config=None):
     """Run ``main()`` against a canned router answer and return ``(code, Exec, stderr)``."""
     import io
 
@@ -124,11 +124,15 @@ def launch(argv, env, *, answer=None, error=None, select=None, stderr=None):
                 raise error
             return answer if answer is not None else selection(_row("claude", fits=True))
 
+    deps_kwargs = {"select": select, "exec_": executor}
+    if config is not None:
+        deps_kwargs["load_config"] = lambda **_kw: config
+
     code = launcher.main(
         argv,
         env=env,
         stderr=err,
-        deps=launcher.Deps(select=select, exec_=executor),
+        deps=launcher.Deps(**deps_kwargs),
     )
     return code, executor, err.getvalue()
 
@@ -648,3 +652,126 @@ def test_the_console_script_entry_point_is_callable_with_no_arguments() -> None:
         parameter.default is not inspect.Parameter.empty
         for parameter in signature.parameters.values()
     )
+
+
+# ======================================================================================
+# Regression 4 -- resuming a session whose model is exhausted everywhere
+# ======================================================================================
+
+
+def cfg(**overrides):
+    """The real builtin config (so account config-dirs resolve), plus overrides."""
+    import dataclasses
+
+    from quota_router.config import load_config
+
+    return dataclasses.replace(load_config(env={}), **overrides)
+
+
+def _by_model(**answers):
+    """A router stub that answers differently depending on the model it is asked about."""
+
+    def select(**kwargs):
+        model = kwargs.get("model")
+        key = (model or "none").replace("-", "_").replace("[", "_").replace("]", "")
+        if key not in answers:
+            raise AssertionError(f"router asked about an unexpected model: {model!r}")
+        return answers[key]
+
+    return select
+
+
+def test_an_exhausted_model_substitutes_the_configured_fallback(env, home) -> None:
+    """Resuming a Fable thread with no Fable quota anywhere.
+
+    Before: the launcher warned and dropped the session on the default account --
+    where its very first turn hits the same wall it was just told about. Nothing about
+    the launch reflected that the requested model was unavailable.
+
+    Substitution is the one case where passing ``--model`` through to claude is
+    correct. Everywhere else it would be trying to REPRODUCE a selection from a
+    server-stamped id, which is lossy (``opus[1m]`` is recorded as ``claude-opus-5``,
+    so the variant cannot be recovered). Here it is a deliberate OVERRIDE, and the
+    string comes from the operator's config rather than from a transcript -- so there
+    is no fidelity to lose, and no way for the override to take effect without it.
+    """
+    session = "9d1f7c22-0000-4000-8000-00000000000a"
+    transcript(home, session, ["claude-fable-5"] * 40)
+
+    code, executor, err = launch(
+        ["--resume", session],
+        env,
+        config=cfg(fallback_model="opus[1m]"),
+        select=_by_model(
+            claude_fable_5=selection(_row("claude_c", fits=False)),
+            opus_1m=selection(_row("claude_b", fits=True)),
+        ),
+    )
+
+    assert code == 0
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b"), (
+        "the account must be chosen for the model that will actually run"
+    )
+    assert "--model" in executor.argv, "an override that is not passed is not an override"
+    assert executor.argv[executor.argv.index("--model") + 1] == "opus[1m]", (
+        "the configured string must be passed VERBATIM -- deriving it from a "
+        "transcript is what loses the [1m] variant"
+    )
+    assert "fable" in err.lower() and "substitut" in err.lower(), (
+        f"a silent capability downgrade is worse than a failed launch; got {err!r}"
+    )
+
+
+def test_without_a_configured_fallback_nothing_is_substituted(env, home) -> None:
+    """Opt-in. The router must not choose a weaker model on the operator's behalf."""
+    session = "9d1f7c22-0000-4000-8000-00000000000b"
+    transcript(home, session, ["claude-fable-5"] * 40)
+
+    code, executor, err = launch(
+        ["--resume", session],
+        env,
+        config=cfg(),
+        select=_by_model(claude_fable_5=selection(_row("claude_c", fits=False))),
+    )
+
+    assert code == 0
+    assert "--model" not in executor.argv
+    assert "no account can serve" in err
+
+
+def test_an_explicit_model_is_never_substituted(env, home) -> None:
+    """The operator asked for this model by name. Overriding it is not ours to do."""
+    code, executor, err = launch(
+        ["--model", "claude-fable-5"],
+        env,
+        config=cfg(fallback_model="opus[1m]"),
+        # The fallback is registered and WOULD be served. The only thing standing
+        # between it and a substitution is the explicit --model, which is the point:
+        # without this arm the test passes because the retry errors, not because the
+        # guard held.
+        select=_by_model(
+            claude_fable_5=selection(_row("claude_c", fits=False)),
+            opus_1m=selection(_row("claude_b", fits=True)),
+        ),
+    )
+
+    assert code == 0
+    assert executor.argv.count("--model") == 1, "no second --model may be injected"
+    assert "opus[1m]" not in executor.argv
+
+
+def test_a_model_that_still_fits_is_left_alone(env, home) -> None:
+    """Substitution is a last resort, not an optimisation."""
+    session = "9d1f7c22-0000-4000-8000-00000000000c"
+    transcript(home, session, ["claude-fable-5"] * 40)
+
+    code, executor, _ = launch(
+        ["--resume", session],
+        env,
+        config=cfg(fallback_model="opus[1m]"),
+        select=_by_model(claude_fable_5=selection(_row("claude_c", fits=True))),
+    )
+
+    assert code == 0
+    assert "--model" not in executor.argv
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")

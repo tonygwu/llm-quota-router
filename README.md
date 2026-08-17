@@ -207,9 +207,41 @@ binary; `cl` only adds account selection.
 
 ```sh
 cl                        # pick an account, start a session
-cl --resume <id>          # same, routed for the model that session actually used
+cl --resume <id>          # same, routed for the model that session ENDED on
 cl --model opus[1m] ...   # an explicit --model wins over session detection
 ```
+
+`--resume` reads the model from the **end** of the transcript, not from a vote
+over it: the question is what the next turn will burn, and a session that
+switched models mid-way is routed on where it ended up. Sentinel entries like
+`<synthetic>` are skipped.
+
+Detection **predicts**; it does not control. `cl` never passes `--model` to
+`claude` on the strength of a guess, because a transcript records the server's
+*stamp* (`claude-opus-5`) rather than your *selection* (`opus[1m]`) — forcing the
+stamp back in would silently drop the variant. Getting detection wrong therefore
+costs accuracy in which window was checked, never a change to what you run.
+
+The one exception is an explicit substitution, which is opt-in:
+
+```toml
+# ~/.config/quota-router/config.toml
+fallback_model = "opus[1m]"
+```
+
+When the model a session needs is exhausted on *every* account, `cl` re-routes
+for `fallback_model`, passes it through with `--model`, and says so:
+
+```
+cl → claude_b · opus[1m]
+cl: claude-fable-5 is exhausted on every account; substituted opus[1m] (back in 42m).
+```
+
+Here passing `--model` is correct precisely because it is an *override* rather
+than a reproduction — the string is yours, taken verbatim from config, so
+nothing is lost in translation, and an override that is not passed through does
+not happen. Unset by default: quietly running a weaker model is not a decision a
+quota router should make for you. Never applied when you named a model yourself.
 
 It ships in this package (`quota_router.launcher`) rather than as a shell script
 on PATH because it is the worked example of the integration contract above — a
