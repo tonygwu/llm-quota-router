@@ -66,9 +66,10 @@ test covers the overlap window where both signals are present.
 ## 3. Small, but each one costs trust
 
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
-  configured floor from the identical built-in default, so a config file that spells out
-  the default value behaves differently from omitting it. Defensible, but it was
-  introduced without review and is the kind of semantics that surprises someone later.
+  configured floor from the identical built-in default. The semantics are coherent and
+  the exclusion reason now names the floor's provenance, so the divergence is stated
+  where it is acted on rather than discovered later. Still unreviewed as a *design*
+  choice — surfaced here for the operator, not as an open defect.
 - **`fable_fraction = 0.5`** is documented by the vendor and *consistent* with local data
   (a static bound gives <= 0.551) but not pinned by it. Recorded honestly in `pse.py`;
   noted here so it is not mistaken for a measurement.

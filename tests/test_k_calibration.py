@@ -854,3 +854,25 @@ def test_the_installer_polls_densely_enough_for_its_own_adoption_gate() -> None:
         f"whose typical step exceeds {ADOPTION_MAX_STEP_S:.0f}s -- installing with the "
         f"default would guarantee no k estimate is ever adoptable"
     )
+
+
+def test_an_unmeasurable_account_says_whose_floor_rejected_it() -> None:
+    """The same config value behaves differently depending on whether you typed it.
+
+    A floor the CALLER set rejects an account whose remaining quota cannot be verified;
+    the identical built-in default does not, because the default is our sanity guard
+    rather than a request. That distinction is defensible and it is also invisible --
+    two setups that look identical in a config file diverge, and the exclusion reason
+    gave the reader no way to tell which rule applied to them.
+
+    Fixed in the cheapest place that carries the information: the reason itself.
+    """
+    from quota_router.cli import _unverifiable_against_floor_reason
+
+    reason = _unverifiable_against_floor_reason(0.02)
+    assert "2.0%" in reason
+    lowered = reason.lower()
+    assert "you set" in lowered or "configured" in lowered, (
+        f"the reason must say the floor was caller-set, since the identical built-in "
+        f"default would NOT have rejected this account: {reason}"
+    )

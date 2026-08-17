@@ -578,10 +578,7 @@ def _partition_candidates(
                 # route treats the antigravity pools for no gain. A floor of exactly 0
                 # is likewise nothing to fail.
                 if config.eligibility.min_remaining_configured and min_remaining > 0.0:
-                    reason = (
-                        "no applicable usage window, so its remaining quota cannot be "
-                        f"verified against the min-remaining floor ({min_remaining:.1%})"
-                    )
+                    reason = _unverifiable_against_floor_reason(min_remaining)
                     # Kept OUT of the fallback pool, unlike an account that is merely
                     # below the floor. The pool's contract is "name whoever frees up
                     # first", and that is unanswerable here: no window means no reset,
@@ -1568,6 +1565,23 @@ def _cmd_exec(
     returncode = getattr(completed, "returncode", 0)
     return int(returncode) if isinstance(returncode, int) else EXIT_ROUTER_FAILURE
 
+
+
+def _unverifiable_against_floor_reason(min_remaining: float) -> str:
+    """Why an account with no applicable window fails a CALLER-SET floor.
+
+    Names the floor's provenance because that is the part a reader cannot otherwise
+    see: the identical value as a built-in default does not reject this account. The
+    built-in 0.02 is our own sanity guard; a floor you typed is a bar you expect to
+    bind, and only the second one is a reason to refuse an account whose remaining
+    quota is unknowable. Two setups that look the same in a config file diverge here,
+    so the divergence is stated where it is acted on.
+    """
+    return (
+        "no applicable usage window, so its remaining quota cannot be verified "
+        f"against the min-remaining floor ({min_remaining:.1%}) that you set "
+        "(the identical built-in default does not reject unmeasurable accounts)"
+    )
 
 
 def _calls_per_window_report(usable: Mapping[str, Any]) -> str:
