@@ -42,6 +42,7 @@ import argparse
 import contextlib
 import inspect
 import json
+import math
 import os
 import subprocess
 import sys
@@ -1568,6 +1569,44 @@ def _cmd_exec(
     return int(returncode) if isinstance(returncode, int) else EXIT_ROUTER_FAILURE
 
 
+
+def _adoption_verdict(
+    *, k: float, low: float, high: float, median_step_s: float, max_gap_s: float
+) -> str:
+    """Say whether this estimate is adoptable, and if not, name the blocker.
+
+    Extracted so the message can be tested against the decision it describes. It
+    could previously contradict itself inside one sentence -- a width of 15.5% was
+    rounded to "15%" for display and compared at full precision, so the reader was
+    told the estimate met a bound it had just failed. A tool that argues with itself
+    teaches you to distrust the parts that are right.
+
+    Reporting the condition that actually failed matters as much: quoting width when
+    density is the blocker sends the reader to collect more burn, which will never
+    help -- the fix there is denser sampling, or waiting for sparse history to age out.
+    """
+    # The real interval is taken, never reconstructed from k and a width: round-
+    # tripping through `k +/- width/2` reintroduces float error and can refuse an
+    # estimate sitting exactly on the bound, which then prints as satisfying it.
+    width = high - low
+    if history_mod.adoption_ready(
+        k=k, low=low, high=high, max_gap_s=max_gap_s, median_step_s=median_step_s
+    ):
+        return "ADOPT"
+    if median_step_s > history_mod.ADOPTION_MAX_STEP_S:
+        return (
+            f"keep default (typical sample step {median_step_s / 60:.0f}m > "
+            f"{history_mod.ADOPTION_MAX_STEP_S / 60:.0f}m; increments lost to unseen "
+            f"resets bias k low)"
+        )
+    # One decimal, and rounded UP, so the printed number can never look like it
+    # satisfies the bound that just rejected it.
+    shown = math.ceil(1000.0 * width / k) / 10.0
+    return (
+        f"keep default (interval {shown:.1f}% wide, want "
+        f"<={100 * history_mod.ADOPTION_RELATIVE_WIDTH:.0f}%)"
+    )
+
 def _cmd_calibrate(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1647,30 +1686,13 @@ def _cmd_calibrate(
             continue
         width = est.high - est.low
         span_h = est.span_s / 3600.0
-        enough = history_mod.adoption_ready(
+        verdict = _adoption_verdict(
             k=est.k,
             low=est.low,
             high=est.high,
-            max_gap_s=est.max_gap_s,
             median_step_s=est.median_step_s,
+            max_gap_s=est.max_gap_s,
         )
-        # Name the condition that actually failed. Reporting width when density is
-        # the blocker sends the reader off to collect more burn, which will never
-        # help -- the fix is denser sampling, or waiting for sparse history to age
-        # out of the window.
-        if enough:
-            verdict = "ADOPT"
-        elif est.median_step_s > history_mod.ADOPTION_MAX_STEP_S:
-            verdict = (
-                f"keep default (worst sample gap {est.max_gap_s / 60:.0f}m > "
-                f"{history_mod.ADOPTION_MAX_GAP_S / 60:.0f}m; increments lost to unseen "
-                f"resets bias k low)"
-            )
-        else:
-            verdict = (
-                f"keep default (interval {100 * width / est.k:.0f}% wide, want "
-                f"<={100 * history_mod.ADOPTION_RELATIVE_WIDTH:.0f}%)"
-            )
         stdout.write(
             f"  {account_id}: k={est.k:.1f} [{est.low:.1f}-{est.high:.1f}] "
             f"from {est.session_increment_pp:.0f}pp session / {est.weekly_consumed_pp:.0f}pp "

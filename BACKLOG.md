@@ -94,9 +94,6 @@ reported span is labelled as what it is.
 
 ## 5. Small, but each one costs trust
 
-- **The adoption message can print "interval 15% wide, want <=15%"** and then refuse.
-  The true value is 15.9%, rounded for display before being compared. It reads as the
-  tool contradicting itself, which is worse than the rounding error.
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
   configured floor from the identical built-in default, so a config file that spells out
   the default value behaves differently from omitting it. Defensible, but it was

@@ -683,3 +683,58 @@ def test_the_width_gate_still_binds_independently_of_density() -> None:
     from quota_router.history import adoption_ready
 
     assert not adoption_ready(k=6.3, low=4.0, high=9.0, max_gap_s=60.0, median_step_s=60.0)
+
+
+# ======================================================================================
+# The verdict has to agree with itself
+# ======================================================================================
+
+
+def test_a_refusal_never_prints_a_number_that_satisfies_its_own_bound() -> None:
+    """"interval 15% wide, want <=15%" -- and then it refuses.
+
+    The width was rounded to whole percent for display but compared at full
+    precision, so 15.5% printed as 15% and failed a bound it appeared to meet. A tool
+    that contradicts itself in the same sentence teaches the reader to distrust the
+    parts that are right, which is a worse outcome than the rounding error.
+
+    Asserted as a property over the message rather than on one example, so any future
+    rewording that reintroduces the mismatch is caught.
+    """
+    import re
+
+    from quota_router.cli import _adoption_verdict
+
+    pattern = re.compile(r"interval ([\d.]+)% wide, want <=([\d.]+)%")
+    # widths that straddle the bound, including the ones that round the wrong way
+    for width_frac in (0.1449, 0.1499, 0.15, 0.1501, 0.1549, 0.1551, 0.16, 0.20):
+        k = 6.3
+        half = width_frac * k / 2.0
+        verdict = _adoption_verdict(
+            k=k, low=k - half, high=k + half, median_step_s=60.0, max_gap_s=60.0
+        )
+        m = pattern.search(verdict)
+        if m is None:
+            continue  # adopted, or refused for density -- covered elsewhere
+        shown, bound = float(m.group(1)), float(m.group(2))
+        assert shown > bound, (
+            f"refused while printing {shown}% against a bound of {bound}%: the "
+            f"message says the estimate qualifies and the verdict says it does not "
+            f"(true width {100 * width_frac:.2f}%)"
+        )
+
+
+def test_a_density_refusal_reports_the_statistic_it_actually_tested() -> None:
+    """The condition moved to the median step; the message still named the worst gap.
+
+    Introduced by the fix that made this gate reachable at all. Reporting the worst
+    gap while testing the typical one sends the reader to look at the wrong number --
+    and on a series with one overnight hole those two differ by an order of magnitude.
+    """
+    from quota_router.cli import _adoption_verdict
+
+    verdict = _adoption_verdict(
+        k=6.3, low=6.25, high=6.35, median_step_s=3 * HOUR, max_gap_s=9 * HOUR
+    )
+    assert "180m" in verdict, f"should name the 180m typical step, got: {verdict}"
+    assert "540m" not in verdict, f"named the worst gap it did not test: {verdict}"
