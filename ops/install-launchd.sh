@@ -11,12 +11,18 @@
 #
 # What remains is strictly a READER. It runs `quotapick status`, which reads each
 # account's existing access token and calls the vendor usage endpoint with it. Nothing is
-# minted, nothing is written back to any credential store. Its only purpose is to keep
-# history.jsonl dense, so burn-rate learning has a series to work from even for accounts
-# that are only ever driven headlessly.
+# minted, nothing is written back to any credential store. It does two things:
 #
-# Safe to not run at all. The router reads usage live on every invocation; this only
-# improves the history it learns from.
+#   1. keeps history.jsonl dense, so burn-rate learning has a series to work from even
+#      for accounts that are only ever driven headlessly; and
+#   2. writes waste.jsonl -- one row per window reset, which is the measurement the whole
+#      project is judged on (README, "Measuring the thing it exists for").
+#
+# The router still reads usage live on every invocation, so not running this costs no
+# correctness. It does cost the measurement: a reset seen by nothing leaves an
+# `observed: false` row and its remainder is unrecoverable, so the longer this job is
+# down the more of the series is holes. That is why the writer lives here rather than in
+# a command someone has to remember to run.
 #
 #   ./ops/install-launchd.sh              install and start
 #   ./ops/install-launchd.sh --uninstall  stop and remove

@@ -169,6 +169,7 @@ quotapick status                         # every pool at a glance
 quotapick explain --model fable          # why that account won
 quotapick pick --model fable --json      # decision + full ranking as JSON
 quotapick exec --only claude_b -- claude -p "..."   # pick, then run
+quotapick waste                          # what expired unused, per account, in PSE
 ```
 
 From Python:
@@ -278,19 +279,24 @@ starts on the default account rather than a terminal hanging on a Keychain
 prompt), `CL_ONLY` (default `claude,claude_b,claude_c,claude_d`), `CL_QUIET`,
 `CL_DEBUG`.
 
-## Keeping history dense (optional)
+## The poller
 
 The router reads usage live on every invocation, so nothing needs to run on a
-schedule for it to work. The optional poller exists only to keep `history.jsonl`
-dense, which is what burn-rate learning reads:
+schedule for routing to work. The poller runs `quotapick status` and produces the two
+things the router cannot produce for itself:
 
 ```sh
-./ops/install-launchd.sh              # `quotapick status` every 30 min
+./ops/install-launchd.sh              # `quotapick status` every 30 min ($POLL_INTERVAL_S)
 ./ops/install-launchd.sh --uninstall
 ```
 
+- **`history.jsonl` density**, which is what burn-rate learning and `calibrate` read.
+- **`waste.jsonl`**, one row per window reset — the measurement described above.
+
 It is a reader like everything else here: it mints nothing and writes to no
-credential store. Skipping it costs you learning quality, never correctness.
+credential store. Skipping it costs no correctness, but it does cost the measurement,
+and permanently: a reset nothing observed leaves an `observed: false` row whose
+remainder can never be recovered.
 
 ### Waking a dark account
 
@@ -319,6 +325,81 @@ it. The spend is worth something only at the moment a read fails.
 Rate-limited to one attempt per account per 30 minutes. Some accounts are dark
 for reasons a refresh cannot fix — revoked credentials, a logged-out slot — and
 without that cooldown they would spawn a CLI on every invocation forever.
+
+## Measuring the thing it exists for
+
+The premise is that quota expires unspent. That number had never once been computed —
+every change was justified mechanically ("the scorer now compares like units") rather
+than by evidence. `waste.jsonl` is the measurement.
+
+```sh
+quotapick waste            # per account per window: resets, observed, missed, PSE
+quotapick waste --json
+quotapick waste --backfill # re-scan retained history for resets not yet recorded
+```
+
+```
+account     window     resets  observed  missed  wasted PSE  worst gap
+claude      7d              4         2       2        6.56       7.0d
+claude      fable           4         2       2        3.50       7.0d
+claude_c    7d              1         1       0        0.58       3.0d
+
+7.14 PSE expired unused across 5 weekly reset(s) -- 3 observed, 2 missed.
+```
+
+One line per window reset per account, written by `quotapick status` — which the poller
+already runs, so a reset is at most one poll interval stale when it is seen. Never on
+`pick`: scanning retained history costs ~130 ms once history is a month deep, and the
+launcher caps its whole routing decision at three seconds.
+
+Five things the record does deliberately:
+
+- **PSE as well as the fraction.** 55% of a max_20x pool and 55% of a max_5x pool are
+  different amounts of lost work, so fractions cannot be summed across a fleet — and a
+  fleet total is the point. The conversion is `pse.py`'s, evaluated at the reset instant
+  where the horizon is zero and nothing can be absorbed, so the objective the router
+  optimizes and the number it is scored on are the same function.
+- **`observation_gap_s`.** How long before the reset the last reading was taken. A
+  remainder measured eight minutes out is solid; one measured seven hours out is a
+  guess. Recorded rather than thresholded — picking a cutoff now would bake one reader's
+  answer into a series meant to outlive the question.
+- **`k` on every row**, because it is calibrated per account and will change. A series
+  computed under one `k` must not be silently reinterpreted under a later one.
+- **Idempotent on `(account, window, reset_at)`.** The reset instant identifies the
+  occurrence, so re-running — or `--backfill` over a longer history — cannot double-count.
+- **Never rotated, never pruned, no clock that could shorten it.** That is the
+  requirement, not an oversight; ~400 rows a year is a few hundred KB for the life of the
+  project. History pruning trusted a caller-supplied clock and one ad-hoc probe with a
+  synthetic `--now` deleted 38 hours of the calibration data the `k` measurement rested
+  on. A measurement series that can be silently shortened is worse than none, because it
+  still renders — it just answers a smaller question than the one that was asked.
+
+A reset is recognized by `resets_at` moving forward **by at least a full window length**
+— a replacement window ends one length after it starts and cannot start before the old
+one ended, so nothing smaller can be a rollover. The used fraction dropping is recorded
+alongside as a corroborating signal, never as the trigger. Anything that moves the
+boundary by less is reported and not recorded: read as a reset, a window that *slid*
+rather than tiled would mint a row on every poll, forever, into a file with no retention
+policy.
+
+**A missed reset is not a zero.** When the machine sleeps or the poller stops,
+`resets_at` comes back several windows on: those resets happened and their remainders are
+gone. They are written as rows with `observed: false` and no remainder, and reported as
+"3 observed, 2 missed", so a total is always readable as a *lower bound* rather than as
+an average taken over a hole.
+
+Two windows are recorded and one is not. The weekly pool and the model-scoped Fable
+sub-cap both expire; the five-hour window does not — it refills, so its rollover replaces
+quota rather than losing it (see [The rule](#the-rule)). The Fable figure is a *slice of
+the same weekly pool*, so it is listed separately and never added into the total. When
+that coupling binds — the sub-cap held plenty but the weekly pool it draws on did not —
+`remaining_fraction` and `wasted_pse` on that row stop agreeing, and the row carries a
+`weekly-coupled` note saying which ceiling produced the number. Without it that
+divergence is indistinguishable from an arithmetic bug six months later.
+
+`--backfill` reaches back only as far as `history.jsonl` still goes, which its own
+rotation caps at 30 days. It recovers a gap in the waste series; it cannot recover one in
+history.
 
 ## Design notes
 
@@ -364,6 +445,15 @@ The bar is a measured reduction in **wasted quota** — remaining fraction at ea
 window reset, per account, compared against the previous router — across at
 least one full weekly cycle. Agreement rate against the old dial is explicitly
 *not* the metric: the point is to disagree with it, correctly.
+
+Half of that now exists: `quotapick waste` reports the absolute number (see
+[Measuring the thing it exists for](#measuring-the-thing-it-exists-for)), and it starts
+accumulating at the next reset. What is still missing is the *comparison* — what a naive
+dial would have chosen, replayed against the same history. That is the harder half and
+it is deliberately not attempted yet; the absolute number is decision-grade on its own,
+because a fleet that turns out to waste almost nothing shelves the project regardless of
+what the counterfactual says. `BACKLOG.md` item 1 states what a counterfactual would
+need.
 
 Before any public push: strip absolute home paths, account emails and identity
 keys, and operator-specific measurements in favor of synthetic fixtures. Once

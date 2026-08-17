@@ -8,20 +8,46 @@ live option, and a backlog is the file most likely to leak them.
 
 ---
 
-## 1. The core claim has never been measured
+## 1. The core claim is now measurable, and not yet measured
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
-reset. That number has never been computed. Every justification so far has been
-mechanical ("the scorer now compares like units") rather than empirical.
+reset. Every justification to date has been mechanical ("the scorer now compares like
+units") rather than empirical.
 
-This is the gate the rollout plan puts on publishing, and it is still wide open. It also
-cannot be back-filled from existing history: the observation-clock fix changed which
-readings count, so any measurement taken before it is invalid.
+**What now exists.** `quota_router/waste.py` writes one durable, never-pruned row per
+window reset per account to `waste.jsonl` — remaining fraction, the same remainder in
+PSE, the `k` and tier scale it was computed with, and how long before the reset the last
+reading was taken. `quotapick status` is the writer, so the launchd poller produces it
+with no new scheduling; `quotapick waste [--json]` reports it, and `--backfill` re-scans
+retained history for rows the series is missing. Resets that happened while nothing was
+watching are written as `observed: false` with no remainder, so any total reads as a
+lower bound rather than as an average over a hole.
 
-**Closes when:** remaining-fraction-at-reset is reported per account per window, router
-versus the counterfactual dial, across at least one full weekly cycle. If the number is
-unimpressive, that is the finding — publish it or shelve the project, but do not keep
-shipping scoring changes justified by argument alone.
+**What is still open, in the order it blocks publishing:**
+
+1. **No data yet.** The first row appears at the first reset after the poller next runs.
+   One full weekly cycle across the fleet is the minimum the publishing bar asks for.
+   Nothing can shorten this but waiting.
+2. **`--backfill` cannot reach backwards very far.** It reads `history.jsonl`, whose own
+   rotation caps retention at 30 days, and history is currently only hours deep after the
+   pruning incident. So the series effectively starts now.
+3. **The counterfactual is not built, on purpose.** The publishing bar asks for router
+   *versus the previous dial*, and only the absolute half exists. Building the other half
+   needs three things this item does not have: the old dial's selection rule preserved as
+   a callable (it was replaced, not kept); a replay that re-runs it over the recorded
+   snapshot series to produce the account it *would* have picked; and — the hard part —
+   a model of how a different pick would have changed subsequent *consumption*, since
+   history records what was actually burned on the account that was actually chosen, not
+   what would have burned elsewhere. Without that third piece a replay compares one real
+   trajectory against an imagined one and the difference is unfalsifiable. Worth
+   designing before building.
+
+**Closes when:** at least one full weekly cycle of resets is recorded for every account,
+and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
+finding — publish it or shelve the project, but do not keep shipping scoring changes
+justified by argument alone. The counterfactual comparison becomes its own item at that
+point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
+the counterfactual says.
 
 ## 2. The k adoption gate cannot fire on poller-only data
 

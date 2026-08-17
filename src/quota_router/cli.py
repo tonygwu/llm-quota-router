@@ -55,6 +55,7 @@ from . import explain as explain_mod
 from . import history as history_mod
 from . import model_classes as mc
 from . import pse
+from . import waste as waste_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
@@ -1373,6 +1374,46 @@ def _cmd_explain(
     return EXIT_OK
 
 
+def _plans_for(config: Config) -> tuple[dict[str, pse.Plan], list[str]]:
+    """Per-account calibrated denominators, for stamping ``k`` onto a waste row.
+
+    Read through the scoring layer rather than off the config directly, so the value
+    that lands in the measurement is the same one the router routes on -- including its
+    refusal of a physically impossible ratio. Imported lazily because the pure decision
+    layer is an optional dependency of the CLI (see :func:`_load_engine`).
+    """
+    plans: dict[str, pse.Plan] = {}
+    warnings: list[str] = []
+    try:
+        from . import scoring  # type: ignore[attr-defined]
+    except ImportError as exc:  # pragma: no cover - the pure layer ships with the CLI
+        return plans, [f"cannot resolve per-account k: {exc}"]
+    for account_id in config.accounts:
+        try:
+            plan = scoring.plan_for(config, account_id)
+        except ValueError as exc:
+            warnings.append(f"{account_id}: {exc}")
+            continue
+        if plan is not None:
+            plans[account_id] = plan
+    return plans, warnings
+
+
+def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
+    """Append any window reset the retained history can attest to.
+
+    Run from ``status`` because that is what the launchd poller invokes: it already
+    reads every account on a schedule, so a reset is at most one poll interval stale
+    when it is seen, and no new job has to exist. Deliberately NOT on ``pick`` -- the
+    launcher caps its whole routing decision at three seconds, and scanning retained
+    history there is exactly the work that turns a decision into a timeout.
+    """
+    plans, warnings = _plans_for(config)
+    records = history_mod.iter_records(env=env, include_rotated=True)
+    write = waste_mod.update_from_history(records, plans=plans, env=env)
+    return warnings + list(write.warnings)
+
+
 def _cmd_status(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1384,6 +1425,7 @@ def _cmd_status(
 ) -> int:
     prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False)
     model_class = prepared.model.model_class
+    prepared.warnings = prepared.warnings + tuple(_record_waste(prepared.config, env))
 
     if getattr(args, "json", False):
         payload = {
@@ -1644,6 +1686,91 @@ def _cmd_calibrate(
     return EXIT_OK
 
 
+def _cmd_waste(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Report what expired unused, per account per window, in PSE.
+
+    A reader, not a statistics package: the absolute number is the thing that was never
+    measured, and a total plus an honest observed/missed split is what a publishing
+    decision turns on.
+    """
+    config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    warnings: list[str] = []
+
+    if getattr(args, "backfill", False):
+        warnings.extend(_record_waste(config, env))
+
+    path = waste_mod.waste_path(env)
+    records, read_warnings = waste_mod.read_records(env=env)
+    warnings.extend(read_warnings)
+    summary = waste_mod.summarize(records)
+    totals = summary["totals"]
+    scoped = summary["scoped_totals"]
+
+    if getattr(args, "json", False):
+        _dump_json(
+            {
+                "contract_version": QUOTA_ROUTER_CONTRACT_VERSION,
+                "generated_at": _iso(now_s),
+                "path": str(path),
+                "records": len(records),
+                **summary,
+                "warnings": list(dict.fromkeys(warnings)),
+            },
+            stdout,
+        )
+        return EXIT_OK
+
+    if not records:
+        stdout.write(
+            f"no window reset has been recorded yet ({path}).\n"
+            f"The series is written by `{_PROG} status`, which the poller already runs; "
+            f"the first row appears at the first reset after it starts.\n"
+        )
+        for warning in dict.fromkeys(warnings):
+            stderr.write(f"! {warning}\n")
+        return EXIT_OK
+
+    stdout.write(f"{len(records)} reset(s) recorded in {path}\n\n")
+    stdout.write(f"{'account':<12}{'window':<10}{'resets':>7}{'observed':>10}"
+                 f"{'missed':>8}{'wasted PSE':>12}{'worst gap':>11}\n")
+    for account_id in sorted(summary["accounts"]):
+        for key in sorted(summary["accounts"][account_id]):
+            row = summary["accounts"][account_id][key]
+            gap = row["max_observation_gap_s"]
+            stdout.write(
+                f"{account_id:<12}{key:<10}{row['resets']:>7}{row['observed']:>10}"
+                f"{row['missed']:>8}{row['wasted_pse']:>12.2f}"
+                f"{(explain_mod.format_duration(gap) if gap is not None else '-'):>11}\n"
+            )
+
+    stdout.write(
+        f"\n{totals['wasted_pse']:.2f} PSE expired unused across {totals['resets']} "
+        f"weekly reset(s) -- {totals['observed']} observed, {totals['missed']} missed.\n"
+    )
+    if totals["missed"]:
+        stdout.write(
+            "A missed reset has no remainder and is counted, never averaged over: its "
+            "quota is gone and unmeasured, so the total above is a LOWER bound.\n"
+        )
+    if scoped["resets"]:
+        stdout.write(
+            f"Model-scoped sub-caps: {scoped['wasted_pse']:.2f} PSE across "
+            f"{scoped['resets']} reset(s). Listed, not added -- that budget is a slice "
+            f"of the same weekly pool and is already inside the total above.\n"
+        )
+    for warning in dict.fromkeys(warnings):
+        stderr.write(f"! {warning}\n")
+    return EXIT_OK
+
+
 # ======================================================================================
 # Argument parsing
 # ======================================================================================
@@ -1768,6 +1895,19 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="only use history from the last N days (default: 14; 0 = all)",
     )
+    waste_parser = subparsers.add_parser(
+        "waste",
+        parents=[common],
+        help="report quota that expired unused at each window reset",
+    )
+    waste_parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help=(
+            "before reporting, re-scan retained history for resets missing from the "
+            "series (append-only; an already-recorded reset is never written twice)"
+        ),
+    )
     return parser
 
 
@@ -1777,6 +1917,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "status": _cmd_status,
     "explain": _cmd_explain,
     "calibrate": _cmd_calibrate,
+    "waste": _cmd_waste,
 }
 
 
