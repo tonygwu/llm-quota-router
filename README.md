@@ -25,7 +25,7 @@ The unit is the **PSE**: one Max-20x five-hour budget.
 
 ```
 session capacity = 1.0                x tier_scale     (20x -> 1.0, 5x -> 0.25)
-weekly capacity  = weekly_to_session  x tier_scale     (k ~ 12, calibrated)
+weekly capacity  = weekly_to_session  x tier_scale     (k = 6.25, per account)
 fable capacity   = fable_fraction     x weekly         (0.5, documented)
 
 fable_remaining  = min(fable sub-cap remaining, weekly remaining)
@@ -117,10 +117,26 @@ and bans refresh-token machinery from executable code
 (`tests/test_no_token_rotation.py`).
 
 What we give up: an access token lives about eight hours. If one has expired we
-report the account `unknown` rather than mint a new one, so an account nobody has
-touched in a day goes dark. In practice the gap is narrow -- any account the
-router routes work to is refreshed by that traffic, and headless `claude -p` runs
-refresh exactly like interactive sessions do.
+report the account as unreadable rather than mint a new one, so an account nobody
+has touched in a day goes dark.
+
+**That gap is not narrow, and an earlier version of this paragraph claimed it
+was.** The reasoning was that any account the router routes work to is refreshed
+by that traffic — which is circular, because the router will not route to an
+account it cannot read. It is self-reinforcing in the worst direction: the
+account with the most quota left is the one being used least, so it is the first
+to go dark and then stays dark. Seen live, holding 53% of its Fable allowance
+while the router picked a pool with 3% left.
+
+Two measurements also contradict the old claim that traffic keeps a token alive.
+`claude -p` against a *healthy* token makes a real authenticated call and leaves
+the credential byte-identical, and `claude auth status` never reaches the network
+at all. Renewal happens only once the token has already lapsed, so ordinary
+traffic does not top a token up — it only repairs one that has already died.
+
+The reader boundary is unchanged; see [Waking a dark
+account](#waking-a-dark-account) for how the poller breaks the cycle without
+crossing it.
 
 ## Install
 
