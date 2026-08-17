@@ -80,19 +80,7 @@ must adopt — worth designing before building.
 **Closes when:** a reservation is released by the event that made it obsolete, and a
 test covers the overlap window where both signals are present.
 
-## 4. `calibrate --days` filters on a different clock than it measures on
-
-`--days N` selects records by write time; the series is now keyed on observation time.
-A stale republished reading can therefore pull data older than the requested window into
-the estimate, which is why `--days 0.5` can report a 28-hour span.
-
-Benign today — the gap guard drops exactly those pairs — but the output invites the
-reader to trust a window boundary the tool is not enforcing.
-
-**Closes when:** both the filter and the series use the observation clock, or the
-reported span is labelled as what it is.
-
-## 5. Small, but each one costs trust
+## 4. Small, but each one costs trust
 
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
   configured floor from the identical built-in default, so a config file that spells out
@@ -105,6 +93,12 @@ reported span is labelled as what it is.
 ---
 
 ## Closed
+
+- **`calibrate --days` filtered on write time but measured on observation time.** A
+  republished stale reading is written now while describing hours ago, so a window
+  selected on the record clock was not the window measured on the series clock --
+  `--days 0.5` could report a 28-hour span. The same cutoff is now applied again where
+  the series is built.
 
 - **The k adoption gate could not fire on poller-only data.** `ADOPTION_MAX_GAP_S`
   equalled the usage poller's own `StartInterval`, so the bar demanded data denser than

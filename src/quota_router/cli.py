@@ -1617,15 +1617,15 @@ def _cmd_calibrate(
     cwd: str | None,
 ) -> int:
     config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    since_s = (now_s - float(args.days) * 86400.0) if args.days else None
     records = list(
-        history_mod.iter_records(
-            env=env,
-            include_rotated=True,
-            since_s=(now_s - float(args.days) * 86400.0) if args.days else None,
-        )
+        history_mod.iter_records(env=env, include_rotated=True, since_s=since_s)
     )
     results = history_mod.calibrate(records, window_key=args.window)
-    k_results = history_mod.estimate_weekly_to_session(records)
+    # The same cutoff, applied again on the observation clock: the record filter above
+    # can only see write time, and a republished reading is written now while
+    # describing hours ago.
+    k_results = history_mod.estimate_weekly_to_session(records, since_s=since_s)
 
     if getattr(args, "json", False):
         _dump_json(

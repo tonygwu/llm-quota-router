@@ -735,7 +735,9 @@ class WeeklyToSessionEstimate:
 
 
 def _account_series(
-    records: Iterable[Mapping[str, Any]], account: str
+    records: Iterable[Mapping[str, Any]],
+    account: str,
+    since_s: float | None = None,
 ) -> dict[str, list[tuple[float, float | None, float | None]]]:
     """Timestamped (session, weekly) readings for one account, grouped BY SOURCE.
 
@@ -795,6 +797,12 @@ def _account_series(
             weekly = (windows.get("7d") or {}).get("used_fraction")
             observed = session_window.get("observed_at_s")
             clock = float(observed) if isinstance(observed, (int, float)) else float(t)
+            # Filtered on the OBSERVATION clock, which is the one this series is
+            # keyed on. The caller's record-level filter runs on write time, and a
+            # republished stale reading is written now while describing hours ago --
+            # so a window selected there is not the window measured here.
+            if since_s is not None and clock < since_s:
+                continue
             source = str(snapshot.get("source") or "unknown")
             by_source.setdefault(source, []).append((clock, session, weekly))
 
@@ -826,6 +834,7 @@ def _median_step(times: Sequence[float]) -> float:
 
 def estimate_weekly_to_session(
     records: Iterable[Mapping[str, Any]],
+    since_s: float | None = None,
 ) -> dict[str, WeeklyToSessionEstimate]:
     """Estimate ``k`` per account: five-hour increments over weekly consumption.
 
@@ -852,7 +861,7 @@ def estimate_weekly_to_session(
 
     results: dict[str, WeeklyToSessionEstimate] = {}
     for account in accounts:
-        by_source = _account_series(materialized, account)
+        by_source = _account_series(materialized, account, since_s)
         session_pp = weekly_pp = 0.0
         resets = 0
         max_gap = 0.0

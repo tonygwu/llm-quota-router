@@ -738,3 +738,35 @@ def test_a_density_refusal_reports_the_statistic_it_actually_tested() -> None:
     )
     assert "180m" in verdict, f"should name the 180m typical step, got: {verdict}"
     assert "540m" not in verdict, f"named the worst gap it did not test: {verdict}"
+
+
+def test_a_requested_window_is_honoured_on_the_clock_the_estimate_uses() -> None:
+    """``--days N`` selected records by WRITE time while the series keys on OBSERVATION
+    time, so a stale republished reading dragged data from outside the window in.
+
+    Live, ``--days 0.5`` reported a span of 28 hours. Benign arithmetically -- the gap
+    guard drops the offending pairs -- but the output invites the reader to trust a
+    boundary the tool is not enforcing, and "the last twelve hours say k=4.7" is a
+    different claim from "some readings from yesterday say so".
+    """
+    from quota_router.history import estimate_weekly_to_session
+
+    # Everything is WRITTEN inside the window; the first batch was OBSERVED long before.
+    log = []
+    for i in range(6):
+        t = 100_000.0 + i * 1800.0
+        log.append(obs_rec(t, t - 30 * HOUR, 1.0, 0.10))      # republished, 30h stale
+    session, weekly = 0.0, 0.40
+    for i in range(25):
+        t = 120_000.0 + i * 600.0
+        log.append(obs_rec(t, t, session, weekly))
+        session += 0.03
+        weekly += 0.03 / 8.0
+
+    cutoff = 120_000.0 - 2 * HOUR          # "the last few hours", on the observation clock
+    est = estimate_weekly_to_session(log, since_s=cutoff)["claude"]
+
+    assert est.span_s <= 12 * HOUR, (
+        f"span {est.span_s / 3600:.1f}h exceeds the requested window: readings observed "
+        f"before the cutoff were pulled in because only the write time was filtered"
+    )
