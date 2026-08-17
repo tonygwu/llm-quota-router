@@ -269,6 +269,34 @@ dense, which is what burn-rate learning reads:
 It is a reader like everything else here: it mints nothing and writes to no
 credential store. Skipping it costs you learning quality, never correctness.
 
+### Waking a dark account
+
+An OAuth *access* token lasts about eight hours, and this tool will never redeem
+a refresh token to renew one. So an account nobody uses goes dark — its usage
+read fails, its snapshot has no windows, and it drops out of routing.
+
+That inverts the whole objective: **the account with the most quota left is the
+one being used least, so it is the first to go dark, and once dark the router
+cannot spend from it, which keeps it dark.** Seen live — an account holding 53%
+of its Fable allowance was invisible while the router picked one with 3% left.
+
+The poller breaks the loop by asking Claude Code to do its own job: it spawns the
+vendor CLI against that account's config directory for one Haiku-sized prompt,
+lets *it* renew the token (it is the only authorised redeemer), and reads again.
+No credential is touched here. Enabled by `QUOTA_ROUTER_REFRESH_AUTH=1`, which
+`install-launchd.sh` sets for the poller and nothing else sets anywhere.
+
+It is deliberately **not** a scheduled keepalive, because measurement says that
+would not work: `claude -p` against a *healthy* token makes a real API call and
+leaves the credential byte-identical, and `claude auth status` never touches the
+network at all. Renewal happens only when the token has already lapsed, so a
+prompt every six hours against an eight-hour token buys nothing and bills you for
+it. The spend is worth something only at the moment a read fails.
+
+Rate-limited to one attempt per account per 30 minutes. Some accounts are dark
+for reasons a refresh cannot fix — revoked credentials, a logged-out slot — and
+without that cooldown they would spawn a CLI on every invocation forever.
+
 ## Design notes
 
 - **Pure core.** `scoring.py` and `select.py` import only stdlib and the type

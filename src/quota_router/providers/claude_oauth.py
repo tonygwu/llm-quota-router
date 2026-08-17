@@ -199,6 +199,22 @@ def usage_cache_path(
     return base / f"{safe}.json"
 
 
+def refresh_stamp_path(
+    account_id: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    home: Path | str | None = None,
+) -> Path:
+    """Where one account's last auth-refresh attempt is recorded.
+
+    Deliberately a sibling of :func:`usage_cache_path` rather than a key inside it:
+    the usage cache is rewritten wholesale on every successful read, and a cooldown
+    that vanished whenever a read succeeded would be no cooldown at all on exactly the
+    accounts that alternate between working and dark.
+    """
+    return usage_cache_path(account_id, env, home=home).with_suffix(".refresh.json")
+
+
 def _read_usage_cache(path: Path) -> tuple[Any | None, float | None, float | None]:
     try:
         blob = json.loads(path.read_text(encoding="utf-8"))
@@ -468,6 +484,7 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         env: Mapping[str, str] | None = None,
         home: Path | str | None = None,
         configs: Sequence[ClaudeAccountConfig] | None = None,
+        refresher: Any = None,
     ) -> None:
         self._runner = runner
         self._opener = opener
@@ -477,6 +494,28 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         self._env = env
         self._home = home
         self._configs = tuple(configs) if configs is not None else None
+        self._refresher = refresher
+
+    @property
+    def refresh_enabled(self) -> bool:
+        """Whether a dark account may be woken by spawning the vendor CLI.
+
+        Off unless ``QUOTA_ROUTER_REFRESH_AUTH`` says otherwise, and the reason is
+        latency rather than caution: a refresh spawn takes seconds, while the
+        interactive launcher caps its entire routing decision at three. Enabling it
+        everywhere would trade a dark account for a stall on every new terminal.
+
+        The poller is the intended caller. Nothing waits on it, it already runs on a
+        cadence far shorter than a token's life, and it is where an account going dark
+        is first observable.
+        """
+        environ = os.environ if self._env is None else self._env
+        return (environ.get("QUOTA_ROUTER_REFRESH_AUTH") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
     @property
     def configs(self) -> tuple[ClaudeAccountConfig, ...]:
@@ -490,6 +529,27 @@ class ClaudeOAuthAdapter(ProviderAdapter):
             snapshots.extend(self._snapshot_one(config, now_s))
         return snapshots
 
+    def _refresh(self, config: ClaudeAccountConfig, now_s: float) -> Any:
+        """Ask Claude Code to renew this account's token. Never raises.
+
+        Imported here rather than at module scope because :mod:`quota_router.refresh`
+        imports :mod:`quota_router.config`, which would make this provider's import
+        graph depend on the config layer it is deliberately independent of.
+        """
+        from ..config import AccountConfig
+        from ..refresh import refresh_auth
+
+        try:
+            return refresh_auth(
+                AccountConfig(id=config.account_id, config_dir=str(config.config_dir)),
+                stamp_path=refresh_stamp_path(config.account_id, self._env, home=self._home),
+                now_s=now_s,
+                runner=self._refresher,
+                env=self._env,
+            )
+        except Exception:  # noqa: BLE001 -- a repair may never break a routing decision
+            return None
+
     def _snapshot_one(self, config: ClaudeAccountConfig, now_s: float) -> list[AccountSnapshot]:
         if not config.config_dir.exists():
             return []
@@ -502,6 +562,39 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         )
         identity = config.identity
         label = identity.email if identity and identity.email else config.account_id
+
+        if not read.usable and self.refresh_enabled:
+            # The starvation loop, broken here. An access token is renewed only when
+            # the account is USED and the token has already lapsed, and this package
+            # will never redeem one itself -- so an idle account stays dark forever,
+            # and the idlest account is by definition the one holding the most quota.
+            #
+            # Only for an unusable TOKEN. A fetch that failed for any other reason
+            # (throttling, an unreachable endpoint) is not an auth problem, and
+            # spawning a CLI at it would spend quota to fix nothing.
+            outcome = self._refresh(config, now_s)
+            if outcome is not None and outcome.ok:
+                read = read_access_token(
+                    config.config_dir,
+                    runner=self._runner,
+                    home=self._home,
+                    timeout_s=self._timeout_s,
+                    now_s=now_s,
+                )
+            if not read.usable:
+                detail = outcome.reason if outcome is not None else "not attempted"
+                return [
+                    AccountSnapshot(
+                        id=config.account_id,
+                        windows=(),
+                        tier=config.tier,
+                        source=SOURCE_LIVE,
+                        confidence=0.0,
+                        available=False,
+                        note=f"{label}: {read.problem} (refresh: {detail})",
+                        identity=identity,
+                    )
+                ]
 
         if not read.usable:
             # Unavailable, not absent, and never guessed at: the operator needs to

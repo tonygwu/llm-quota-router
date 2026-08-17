@@ -64,6 +64,12 @@ read -r -d '' PLIST_XML <<XML
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$(dirname "$QUOTAPICK"):/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Let the poller wake an account whose access token has lapsed, by spawning
+         the vendor CLI so that IT renews (this tool never redeems a token itself).
+         Set here and nowhere else: a refresh spawn costs seconds, and the
+         interactive launcher caps its whole decision at three, so it is opt-in and
+         only the job with nobody waiting on it opts in. -->
+    <key>QUOTA_ROUTER_REFRESH_AUTH</key><string>1</string>
   </dict>
   <key>StartInterval</key><integer>${INTERVAL}</integer>
   <key>RunAtLoad</key><true/>
