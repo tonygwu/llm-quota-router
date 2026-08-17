@@ -233,6 +233,30 @@ def _prune(path: Path, now_s: float, keep_days: int, warnings: list[str]) -> lis
         warnings.append(f"cannot list rotated history files: {exc}")
         return []
     cutoff_day = _utc_date(cutoff)
+
+    # Disbelieve a clock that is ahead of everything on disk.
+    #
+    # The defence below distrusts each file's mtime, on the grounds that deleting
+    # telemetry from a timestamp that says nothing about its contents is silent data
+    # loss. That reasoning was applied to only one of the two clocks involved: ``now_s``
+    # was trusted absolutely. A probe run with a synthetic ``--now`` five months in the
+    # future put the cutoff five months in the future too, every real file fell behind
+    # it, and 38 hours of the calibration history this project's whole k measurement
+    # rests on was deleted by a single debugging invocation.
+    #
+    # A cutoff later than the newest data present means the caller's clock disagrees
+    # with reality, and reality is the files. Retention is skipped rather than guessed:
+    # keeping a stale file costs disk, and deleting a live one costs the measurement.
+    newest = max(
+        (day for day in (_day_from_rotated_name(c.name) for c in candidates) if day),
+        default=None,
+    )
+    if newest is not None and cutoff_day > newest:
+        warnings.append(
+            f"skipped pruning: cutoff {cutoff_day} is later than the newest history on "
+            f"disk ({newest}), so the clock is not to be trusted with deletions"
+        )
+        return []
     for candidate in candidates:
         try:
             # Prefer the day encoded in the rotated filename over the filesystem

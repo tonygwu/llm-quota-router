@@ -581,3 +581,57 @@ def test_a_k_below_one_is_rejected_rather_than_quietly_scoring(tmp_path) -> None
     )
     with pytest.raises(ConfigError, match="weekly_to_session"):
         load_config(env={}, explicit_path=path)
+
+
+# ======================================================================================
+# Pruning must not trust a clock it was handed
+# ======================================================================================
+
+
+def test_an_absurd_clock_cannot_delete_history(tmp_path) -> None:
+    """A single ad-hoc command with a synthetic --now destroyed 38 hours of telemetry.
+
+    ``_prune`` computes ``cutoff = now_s - keep_days * 86400`` and deletes every
+    rotated file whose day precedes it. A probe run with ``now_s`` five months in the
+    future therefore put the cutoff five months in the future too, and every real file
+    fell behind it. Observed live: the calibration history this project's whole k
+    measurement rests on was deleted by one debugging invocation.
+
+    The existing defence is one-sided and says so proudly -- it distrusts the file's
+    mtime because "deleting telemetry on that basis is silent data loss" -- while
+    trusting the caller's clock without question. A clock far ahead of the newest data
+    on disk is not a reason to delete everything; it is a reason to disbelieve the
+    clock.
+    """
+    from quota_router.history import _prune
+
+    live = tmp_path / "history.jsonl"
+    for day in ("2026-08-14", "2026-08-15", "2026-08-16"):
+        (tmp_path / f"history-{day}.jsonl").write_text("{}\n", encoding="utf-8")
+
+    warnings: list[str] = []
+    absurd = 1_800_000_000.0  # 2027-01-15, the value that did it
+    removed = _prune(live, absurd, 30, warnings)
+
+    survivors = sorted(p.name for p in tmp_path.glob("history-*.jsonl"))
+    assert survivors == [
+        "history-2026-08-14.jsonl",
+        "history-2026-08-15.jsonl",
+        "history-2026-08-16.jsonl",
+    ], f"pruned real telemetry on a bogus clock; removed={removed}"
+
+
+def test_pruning_still_works_on_a_sane_clock(tmp_path) -> None:
+    """The guard must not turn retention off -- old files still go."""
+    from quota_router.history import _prune
+
+    live = tmp_path / "history.jsonl"
+    (tmp_path / "history-2026-06-01.jsonl").write_text("{}\n", encoding="utf-8")  # old
+    (tmp_path / "history-2026-08-15.jsonl").write_text("{}\n", encoding="utf-8")  # recent
+
+    warnings: list[str] = []
+    now = 1_786_900_000.0  # 2026-08-16
+    _prune(live, now, 30, warnings)
+
+    survivors = sorted(p.name for p in tmp_path.glob("history-*.jsonl"))
+    assert survivors == ["history-2026-08-15.jsonl"], survivors
