@@ -372,3 +372,149 @@ def test_state_snapshot_to_dict_is_json_serializable(store):
     store.record_pick("claude", now_s=NOW, cost=0.25, selection={"entries": {}})
     payload = store.load().to_dict()
     assert json.loads(json.dumps(payload))["reservations"][0]["account"] == "claude"
+
+
+# ======================================================================================
+# A reservation must stop being additive once its work is visible
+# ======================================================================================
+
+
+def test_a_reservation_is_netted_against_usage_that_has_since_appeared() -> None:
+    """The double count: reserved AND measured, for the same call.
+
+    A pick books an estimated cost because the vendor's usage endpoint has not caught
+    up yet. That is the entire justification. But nothing ever released the claim --
+    it decayed on a 60-second timer regardless -- so once the endpoint DID catch up,
+    the same work was subtracted twice: once as a reservation, once as real usage.
+
+    Netting fixes it without the API change a completion callback would need. The
+    reservation records what the bar read when it was written; whatever the bar has
+    moved since is work already counted, so only the unrealised remainder stays
+    reserved.
+    """
+    from quota_router.state import Reservation, StateSnapshot
+
+    state = StateSnapshot(
+        reservations=(Reservation(account="claude_b", at_s=1000.0, cost=0.05, used_at_s=0.10),)
+    )
+
+    # Nothing observed yet -> the whole estimate stands.
+    one_to_one = {"claude_b": 1.0}  # one "call" == one whole window, so cost IS a fraction
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.10}, calls_per_window=one_to_one
+    ) == {"claude_b": 0.05}
+    # Three points of it have shown up -> only the remainder is still in flight.
+    netted = state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.13}, calls_per_window=one_to_one
+    )
+    assert netted["claude_b"] == pytest.approx(0.02), netted
+    # All of it has shown up -> the claim is spent, not doubled.
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.16}, calls_per_window=one_to_one
+    ) == {}
+
+
+def test_a_window_reset_retires_a_reservation_rather_than_inflating_it() -> None:
+    """A bar that went DOWN did not un-burn the call; the window rolled over.
+
+    Treating the negative delta as "nothing realised" would keep subtracting an
+    estimate for work that is now on the far side of a reset, against a fresh budget
+    it never touched.
+    """
+    from quota_router.state import Reservation, StateSnapshot
+
+    state = StateSnapshot(
+        reservations=(Reservation(account="claude_b", at_s=1000.0, cost=0.05, used_at_s=0.90),)
+    )
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.02}, calls_per_window={"claude_b": 1.0}
+    ) == {}
+
+
+def test_a_reservation_written_before_this_change_still_behaves_as_it_did() -> None:
+    """No observation recorded means nothing to net against -- not a free pass."""
+    from quota_router.state import Reservation, StateSnapshot
+
+    state = StateSnapshot(
+        reservations=(Reservation(account="claude_b", at_s=1000.0, cost=0.05),)
+    )
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.99}, calls_per_window={"claude_b": 1.0}
+    ) == {"claude_b": 0.05}
+
+
+def test_the_observation_survives_a_write_and_read_cycle(tmp_path) -> None:
+    """Netting that never reaches disk is netting that never happens.
+
+    Reservations are read back by the NEXT invocation -- that is the whole point of
+    them -- so a field the writer emits and the parser drops would leave every claim
+    un-nettable in practice while passing in isolation.
+    """
+    from quota_router.state import Reservation, StateSnapshot, _parse_reservations
+
+    original = Reservation(account="claude_b", at_s=1000.0, cost=0.05, used_at_s=0.10)
+    round_tripped = _parse_reservations([original.to_dict()], [])
+
+    assert round_tripped[0].used_at_s == pytest.approx(0.10), (
+        f"used_at_s was lost between to_dict and the parser: {round_tripped[0]}"
+    )
+    assert StateSnapshot(reservations=round_tripped).reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.13}, calls_per_window={"claude_b": 1.0}
+    )["claude_b"] == pytest.approx(0.02)
+
+
+def test_a_recorded_pick_captures_what_the_bar_read_at_the_time(tmp_path) -> None:
+    """Nothing populates used_at_s unless the writer is given it.
+
+    Without this the field exists, round-trips, nets correctly in tests, and is None
+    on every reservation the router actually writes -- which is the shape of a fix
+    that ships inert.
+    """
+    from quota_router.state import StateStore
+
+    store = StateStore(path=tmp_path / "state.json")
+    store.record_pick(
+        "claude_b",
+        now_s=1000.0,
+        cost=0.05,
+        window_s=600.0,
+        record_reservation=True,
+        observed_used=0.10,
+    )
+    snap = store.load()
+    assert snap.reservations, "the pick was not recorded at all"
+    assert snap.reservations[0].used_at_s == pytest.approx(0.10)
+
+
+def test_netting_converts_units_before_subtracting() -> None:
+    """`cost` is weighted PICKS; a bar's movement is a window FRACTION.
+
+    Subtracting one from the other is the same dimensional error this project already
+    fixed once in the scorer -- comparing quantities whose denominators differ and
+    getting a number that looks plausible. One pick at multiplier 1.0 against
+    calls_per_window=200 is 0.5% of a window, so 0.5 points of observed movement must
+    retire it exactly, not 0.005 of a pick.
+    """
+    from quota_router.state import Reservation, StateSnapshot
+
+    state = StateSnapshot(
+        reservations=(Reservation(account="claude_b", at_s=1000.0, cost=1.0, used_at_s=0.10),)
+    )
+    cpw = {"claude_b": 200.0}
+
+    # Half of that 0.5%-of-a-window call has appeared -> half the claim remains.
+    half = state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.1025}, calls_per_window=cpw
+    )
+    assert half["claude_b"] == pytest.approx(0.5), half
+
+    # All 0.5 points of it -> retired.
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.105}, calls_per_window=cpw
+    ) == {}
+
+    # Without the conversion factor, netting must not happen at all rather than
+    # silently subtract a fraction from a pick count.
+    assert state.reserved_by_account(
+        1010.0, 60.0, observed_used={"claude_b": 0.105}
+    ) == {"claude_b": 1.0}

@@ -60,6 +60,7 @@ from . import waste as waste_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
+    WINDOW_KEY_5H,
     normalize_model_class,
     QUOTA_ROUTER_CONTRACT_VERSION,
     SOURCE_CACHE,
@@ -986,7 +987,23 @@ def _prepare(
 
     reserved: dict[str, float] = {}
     if config.pileup.enabled and not state.stateless:
-        raw = state.reserved_by_account(now_s, config.pileup.window_s)
+        # Net each claim against usage that has already appeared on the bar. A
+        # reservation exists only because the endpoint has not caught up; once it has,
+        # counting both the estimate and the measurement charges the same call twice.
+        observed_used = {
+            snap.id: window.used_fraction
+            for snap in snapshots
+            for window in snap.windows
+            if window.key == WINDOW_KEY_5H
+        }
+        raw = state.reserved_by_account(
+            now_s,
+            config.pileup.window_s,
+            observed_used=observed_used,
+            calls_per_window={
+                snap.id: config.calls_per_window(snap.id) for snap in snapshots
+            },
+        )
         for account_id, weighted in raw.items():
             cost = weighted / config.calls_per_window(account_id)
             if cost > 0:
@@ -1067,6 +1084,18 @@ def _prepare(
             sticky_ttl_s=config.hysteresis.max_dwell_s,
             record_sticky=config.hysteresis.enabled,
             record_reservation=config.pileup.enabled,
+            # What the bar read when this claim was written, so the next invocation can
+            # net off whatever has become visible since instead of double-charging it.
+            observed_used=next(
+                (
+                    w.used_fraction
+                    for snap in snapshots
+                    if snap.id == decision.chosen
+                    for w in snap.windows
+                    if w.key == WINDOW_KEY_5H
+                ),
+                None,
+            ),
             # ``or None`` means "leave what is on disk alone". An empty blob is what a
             # decision that never reached the selection layer leaves behind (no
             # candidates, engine missing), and writing that through would silently erase

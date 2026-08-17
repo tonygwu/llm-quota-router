@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from quota_router.types import WINDOW_KEY_5H
 from quota_router import cli
 from quota_router.config import BANNED_EXEC_ENV
 from quota_router.explain import explain_decision
@@ -1470,4 +1471,43 @@ def test_explain_reports_the_same_exclusions_as_pick(env):
 
     assert accounts(["explain", "--json", "--model", "fable"]) == accounts(
         ["pick", "--json", "--model", "fable"]
+    )
+
+
+def test_a_reservation_stops_deflecting_once_its_burn_is_on_the_bar(env, tmp_path):
+    """End to end: the netting is wired, not merely implemented.
+
+    Every piece of this passed in isolation while the pick path still failed to hand
+    the reader what it needed -- the same shape as a fix that ships inert. So this
+    drives the CLI twice: once to book a claim, then again with the five-hour bar moved
+    by exactly what that claim estimated. The second pick must return to the first
+    account, because the work is now measured and a measured call must not also be
+    reserved.
+
+    ``calls_per_window = 2`` makes one call worth half a window, which is the scale at
+    which a reservation changes an outcome at all; dwell is off so hysteresis is not
+    what is being observed.
+    """
+    config = tmp_path / "netting.toml"
+    config.write_text(
+        "[pileup]\ncalls_per_window = 2\nwindow_s = 600\n"
+        "[hysteresis]\nmin_dwell_calls = 0\n"
+    )
+    before = (
+        account("claude", window(WINDOW_KEY_5H, 0.00), window("seven_day", 0.50, expected_used=0.50)),
+        account("claude_b", window(WINDOW_KEY_5H, 0.00), window("seven_day", 0.52, expected_used=0.50)),
+    )
+    first = pick(["pick", "--config", str(config)], env, snapshots=before)
+    assert first["decision"]["account"] == "claude"
+
+    # The claim was half a window; the bar now shows exactly that much burned on it.
+    after = (
+        account("claude", window(WINDOW_KEY_5H, 0.50), window("seven_day", 0.50, expected_used=0.50)),
+        account("claude_b", window(WINDOW_KEY_5H, 0.00), window("seven_day", 0.52, expected_used=0.50)),
+    )
+    second = pick(["pick", "--config", str(config)], env, snapshots=after)
+
+    assert not any("pileup" in w for w in second["warnings"]), (
+        f"the claim is fully realised on the bar and must no longer be subtracted; "
+        f"warnings={second['warnings']}"
     )

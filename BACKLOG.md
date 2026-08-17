@@ -49,21 +49,7 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-## 2. Pileup reservations expire on a timer, not on completion
-
-Each pick books a reservation that decays after 60s. Nothing releases it when the call
-finishes, and nothing reconciles it once the usage endpoint reflects the real burn — so
-for a window the same consumption is counted twice, once as a reservation and once as
-measured usage.
-
-Bounded by the 25% cap, so it degrades routing quality rather than breaking it. Fixing
-it properly needs callers to report completion, which is an API change every consumer
-must adopt — worth designing before building.
-
-**Closes when:** a reservation is released by the event that made it obsolete, and a
-test covers the overlap window where both signals are present.
-
-## 3. Small, but each one costs trust
+## 2. Small, but each one costs trust
 
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
   configured floor from the identical built-in default. The semantics are coherent and
@@ -77,6 +63,16 @@ test covers the overlap window where both signals are present.
 ---
 
 ## Closed
+
+- **Pileup reservations double-counted once the endpoint caught up.** A claim existed
+  only because measured usage lagged, but nothing retired it when the usage appeared --
+  it decayed on a timer regardless, so the same call was subtracted twice. Each claim
+  now records what the bar read when it was written and is netted against whatever has
+  become visible since, which needed no completion callback and so no consumer API
+  change. Netting happens in fraction space with an explicit `calls_per_window`
+  conversion: `cost` counts weighted picks and a bar moves in window fractions, and
+  subtracting one from the other is the dimensional error this project already made
+  once in the scorer.
 
 - **`calibrate` emitted a paste-ready `calls_per_window` stanza.** The estimate is
   structurally confounded — only router picks in the numerator, all consumption in the

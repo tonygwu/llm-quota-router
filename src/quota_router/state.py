@@ -147,11 +147,53 @@ class Reservation:
         at_s: When the pick happened (epoch seconds).
         cost: Fraction of that account's window budget the call is expected to burn,
             i.e. ``demand_multiplier / calls_per_window``.
+        used_at_s: What the account's five-hour bar read when this claim was written,
+            or ``None`` for a reservation predating the field. A reservation exists
+            only because the vendor's usage endpoint has not caught up yet; once it
+            has, the same work would be counted twice -- once here, once as measured
+            usage -- so whatever the bar has moved since is netted off the claim. The
+            timer alone never did this: it expired the claim on a schedule whether or
+            not the work had become visible.
     """
 
     account: str
     at_s: float
     cost: float
+    used_at_s: float | None = None
+
+    def outstanding(
+        self, observed_used: float | None, calls_per_window: float | None = None
+    ) -> float:
+        """The part of this claim that has NOT yet shown up in measured usage.
+
+        Returned in the same weighted-pick units as :attr:`cost`, but netted in
+        FRACTION space, because the two are not the same quantity: ``cost`` counts
+        multiplier-weighted calls while a usage bar moves in fractions of a window.
+        Subtracting one from the other directly is the dimensional error this project
+        already made once in the scorer -- it yields a plausible-looking number that
+        means nothing. ``calls_per_window`` is the conversion, and without it no
+        netting happens at all; guessing a denominator is worse than not netting.
+
+        A bar that moved backwards means the window rolled over: the call did not
+        un-burn, it is simply on the far side of a reset and has no claim on the fresh
+        budget. Retiring it is right; treating the negative delta as "nothing
+        realised" would keep subtracting an estimate against a window it never touched.
+        """
+        if self.used_at_s is None or observed_used is None:
+            return self.cost
+        if observed_used < self.used_at_s:
+            return 0.0
+        if not calls_per_window or calls_per_window <= 0:
+            return self.cost
+        cost_fraction = self.cost / calls_per_window
+        realised = observed_used - self.used_at_s
+        remainder = cost_fraction - realised
+        # Snap float residue to zero. Subtracting equal quantities leaves ~1e-15, and
+        # a claim smaller than float noise is not a claim -- left in, it keeps an
+        # account fractionally penalised forever by a reservation that is fully spent.
+        if remainder <= _FRACTION_EPS:
+            return 0.0
+        return remainder * calls_per_window
 
     def is_active(self, now_s: float, window_s: float) -> bool:
         """``True`` while this reservation should still be subtracted."""
@@ -160,8 +202,18 @@ class Reservation:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping."""
-        return {"account": self.account, "at_s": self.at_s, "cost": self.cost}
+        out: dict[str, Any] = {
+            "account": self.account,
+            "at_s": self.at_s,
+            "cost": self.cost,
+        }
+        if self.used_at_s is not None:
+            out["used_at_s"] = self.used_at_s
+        return out
 
+
+#: Below this, a remaining claim is float residue rather than budget.
+_FRACTION_EPS: Final[float] = 1e-12
 
 #: Tolerated backwards clock skew for reservations written "in the future".
 _CLOCK_SLOP_S: Final[float] = 5.0
@@ -229,12 +281,30 @@ class StateSnapshot:
             if reservation.account == account and reservation.is_active(now_s, window_s)
         )
 
-    def reserved_by_account(self, now_s: float, window_s: float) -> dict[str, float]:
-        """Active reserved cost per account (only accounts with a non-zero claim)."""
+    def reserved_by_account(
+        self,
+        now_s: float,
+        window_s: float,
+        observed_used: Mapping[str, float] | None = None,
+        calls_per_window: Mapping[str, float] | None = None,
+    ) -> dict[str, float]:
+        """Active reserved cost per account (only accounts with a non-zero claim).
+
+        ``observed_used`` maps account id to its current five-hour used fraction. Given
+        it, each claim is reduced by however much of the work has since become visible,
+        so a reservation and the measured usage of the same call cannot both be
+        subtracted. Omitted, every claim counts in full -- the behaviour before netting
+        existed, and the right default for a caller that cannot observe anything.
+        """
         out: dict[str, float] = {}
         for reservation in self.reservations:
-            if reservation.is_active(now_s, window_s) and reservation.cost:
-                out[reservation.account] = out.get(reservation.account, 0.0) + reservation.cost
+            if not reservation.is_active(now_s, window_s):
+                continue
+            seen = observed_used.get(reservation.account) if observed_used else None
+            cpw = calls_per_window.get(reservation.account) if calls_per_window else None
+            cost = reservation.outstanding(seen, cpw)
+            if cost:
+                out[reservation.account] = out.get(reservation.account, 0.0) + cost
         return out
 
     def to_dict(self) -> dict[str, Any]:
@@ -431,6 +501,7 @@ class StateStore:
         sticky_ttl_s: float = 900.0,
         record_sticky: bool = True,
         record_reservation: bool = True,
+        observed_used: float | None = None,
         selection: Mapping[str, Any] | None = None,
     ) -> StateWrite:
         """Record a pick: refresh the incumbent and add a pileup reservation.
@@ -476,7 +547,14 @@ class StateStore:
 
             reservations = list(current.reservations)
             if record_reservation and cost:
-                reservations.append(Reservation(account=account, at_s=now_s, cost=float(cost)))
+                reservations.append(
+                    Reservation(
+                        account=account,
+                        at_s=now_s,
+                        cost=float(cost),
+                        used_at_s=observed_used,
+                    )
+                )
             reservations = _prune_reservations(reservations, now_s, window_s, max_records)
 
             blob = current.selection if selection is None else selection
@@ -579,7 +657,19 @@ def _parse_reservations(raw: Any, warnings: list[str]) -> tuple[Reservation, ...
             continue
         if not isinstance(cost, (int, float)) or isinstance(cost, bool):
             continue
-        out.append(Reservation(account=account, at_s=float(at_s), cost=float(cost)))
+        used_at = body.get("used_at_s")
+        out.append(
+            Reservation(
+                account=account,
+                at_s=float(at_s),
+                cost=float(cost),
+                used_at_s=(
+                    float(used_at)
+                    if isinstance(used_at, (int, float)) and not isinstance(used_at, bool)
+                    else None
+                ),
+            )
+        )
     out.sort(key=lambda item: item.at_s)
     return tuple(out)
 
