@@ -64,6 +64,7 @@ from .types import (
     AccountSnapshot,
     Decision,
     ScoreBreakdown,
+    unreadable_reason,
 )
 
 __all__ = ["main", "Deps", "EXIT_OK", "EXIT_USAGE", "EXIT_ROUTER_FAILURE"]
@@ -522,36 +523,6 @@ class Partition:
     candidates: tuple[AccountSnapshot, ...] = ()
     excluded: tuple[ScoreBreakdown, ...] = ()
     fallback_pool: tuple[AccountSnapshot, ...] = ()
-
-
-def unreadable_reason(snapshot: AccountSnapshot) -> str | None:
-    """Why nothing could be read for this account -- ``None`` when it *was* read.
-
-    A failed usage read and an empty measurement are the same shape and opposite
-    facts. The OAuth provider reports a failure as ``windows=()``, ``available=False``,
-    ``confidence=0.0`` and a ``note`` naming the cause ("access token expired"), but it
-    still labels ``source`` as ``live`` -- that field describes the attempt, not the
-    outcome -- so ``note`` plus ``available`` is the only honest signal downstream.
-
-    Observed live: an account with 53% of its Fable quota left went dark on an expired
-    token, was dropped from the candidate set before eligibility ever ran, and appeared
-    in neither ``ranked`` nor ``excluded`` nor ``degraded``. The router then picked an
-    account that was 97% spent, and the only trace was a warning about a missing Fable
-    window -- which is a data-shape complaint, not the truth. An unread account's
-    remaining quota is UNKNOWN: not zero, not full, and never silently absent.
-
-    ``confidence`` alone cannot be the test: the Antigravity pools publish no windows at
-    ``confidence=0.0`` by design and are perfectly routable, so ``available=False`` with
-    nothing measured is what separates "we could not look" from "there is nothing to
-    look at".
-    """
-    if snapshot.windows or snapshot.available:
-        return None
-    detail = (snapshot.note or "").strip() or "the source gave no cause"
-    return (
-        "unreadable: no usage reading was obtained for this account, so its remaining "
-        f"quota is unknown rather than free -- {detail}"
-    )
 
 
 def _partition_candidates(

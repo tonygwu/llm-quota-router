@@ -71,6 +71,7 @@ from .types import (
     Decision,
     ScoreBreakdown,
     normalize_model_class,
+    unreadable_reason,
 )
 
 __all__ = [
@@ -443,11 +444,28 @@ def _partition(
         # never takes part in the field's regime decision.
         row = account_score(snap, now_s, cfg, model_class, None)
 
-        if not snap.windows:
+        # An account nobody could read has no windows, so the window-shape warning fires
+        # on it -- and that warning is a misdiagnosis here. It blames the data and sends
+        # the reader hunting for a parsing bug when the truth is an expired token. The
+        # CLI learned this in 62caa4b; this pass is a SEPARATE entry point (``select`` is
+        # public, takes no Config, and is what a direct library caller reaches), so it
+        # kept saying the wrong thing for a day afterwards. Replaced rather than dropped:
+        # the decision still has to come back degraded when part of the fleet is dark.
+        unreadable = unreadable_reason(snap)
+        if unreadable is not None:
+            warnings.append(f"{snap.id}: {unreadable}")
+        elif not snap.windows:
             warnings.append(f"{snap.id}: snapshot carries no usage windows")
 
         reason: str | None = None
-        if not snap.available:
+        if unreadable is not None:
+            # Not "account unavailable (...)": that parenthetical reads as an aside and
+            # is equally true of a logout, a rate-limit and a disabled account. This one
+            # says the router obtained no measurement, so the headroom is unknown rather
+            # than zero -- a login, not a wait. ``min_remaining`` on the row stays None
+            # for the same reason (``account_score`` leaves it None with no windows).
+            reason = unreadable
+        elif not snap.available:
             detail = snap.note or "marked not available by its source"
             reason = f"account unavailable ({detail})"
         else:

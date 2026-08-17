@@ -742,6 +742,124 @@ def test_stale_snapshot_is_reported_as_degraded() -> None:
     assert any("stale" in warning or "source" in warning for warning in decision.warnings)
 
 
+# --------------------------------------------------------------------------------------
+# Unreadable accounts: a failed read is not an empty measurement
+#
+# The CLI learned this in 62caa4b; the pure layer did not, and it is a separate entry
+# point -- ``select()`` is public, takes no Config, and is reachable without the CLI's
+# policy pass ever running. On that route an unread account was still misdiagnosed.
+# --------------------------------------------------------------------------------------
+
+
+def dark(account_id: str, note: str | None) -> AccountSnapshot:
+    """An account whose usage read failed, exactly as the OAuth provider reports it.
+
+    No windows, ``available=False``, ``confidence=0.0``, and a ``note`` naming the cause.
+    ``source`` stays ``live`` because the provider labels the attempt, not the outcome.
+    """
+    return AccountSnapshot(
+        id=account_id,
+        windows=(),
+        tier=TIER_MAX_20X,
+        source=SOURCE_LIVE,
+        confidence=0.0,
+        available=False,
+        note=note,
+    )
+
+
+def test_an_unreadable_account_is_diagnosed_not_merely_called_unavailable() -> None:
+    """"unavailable" is what the flag says; it is not what happened.
+
+    ``account unavailable (acct4@example.com: access token expired)`` reads as an aside
+    -- the parenthetical could be a rate-limit, a logout, a disabled account. The router
+    knows something stronger and has to say it: no reading was obtained, so this
+    account's headroom is UNKNOWN rather than zero, and the fix is a login, not a wait.
+    """
+    down = dark(ACCOUNT_CLAUDE_B, "acct4@example.com: access token expired")
+    ok = acct(ACCOUNT_CLAUDE, win("seven_day", 0.20, expected_used=0.90))
+
+    decision = select([down, ok], NOW)
+
+    row = {r.account_id: r for r in decision.excluded}[ACCOUNT_CLAUDE_B]
+    assert "unreadable" in row.reason, row.reason
+    assert "unknown" in row.reason, row.reason
+    assert "access token expired" in row.reason, row.reason
+    assert row.min_remaining is None, (
+        "an unread account's remaining quota is unknown; 0.0 would read as spent"
+    )
+
+
+def test_an_unreadable_account_with_no_recorded_cause_still_reports_the_failure() -> None:
+    """The verdict cannot depend on the source having bothered to write a note."""
+    decision = select(
+        [dark(ACCOUNT_CLAUDE_B, None), acct(ACCOUNT_CLAUDE, win("seven_day", 0.20))], NOW
+    )
+
+    row = {r.account_id: r for r in decision.excluded}[ACCOUNT_CLAUDE_B]
+    assert "unreadable" in row.reason, row.reason
+    assert "unknown" in row.reason, row.reason
+
+
+def test_an_unreadable_account_does_not_warn_about_the_shape_of_its_data() -> None:
+    """``snapshot carries no usage windows`` is a data-shape complaint, not the truth.
+
+    That warning is what the live incident left behind, and it sends the reader hunting
+    for a parsing bug when the cause was an expired token. It must be replaced by the
+    real diagnosis -- not merely deleted, because the decision still has to come back
+    degraded when part of the fleet is dark.
+    """
+    down = dark(ACCOUNT_CLAUDE_B, "acct4@example.com: access token expired")
+    ok = acct(ACCOUNT_CLAUDE, win("seven_day", 0.20, expected_used=0.90))
+
+    decision = select([down, ok], NOW)
+
+    about_the_dark_one = [w for w in decision.warnings if ACCOUNT_CLAUDE_B in w]
+    assert about_the_dark_one, f"the dark account went unmentioned: {decision.warnings}"
+    assert not any("carries no usage windows" in w for w in about_the_dark_one), (
+        f"misdiagnosed a failed read as a data-shape problem: {about_the_dark_one}"
+    )
+    assert any("unreadable" in w for w in about_the_dark_one), about_the_dark_one
+    assert decision.degraded is True
+
+
+def test_an_unread_account_reads_differently_from_a_spent_one() -> None:
+    """They demand opposite responses: one needs a login, the other needs a wait."""
+    spent = acct(ACCOUNT_CLAUDE_C, win("seven_day", 1.0, expected_used=0.90))
+    down = dark(ACCOUNT_CLAUDE_B, "acct4@example.com: access token expired")
+    ok = acct(ACCOUNT_CLAUDE, win("seven_day", 0.20, expected_used=0.90))
+
+    decision = select([spent, down, ok], NOW)
+
+    rows = {r.account_id: r for r in decision.excluded}
+    assert "floor" in rows[ACCOUNT_CLAUDE_C].reason, rows[ACCOUNT_CLAUDE_C].reason
+    assert "floor" not in rows[ACCOUNT_CLAUDE_B].reason, rows[ACCOUNT_CLAUDE_B].reason
+    assert "unreadable" in rows[ACCOUNT_CLAUDE_B].reason, rows[ACCOUNT_CLAUDE_B].reason
+    assert "unreadable" not in rows[ACCOUNT_CLAUDE_C].reason
+    assert rows[ACCOUNT_CLAUDE_C].min_remaining == 0.0
+    assert rows[ACCOUNT_CLAUDE_B].min_remaining is None
+
+
+def test_a_pool_that_publishes_no_windows_by_design_is_still_called_window_less() -> None:
+    """Narrowing the window-shape warning must not switch it off for its own case.
+
+    The Antigravity pools report no windows at ``confidence=0.0`` while remaining
+    available and routable, so "no windows" cannot be the test for a failed read --
+    ``available`` is. A pool that publishes nothing is genuinely unmeasured, and the
+    warning that says so has to keep firing.
+    """
+    pool = acct("antigravity_gemini", confidence=0.0)  # available, and no windows at all
+    ok = acct(ACCOUNT_CLAUDE, win("seven_day", 0.20, expected_used=0.90))
+
+    decision = select([pool, ok], NOW)
+
+    about_the_pool = [w for w in decision.warnings if "antigravity_gemini" in w]
+    assert any("carries no usage windows" in w for w in about_the_pool), about_the_pool
+    assert not any("unreadable" in w for w in about_the_pool), about_the_pool
+    row = {r.account_id: r for r in decision.excluded}["antigravity_gemini"]
+    assert "unreadable" not in row.reason, row.reason
+
+
 def test_select_module_is_pure() -> None:
     """select.py may import stdlib, ``types`` and its pure sibling ``scoring`` -- nothing else."""
     import quota_router.select as module

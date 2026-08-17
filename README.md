@@ -325,6 +325,16 @@ without that cooldown they would spawn a CLI on every invocation forever.
 - **Pure core.** `scoring.py` and `select.py` import only stdlib and the type
   module, take `now_s` as a parameter, and touch no filesystem, clock, or
   environment. A portability test enforces it.
+- **Two eligibility passes, one judgment.** A call is filtered twice: `cli.py`
+  applies *policy* (`--only`/`--exclude`, disabled accounts, `--min-remaining`),
+  then the pure layer applies *eligibility* (cooldowns, no applicable window, the
+  remaining floor). They stay separate because the first needs `Config` — which
+  the pure layer may not import — and the second must work for a caller who has
+  no `Config` at all. What must not stay separate is any judgment they both make.
+  "Could this account be read?" is one, it lived in `cli.py`, and it was duly
+  fixed there and left wrong in `select.select` for a day. It now lives in
+  `types.py`, which both already import, and a test asserts the two passes render
+  the same verdict for the same snapshot.
 - **Degrades, never fails.** Per account: a live usage-endpoint reading, then a
   cached statusline reading with confidence decaying by age, then a synthesized
   estimate shrunk toward the sibling mean. Unknown accounts are never buried —

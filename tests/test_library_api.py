@@ -330,6 +330,81 @@ def test_meets_policy_is_false_when_the_selection_layer_chose_nobody(tmp_path) -
     )
 
 
+# ======================================================================================
+# One diagnosis, however you got here
+# ======================================================================================
+
+
+def test_the_library_entry_point_reports_an_account_it_could_not_read(tmp_path) -> None:
+    """The bug that started this was fixed in the CLI; two live consumers call THIS.
+
+    ``self_improve.llm`` and ``geval.routing`` both import ``select_account`` rather than
+    shelling out, so a dark account has to be visible here or a batch harness silently
+    runs against a fleet smaller than it believes. It is visible today only because this
+    function reuses ``_prepare``; the moment anyone gives it a path of its own, this test
+    is what notices.
+    """
+    from quota_router.types import SOURCE_LIVE, AccountSnapshot
+
+    down = AccountSnapshot(
+        id="claude_d", windows=(), tier="max_20x", source=SOURCE_LIVE,
+        confidence=0.0, available=False, note="acct4@example.com: access token expired",
+    )
+    sel = select_account(
+        model="fable",
+        env=_env(tmp_path),
+        now_s=NOW,
+        deps=_deps((*real_capture(), down)),
+        record=False,
+    )
+
+    reasons = {row["account"]: row["reason"] for row in sel.excluded}
+    assert "claude_d" in reasons, f"the dark account vanished: {sel.excluded}"
+    assert "unreadable" in reasons["claude_d"], reasons["claude_d"]
+    assert "access token expired" in reasons["claude_d"], reasons["claude_d"]
+    assert {row["account"] for row in sel.excluded if row["account"] == "claude_d"}
+    assert {r["account"]: r["remaining"] for r in sel.excluded}["claude_d"] is None
+    assert "claude_d" in {entry["account"] for entry in sel.degraded}
+
+
+def test_both_eligibility_passes_state_the_same_diagnosis(tmp_path) -> None:
+    """Two partitions, one verdict -- because the verdict is one function.
+
+    ``cli._partition_candidates`` and ``select._partition`` are separate passes with
+    separate jobs (policy vs. eligibility) that happen to share this one judgment. It was
+    fixed in the first and left wrong in the second for a day, which is what duplicated
+    judgment always costs. Asserted on the rendered verdicts rather than on the identity
+    of a function, so re-wording one copy is caught even if someone re-splits them.
+    """
+    from quota_router.cli import unreadable_reason
+    from quota_router.select import select as pure_select
+    from quota_router.types import SOURCE_LIVE, AccountSnapshot
+
+    down = AccountSnapshot(
+        id="claude_d", windows=(), tier="max_20x", source=SOURCE_LIVE,
+        confidence=0.0, available=False, note="acct4@example.com: access token expired",
+    )
+    ok = real_capture()[0]
+
+    from_cli = {
+        row["account"]: row["reason"]
+        for row in json.loads(
+            run(
+                ["pick", "--json", "--dry-run"],
+                _env(tmp_path),
+                snapshots=(ok, down),
+                now_s=NOW,
+            )[1]
+        )["excluded"]
+    }["claude_d"]
+    from_pure = {
+        row.account_id: row.reason
+        for row in pure_select([ok, down], NOW, record=False).excluded
+    }["claude_d"]
+
+    assert from_cli == from_pure == unreadable_reason(down)
+
+
 def test_reservations_cannot_subtract_more_than_a_quarter_of_a_window(tmp_path) -> None:
     """A ceiling on pileup, so a wrong per-call cost cannot fabricate exhaustion.
 

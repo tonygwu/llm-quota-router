@@ -116,6 +116,7 @@ __all__ = [
     "Identity",
     "Window",
     "AccountSnapshot",
+    "unreadable_reason",
     "WindowSlack",
     "ScoreBreakdown",
     "Decision",
@@ -888,6 +889,42 @@ class AccountSnapshot:
             "note": self.note,
             "identity": None if self.identity is None else self.identity.to_dict(),
         }
+
+
+def unreadable_reason(snapshot: AccountSnapshot) -> str | None:
+    """Why nothing could be read for this account -- ``None`` when it *was* read.
+
+    A failed usage read and an empty measurement are the same shape and opposite
+    facts. The OAuth provider reports a failure as ``windows=()``, ``available=False``,
+    ``confidence=0.0`` and a ``note`` naming the cause ("access token expired"), but it
+    still labels ``source`` as ``live`` -- that field describes the attempt, not the
+    outcome -- so ``note`` plus ``available`` is the only honest signal downstream.
+
+    Observed live: an account with 53% of its Fable quota left went dark on an expired
+    token, was dropped from the candidate set before eligibility ever ran, and appeared
+    in neither ``ranked`` nor ``excluded`` nor ``degraded``. The router then picked an
+    account that was 97% spent, and the only trace was a warning about a missing Fable
+    window -- which is a data-shape complaint, not the truth. An unread account's
+    remaining quota is UNKNOWN: not zero, not full, and never silently absent.
+
+    ``confidence`` alone cannot be the test: the Antigravity pools publish no windows at
+    ``confidence=0.0`` by design and are perfectly routable, so ``available=False`` with
+    nothing measured is what separates "we could not look" from "there is nothing to
+    look at".
+
+    It lives HERE, in the value layer, rather than beside either caller. The CLI's policy
+    pass and the pure layer's eligibility pass are separate filters that share exactly
+    this one judgment, and when it lived in ``cli.py`` the fix landed in the CLI and was
+    left live in ``select.select`` -- which is public, takes no ``Config``, and is what a
+    direct library caller reaches. A judgment two passes both make belongs to neither.
+    """
+    if snapshot.windows or snapshot.available:
+        return None
+    detail = (snapshot.note or "").strip() or "the source gave no cause"
+    return (
+        "unreadable: no usage reading was obtained for this account, so its remaining "
+        f"quota is unknown rather than free -- {detail}"
+    )
 
 
 # ======================================================================================
