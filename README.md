@@ -286,7 +286,7 @@ schedule for routing to work. The poller runs `quotapick status` and produces th
 things the router cannot produce for itself:
 
 ```sh
-./ops/install-launchd.sh              # `quotapick status` every 30 min ($POLL_INTERVAL_S)
+./ops/install-launchd.sh              # `quotapick status` every 15 min ($POLL_INTERVAL_S)
 ./ops/install-launchd.sh --uninstall
 ```
 

@@ -821,3 +821,36 @@ def test_the_pileup_consequence_is_quantified_not_just_asserted(tmp_path) -> Non
     )})
     # 1/100 of a window per pick, against the 0.5% the built-in default reserves.
     assert "1.0%" in text or "1%" in text, f"per-pick reservation not quantified:\n{text}"
+
+
+def test_the_installer_polls_densely_enough_for_its_own_adoption_gate() -> None:
+    """The scheduler's cadence and the calibration gate are one coupled decision.
+
+    ``adoption_ready`` refuses any series whose typical step exceeds
+    ``ADOPTION_MAX_STEP_S``. The poller IS what produces that series, so an installer
+    default slower than the gate means no estimate can ever be adopted -- and nothing
+    in either file would say so. The installed job runs at 900s while the installer
+    defaulted to 1800s, so re-running it without the env var would have silently
+    halved the sampling density that both the k estimate and the waste series depend
+    on, and the only symptom would have been calibrate quietly never adopting again.
+
+    Asserted across the language boundary on purpose: a shell default and a Python
+    constant cannot be shared, so the only thing that keeps them honest is a test that
+    reads both.
+    """
+    import re
+    from pathlib import Path
+
+    from quota_router.history import ADOPTION_MAX_STEP_S
+
+    script = Path(__file__).resolve().parent.parent / "ops" / "install-launchd.sh"
+    text = script.read_text(encoding="utf-8")
+    match = re.search(r'INTERVAL="\$\{POLL_INTERVAL_S:-(\d+)\}"', text)
+    assert match, "could not find the poll-interval default in ops/install-launchd.sh"
+    default_s = int(match.group(1))
+
+    assert default_s <= ADOPTION_MAX_STEP_S, (
+        f"the installer polls every {default_s}s but calibration refuses any series "
+        f"whose typical step exceeds {ADOPTION_MAX_STEP_S:.0f}s -- installing with the "
+        f"default would guarantee no k estimate is ever adoptable"
+    )

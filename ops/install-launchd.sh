@@ -28,14 +28,21 @@
 #   ./ops/install-launchd.sh --uninstall  stop and remove
 #   ./ops/install-launchd.sh --print      print the plist, install nothing
 #
-# Env: POLL_INTERVAL_S (default 1800)
+# Env: POLL_INTERVAL_S (default 900 -- see below; do not raise it casually)
 
 set -uo pipefail
 
 LABEL="local.llm-quota-router.usage-poll"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/llm-quota-router"
-INTERVAL="${POLL_INTERVAL_S:-1800}"
+# 900s is not a taste. `quota_router.history.ADOPTION_MAX_STEP_S` refuses any
+# calibration series whose TYPICAL step exceeds it, and this job is what produces
+# that series -- so polling slower than the gate means no k estimate is ever
+# adoptable, with no symptom beyond calibrate quietly never saying ADOPT. The waste
+# series has the same exposure: a reset can only be located to within one interval.
+# tests/test_k_calibration.py asserts this default against the Python constant,
+# because a shell default and a Python constant cannot share a definition.
+INTERVAL="${POLL_INTERVAL_S:-900}"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
