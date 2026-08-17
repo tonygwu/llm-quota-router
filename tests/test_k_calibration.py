@@ -770,3 +770,54 @@ def test_a_requested_window_is_honoured_on_the_clock_the_estimate_uses() -> None
         f"span {est.span_s / 3600:.1f}h exceeds the requested window: readings observed "
         f"before the cutoff were pulled in because only the write time was filtered"
     )
+
+
+# ======================================================================================
+# The tool must not recommend what its authors believe is harmful
+# ======================================================================================
+
+
+def test_calibrate_does_not_emit_a_paste_ready_calls_per_window_stanza(tmp_path) -> None:
+    """It printed config you were meant to paste, for a number that should not be adopted.
+
+    The estimator counts only picks the ROUTER made in the numerator, while the
+    denominator moves for all consumption of that account -- including the operator's
+    own interactive sessions. The confound is structural, so more data cannot resolve
+    it, and it biases the estimate low, which makes every pileup reservation larger.
+    Live, a batch already produced 79 reservations subtracting 39.5% of a window and
+    self-throttled the router into refusing to route; halving calls_per_window would
+    have doubled each of those.
+
+    The number stays visible because it is informative. What is withheld is the
+    instruction to adopt it: a tool that recommends an action its own authors consider
+    harmful is worse than one that stays quiet.
+    """
+    from quota_router.history import Calibration
+
+    from quota_router import cli as cli_mod
+
+    text = cli_mod._calls_per_window_report({"claude_c": Calibration(
+        account="claude_c", calls_per_window=100.0, demand=18.0,
+        consumed=0.18, samples=3, window_key="5h", reason=None,
+    )})
+
+    assert "[accounts." not in text, f"still emits a paste-ready TOML stanza:\n{text}"
+    assert "100" in text, "the estimate itself should still be reported"
+    lowered = text.lower()
+    assert "interactive" in lowered or "confound" in lowered, (
+        f"the reason not to adopt it must travel with the number:\n{text}"
+    )
+
+
+def test_the_pileup_consequence_is_quantified_not_just_asserted(tmp_path) -> None:
+    """"Adopting this is risky" is advice; a number is evidence."""
+    from quota_router.history import Calibration
+
+    from quota_router import cli as cli_mod
+
+    text = cli_mod._calls_per_window_report({"claude_c": Calibration(
+        account="claude_c", calls_per_window=100.0, demand=18.0,
+        consumed=0.18, samples=3, window_key="5h", reason=None,
+    )})
+    # 1/100 of a window per pick, against the 0.5% the built-in default reserves.
+    assert "1.0%" in text or "1%" in text, f"per-pick reservation not quantified:\n{text}"

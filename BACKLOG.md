@@ -49,24 +49,7 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-## 2. `calibrate` recommends a `calls_per_window` adoption we believe is harmful
-
-It prints a paste-ready config stanza. Adopting it is a bad idea, for a reason the
-estimator cannot fix: the numerator counts only picks the router made, while the
-denominator moves for **all** consumption, including interactive use of the same
-account. The confound is structural, so more data will not resolve it.
-
-The docstring already concedes the low bias but calls it safe — "an over-eager
-reservation wastes a few seconds of routing preference". Contradicted in practice: a
-batch produced 79 reservations that subtracted 39.5% of a window and self-throttled the
-router into refusing to route. Adopting the estimate would roughly double every
-reservation.
-
-**Closes when:** the suggestion is either suppressed, or emitted with the confound
-stated and the pileup consequence quantified. A tool that recommends an action its own
-authors consider harmful is worse than one that stays quiet.
-
-## 3. Pileup reservations expire on a timer, not on completion
+## 2. Pileup reservations expire on a timer, not on completion
 
 Each pick books a reservation that decays after 60s. Nothing releases it when the call
 finishes, and nothing reconciles it once the usage endpoint reflects the real burn — so
@@ -80,7 +63,7 @@ must adopt — worth designing before building.
 **Closes when:** a reservation is released by the event that made it obsolete, and a
 test covers the overlap window where both signals are present.
 
-## 4. Small, but each one costs trust
+## 3. Small, but each one costs trust
 
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
   configured floor from the identical built-in default, so a config file that spells out
@@ -93,6 +76,13 @@ test covers the overlap window where both signals are present.
 ---
 
 ## Closed
+
+- **`calibrate` emitted a paste-ready `calls_per_window` stanza.** The estimate is
+  structurally confounded — only router picks in the numerator, all consumption in the
+  denominator — and biased low, which makes every pileup reservation larger, the
+  direction that already self-throttled the router once. The number is still reported,
+  with the per-pick reservation it implies quantified against the default; the
+  instruction to adopt it is gone.
 
 - **`calibrate --days` filtered on write time but measured on observation time.** A
   republished stale reading is written now while describing hours ago, so a window

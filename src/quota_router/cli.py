@@ -57,7 +57,7 @@ from . import history as history_mod
 from . import model_classes as mc
 from . import pse
 from . import waste as waste_mod
-from .config import BANNED_EXEC_ENV, Config, ConfigError, load_config
+from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
     normalize_model_class,
@@ -1570,6 +1570,41 @@ def _cmd_exec(
 
 
 
+def _calls_per_window_report(usable: Mapping[str, Any]) -> str:
+    """Report the calls-per-window estimate WITHOUT telling anyone to adopt it.
+
+    This used to print a paste-ready TOML stanza. The estimate does not deserve that,
+    for a reason no amount of data fixes: the numerator counts only the picks the
+    router made, while the denominator moves for every kind of consumption on that
+    account, the operator's own interactive sessions included. The confound is
+    structural, and it biases the estimate low -- which makes each pileup reservation
+    larger, in the direction that has already caused harm. A batch produced 79
+    reservations subtracting 39.5% of a window and self-throttled the router into
+    refusing to route; halving calls_per_window would have doubled every one of them.
+
+    The number stays, because knowing roughly how many calls fit in a window is
+    genuinely useful. What is withheld is the instruction to act on it. A tool that
+    recommends what its own authors consider harmful is worse than one that says
+    nothing, because the recommendation is the part people trust.
+    """
+    lines = ["\n# calls per window, measured -- NOT recommended for adoption\n"]
+    for account_id, calibration in usable.items():
+        per_pick = 100.0 / calibration.calls_per_window
+        lines.append(
+            f"#   {account_id}: ~{calibration.calls_per_window:g} calls/window "
+            f"-> each pick would reserve {per_pick:.1f}% of it "
+            f"(built-in default reserves {100.0 / PileupConfig().calls_per_window:.1f}%)\n"
+        )
+    lines.append(
+        "# Not emitted as config on purpose. The estimate counts only router picks in\n"
+        "# its numerator while its denominator moves for ALL consumption of the account,\n"
+        "# interactive sessions included, so it is confounded low -- and a low value makes\n"
+        "# every concurrent pick reserve MORE. Set calls_per_window by hand only if you\n"
+        "# have a reason the default is wrong for your workload.\n"
+    )
+    return "".join(lines)
+
+
 def _adoption_verdict(
     *, k: float, low: float, high: float, median_step_s: float, max_gap_s: float
 ) -> str:
@@ -1701,11 +1736,7 @@ def _cmd_calibrate(
 
     usable = {k: v for k, v in results.items() if v.calls_per_window is not None}
     if usable:
-        stdout.write("\n# paste into ~/.config/quota-router/config.toml\n")
-        for account_id, calibration in usable.items():
-            stdout.write(
-                f"[accounts.{account_id}]\ncalls_per_window = {calibration.calls_per_window:g}\n"
-            )
+        stdout.write(_calls_per_window_report(usable))
     if config.warnings:
         for warning in config.warnings:
             stderr.write(f"! {warning}\n")
