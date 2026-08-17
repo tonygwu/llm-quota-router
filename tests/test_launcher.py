@@ -282,6 +282,43 @@ def test_a_corrupt_transcript_line_does_not_stop_detection(home) -> None:
     assert launcher.detect_model(["--resume", session], home=home) == "claude-fable-5"
 
 
+def test_a_session_that_switched_models_routes_on_the_one_it_ended_on(home) -> None:
+    """The question is what the NEXT turn will burn, not what the history mostly was.
+
+    Live: a session ran 650 Fable turns, was switched to Opus with ``/model``, then
+    ran 310 more. ``cl --resume`` scored the pick against Fable and sent it to the
+    only Fable-capable account -- gating on a scoped weekly sub-cap the resumed work
+    does not touch, while ignoring the general pool it does. Both fallbacks (the
+    session's last model and the settings default) said Opus; the majority vote was
+    the one thing that said otherwise, so detection made the answer worse than
+    returning nothing would have.
+
+    Majority was itself a fix for sentinels outvoting real records. But sentinels are
+    already excluded by name, so taking the LAST REAL model is safe -- the vote solved
+    that problem a second time and bought this one.
+    """
+    session = "9d1f7c22-0000-4000-8000-000000000006"
+    transcript(
+        home,
+        session,
+        ["claude-fable-5"] * 650 + ["claude-opus-5"] * 310 + ["<synthetic>"] * 16,
+    )
+
+    assert launcher.detect_model(["--resume", session], home=home) == "claude-opus-5"
+
+
+def test_a_model_switch_past_the_head_of_a_long_transcript_is_still_seen(home) -> None:
+    """The old reader capped at 4000 head lines, so a late switch was invisible.
+
+    A last-model question is answered from the tail, which is also cheaper than
+    reading thousands of lines from the front.
+    """
+    session = "9d1f7c22-0000-4000-8000-000000000007"
+    transcript(home, session, ["claude-fable-5"] * 8000 + ["claude-opus-5"] * 5)
+
+    assert launcher.detect_model(["--resume", session], home=home) == "claude-opus-5"
+
+
 def test_the_detected_model_is_what_the_router_is_asked_about(home, env) -> None:
     """Detection that never reaches the router is decoration.
 

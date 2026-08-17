@@ -5,7 +5,7 @@ of the operator's own accounts has the most quota about to expire, and starts th
 session there, in bypass-permissions mode.
 
     cl                        pick an account, start a session
-    cl --resume <id>          same, but routed for the model that session used
+    cl --resume <id>          same, but routed for the model that session ENDED on
     cl --model opus[1m] ...   an explicit --model wins over session detection
 
 This is the router's **reference consumer**: the worked example of the integration
@@ -53,7 +53,6 @@ subprocess, no clock, and no reading of the operator's real machine.
 
 from __future__ import annotations
 
-import collections
 import glob as glob_mod
 import json
 import os
@@ -91,14 +90,16 @@ DEFAULT_PICK_TIMEOUT_S: Final[float] = 3.0
 #: was added this way) does not need a second edit here.
 DEFAULT_ONLY: Final[tuple[str, ...]] = tuple(DEFAULT_CLAUDE_CONFIG_DIR_NAMES)
 
-#: How many transcript lines to count models over.
-#:
-#: JUDGMENT CALL, stated plainly: this reads the *head* of the file, so a session that
-#: switched models after 4000 records is routed by the model it started with. The cap
-#: exists because this runs on the critical path of opening a terminal and transcripts
-#: reach hundreds of megabytes. Head-biased-but-fast beat exact-but-slow; the failure
-#: mode is routing against the wrong window, not a wrong session.
-TRANSCRIPT_LINE_CAP: Final[int] = 4000
+#: How much of a transcript's tail to read per step when looking for the last model.
+#: One chunk covers the end of any ordinary session; the loop widens only if that much
+#: contains no model id at all.
+TAIL_CHUNK_BYTES: Final[int] = 256 * 1024
+
+#: Stop widening after this much. A transcript whose final quarter-gigabyte names no
+#: model is not one detection can answer for, and this runs on the critical path of
+#: opening a terminal -- returning ``None`` falls through to the settings default,
+#: which is a real answer rather than a guess.
+TAIL_MAX_BYTES: Final[int] = 8 * 1024 * 1024
 
 #: Router-level failure: there was nothing to hand the session off to. Matches
 #: ``quotapick``'s own convention (:data:`quota_router.cli.EXIT_ROUTER_FAILURE`), and
@@ -178,34 +179,78 @@ def _transcript_path(home: Path, session_id: str) -> Path | None:
     return Path(matches[0]) if matches else None
 
 
-def _dominant_model(path: Path) -> str | None:
-    """The model this transcript is mostly made of, ignoring sentinels.
+def _model_in(line: str) -> str | None:
+    """The real model id on one transcript line, or ``None``.
 
-    Transcripts carry sentinel "models" like ``"<synthetic>"`` for locally generated
-    turns. Taking the LAST model in file order let twelve trailing sentinels outvote
-    628 real records, and the session was then routed as an unknown class instead of
-    against Fable's own weekly allowance. Count the real ids and take the dominant
-    one; a handful of sentinels cannot outvote the actual model.
+    Sentinels (``<synthetic>``, ``<none>``, ...) are excluded by shape rather than by
+    a blocklist: they name a locally generated turn, not something a router can score.
     """
-    counts: collections.Counter[str] = collections.Counter()
     try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            for index, line in enumerate(handle):
-                if index >= TRANSCRIPT_LINE_CAP:
-                    break
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue  # a partially written trailing line is normal
-                if not isinstance(record, Mapping):
-                    continue
-                message = record.get("message")
-                model = message.get("model") if isinstance(message, Mapping) else None
-                if isinstance(model, str) and model and not model.startswith("<"):
-                    counts[model] += 1
+        record = json.loads(line)
+    except ValueError:
+        return None  # a partially written trailing line is normal
+    if not isinstance(record, Mapping):
+        return None
+    message = record.get("message")
+    model = message.get("model") if isinstance(message, Mapping) else None
+    if isinstance(model, str) and model and not model.startswith("<"):
+        return model
+    return None
+
+
+def _last_model(path: Path) -> str | None:
+    """The last real model this session ran, scanning backwards from the end.
+
+    WHY THE LAST ONE AND NOT THE MOST COMMON
+    ----------------------------------------
+    The router is being asked a forward-looking question -- what will this session
+    burn when it resumes -- and the model it ended on is the best available answer.
+    How the history was distributed answers something else that nothing consumes.
+
+    This replaced a majority vote, which was itself a fix for twelve trailing
+    ``<synthetic>`` sentinels outvoting 628 real records. But sentinels are already
+    excluded by :func:`_model_in`, so the vote solved that a second time and bought a
+    new failure: a live session ran 650 Fable turns, was switched to Opus, ran 310
+    more, and resumed routed against Fable's scoped weekly sub-cap -- a window the
+    resumed work does not touch, while the general pool it does touch went unchecked.
+    Both fallbacks said Opus. Detection was worse than returning nothing.
+
+    WHY BACKWARDS
+    -------------
+    Reading the tail is what the question asks for, and it is also cheaper than the
+    4000-line head scan it replaces: transcripts reach hundreds of megabytes, and this
+    runs on the critical path of opening a terminal. A late switch used to be
+    invisible past the cap; now the late records are the first ones read.
+    """
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            tail = b""
+            while position > 0:
+                step = min(TAIL_CHUNK_BYTES, position)
+                position -= step
+                handle.seek(position)
+                tail = handle.read(step) + tail
+
+                # Drop the leading fragment: it is the tail of a line whose start is
+                # still further back, and parsing half a record yields nothing anyway.
+                lines = tail.split(b"\n")
+                whole = lines[1:] if position > 0 else lines
+                for raw in reversed(whole):
+                    if not raw.strip():
+                        continue
+                    model = _model_in(raw.decode("utf-8", errors="replace"))
+                    if model:
+                        return model
+
+                if len(tail) >= TAIL_MAX_BYTES:
+                    # A transcript this long with no model id in it is not one we can
+                    # answer for. Stop rather than read a huge file to say so.
+                    return None
     except OSError:
         return None
-    return counts.most_common(1)[0][0] if counts else None
+    return None
 
 
 def _settings_model(home: Path) -> str | None:
@@ -235,7 +280,7 @@ def detect_model(argv: Sequence[str], *, home: Path) -> str | None:
         # default rather than giving up: no answer and a plausible answer are not
         # equally useful when the alternative is free.
         if path is not None:
-            model = _dominant_model(path)
+            model = _last_model(path)
             if model:
                 return model
     return _settings_model(home)
