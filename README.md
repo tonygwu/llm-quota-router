@@ -326,6 +326,56 @@ Rate-limited to one attempt per account per 30 minutes. Some accounts are dark
 for reasons a refresh cannot fix — revoked credentials, a logged-out slot — and
 without that cooldown they would spawn a CLI on every invocation forever.
 
+## The credential-forensics sampler
+
+Accounts on this machine intermittently lose their stored credential outright and
+need an interactive `/login`. Two outages are on record in the poll log:
+`claude_d` dark for 27 hours from 2026-08-18 06:15 PDT, and `claude_b` dark for
+6.7 hours from 2026-08-20 12:22 PDT plus four brief blips.
+
+**The cause is not established.** Three hypotheses were tested against the
+existing data and two of them died:
+
+| Hypothesis | Verdict | What killed it |
+| --- | --- | --- |
+| The poller's own refresh spawn did it | **Ruled out** for `claude_d` | Healthy at 06:00, blank at 06:15; the cooldown stamp in the 06:30 record proves the first spawn that day was *at* 06:15, after the damage |
+| Sheer volume of concurrent readers | **Ruled out** | The default account took 354 headless spawns over five days on top of two live sessions and never went dark; `claude_b` took 22 and went dark five times |
+| A config dir was re-pointed at another identity | **Ruled out** | Every slot reported one stable identity across all 460 polls |
+
+What survives is unproven: the risk *may* track the number of concurrently
+**active long-lived** sessions on one directory, because a short `claude -p`
+against a healthy token performs no renewal while a session crossing the
+eight-hour boundary must.
+
+The 15-minute poller cannot settle it — both outages have a fifteen-minute blind
+spot around the transition, which is exactly where the answer is. This samples
+every 60 seconds instead:
+
+```sh
+./ops/install-forensics-launchd.sh              # every 60s ($FORENSICS_INTERVAL_S)
+./ops/install-forensics-launchd.sh --uninstall
+quotapick forensics --json                      # one sample, by hand
+```
+
+On the sample where a credential is lost it appends one record to
+`~/Library/Logs/llm-quota-router/credential-forensics.jsonl` containing the
+preceding ten minutes: the credential's measured shape and the PIDs, ages and
+argv of every process holding that directory, at each step. **That file is the
+artifact to read after the next outage.**
+
+Two design points worth knowing:
+
+- **It never spawns anything.** `QUOTA_ROUTER_REFRESH_AUTH` is deliberately absent
+  from its plist and must stay absent. An instrument that spawns processes into
+  the directory it is measuring is a second suspect, not an instrument.
+- **It names no credential field.** The guard in `tests/test_no_token_rotation.py`
+  bans the renewal credential's name from executable code, and that field's length
+  is one of the two most worth recording — an entry with a live renewal credential
+  and a blanked access token failed differently from one where both are gone. So
+  the sampler measures the length of *every* string in the OAuth blob generically.
+  That satisfies the guard honestly rather than by evasion, and it is strictly more
+  informative: it surfaced `rateLimitTier`, which nobody thought to ask for.
+
 ## Measuring the thing it exists for
 
 The premise is that quota expires unspent. That number had never once been computed —

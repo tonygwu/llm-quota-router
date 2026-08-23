@@ -48,11 +48,13 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Final, TextIO
 
 from . import explain as explain_mod
+from . import forensics as forensics_mod
 from . import history as history_mod
 from . import model_classes as mc
 from . import pse
@@ -60,6 +62,7 @@ from . import waste as waste_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
+    PROVIDER_CLAUDE,
     WINDOW_KEY_5H,
     normalize_model_class,
     QUOTA_ROUTER_CONTRACT_VERSION,
@@ -1995,6 +1998,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="only use history from the last N days (default: 14; 0 = all)",
     )
+    subparsers.add_parser(
+        "forensics",
+        parents=[common],
+        help=(
+            "sample every Claude credential once and record any state change "
+            "(local only: Keychain + process table, no network)"
+        ),
+    )
     waste_parser = subparsers.add_parser(
         "waste",
         parents=[common],
@@ -2011,6 +2022,77 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_forensics(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Sample every Claude credential once and record any change of state.
+
+    Deliberately does NOT go through ``_prepare``. That path fetches usage over
+    the network, and this command must stay local, cheap, and safe to run every
+    sixty seconds. It reads the Keychain and the process table, nothing else.
+    """
+    config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+
+    accounts: list[tuple[str, str]] = []
+    default_config_dir = os.path.expanduser("~/.claude")
+    for account in config.accounts.values():
+        if account.provider != PROVIDER_CLAUDE or not account.config_dir:
+            continue
+        accounts.append((account.id, account.config_dir))
+        if account.is_default_config_dir:
+            default_config_dir = str(Path(os.path.expanduser(account.config_dir)))
+
+    if not accounts:
+        print("no Claude accounts configured; nothing to sample", file=stderr)
+        return EXIT_OK
+
+    sample, transitions = forensics_mod.run_once(
+        accounts,
+        now_s=now_s,
+        now_iso=_iso(now_s),
+        default_config_dir=default_config_dir,
+        state_path=forensics_mod.forensics_state_path(env),
+        log_path=forensics_mod.forensics_log_path(env),
+        runner=deps.run,
+    )
+
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "contract_version": QUOTA_ROUTER_CONTRACT_VERSION,
+                    "generated_at": _iso(now_s),
+                    "sample": sample.to_dict(),
+                    "transitions": [asdict(t) for t in transitions],
+                }
+            ),
+            file=stdout,
+        )
+        return EXIT_OK
+
+    for account_id, cred in sorted(sample.credentials.items()):
+        held = len(sample.holders.get(cred.config_dir, ()))
+        print(
+            f"{account_id:<10} {cred.state:<10} {held} live session(s)  {cred.config_dir}",
+            file=stdout,
+        )
+    for transition in transitions:
+        marker = "LOST" if transition.lost else "changed"
+        print(
+            f"  {marker}: {transition.account_id} "
+            f"{transition.previous_state} -> {transition.current_state} "
+            f"within {transition.gap_s:.0f}s",
+            file=stdout,
+        )
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -2018,6 +2100,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "explain": _cmd_explain,
     "calibrate": _cmd_calibrate,
     "waste": _cmd_waste,
+    "forensics": _cmd_forensics,
 }
 
 
