@@ -267,6 +267,91 @@ nothing is lost in translation, and an override that is not passed through does
 not happen. Unset by default: quietly running a weaker model is not a decision a
 quota router should make for you. Never applied when you named a model yourself.
 
+### When `cl` did not route
+
+`cl` always starts a session — a quota router that cannot answer must never be
+why you cannot work — but a launch nobody chose never wears the banner of one
+that was chosen. Anything other than a routing decision says so on stderr,
+`CL_QUIET` or not:
+
+```
+cl → claude_d · opus                       # routed: the router picked this
+
+cl: ROUTER FAILED: pick exceeded 3.0s. No usage data for any account.
+cl ⚠ claude_b · opus  [NOT ROUTED -- WEEKLY-RESET FALLBACK, not live quota: of
+claude, claude_b, claude_c, claude_d, claude_b's weekly window expires first in 3h20m]
+```
+
+The second form is the fallback below. There are two others: `NOT ROUTED --
+hardcoded default; every account was read and every one is spent`, and the same
+with `no [accounts.<id>] weekly_reset is configured`.
+
+Until 2026-08-24 the give-up line was byte-identical to a real decision, with
+the cause written only under `CL_DEBUG`. A blown deadline therefore reached the
+operator as a confident-looking route onto an account whose weekly window was
+100% spent, while the router's actual answer — recoverable afterwards only by
+replaying the recorded snapshot — had been a different account entirely.
+
+**The weekly-reset fallback.** A Claude account's weekly window rolls over on a
+fixed weekday and wall time, settled when the account is created, so it is
+knowable with no network, no Keychain and no token. Tell the router when:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.claude]
+weekly_reset = "Mon 16:00 America/Los_Angeles"   # wall time in a NAMED zone
+```
+
+A zone name, never an offset: `UTC-08:00` is right for eight months a year and
+an hour wrong for four, and building the instant from the machine's local zone
+passes on a UTC CI box and fails on a laptop. Read your own values off
+`quotapick status` — the `7d` window's reset — rather than typing them from
+memory.
+
+This is consulted **only** when the router obtained no usage reading for *any*
+candidate: a pick that blew its deadline, a pick that crashed, or every token
+dark. A reading that says an account is empty is still a reading, and it wins;
+`launcher.measured_any` is the gate, and `remaining: null` (unreadable) versus
+`remaining: 0.0` (read, and empty) is the distinction it turns on. With no
+schedule configured it degrades to the old hardcoded default and names the
+setting that would have done better.
+
+**The cached reading breaks the tie.** A schedule alone cannot tell a week that
+expires in an hour with everything left from one that expires in an hour with
+nothing left; both look equally urgent and only one is worth having. Run against
+the 2026-08-24 fleet, the schedule alone picks the exhausted account, because its
+week genuinely did expire soonest. So before ranking, candidates whose last
+*cached* weekly reading was already spent are dropped:
+
+```
+cl: ROUTER FAILED: pick exceeded 3.0s. No usage data for any account.
+cl ⚠ claude_d · opus  [NOT ROUTED -- WEEKLY-RESET FALLBACK, not live quota: of
+claude_b, claude_c, claude_d, claude_d's weekly window expires first in 21h46m;
+skipped claude (cached weekly reading 100% spent this week)]
+```
+
+A stale reading is admissible here specifically because this path runs only when
+there is no live one — it competes with nothing. Two rules keep it honest:
+
+- **Which week, not how old.** A reading counts only if it was taken inside the
+  window we are still in, decided by `WeeklyReset.same_window` against the
+  account's own schedule. A reading from before the last rollover describes a
+  window that no longer exists, and skipping on it would reject an account that
+  has since refilled. Age answers the wrong question: six days old can be
+  current, ten minutes old can be a week out of date.
+- **The router's own bar.** The threshold is `eligibility.min_remaining`, the
+  same floor the live decision layer excludes on — not a second number to keep
+  in agreement with the first.
+
+Every uncertainty keeps the account: no cache file, an unparseable one, a
+reading from another week. Skipping is the destructive move, so it needs
+positive evidence. If every candidate looks spent, the soonest rollover wins
+anyway — that account becomes usable first — and the banner says so.
+
+The read is `providers.claude_oauth.cached_weekly_usage`: one local file, no
+Keychain, no socket, no token. This path is a recovery from a failure and must
+not be able to repeat it.
+
 It ships in this package (`quota_router.launcher`) rather than as a shell script
 on PATH because it is the worked example of the integration contract above — a
 bug in it gets copied outward — and living here means the suite covers it. Read
@@ -275,7 +360,7 @@ has the failure that motivated it written next to it.
 
 Environment overrides: `CL_CLAUDE_BIN` (default `~/.local/bin/claude`),
 `CL_PICK_TIMEOUT_S` (default 3 — a wall-clock cap, after which the session
-starts on the default account rather than a terminal hanging on a Keychain
+starts on the fallback above rather than a terminal hanging on a Keychain
 prompt), `CL_ONLY` (default `claude,claude_b,claude_c,claude_d`), `CL_QUIET`,
 `CL_DEBUG`.
 

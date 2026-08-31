@@ -38,9 +38,22 @@ deletes the inherited variable rather than merely omitting it: ``cl`` is routine
 run from a shell that is already pointed at another account, where an omission would
 leave the session exactly where it was.
 
-**4. Everything degrades to "just run claude on the default account".** A quota
-router that cannot answer must never be the reason a session cannot start, so the
-pick is capped by a wall-clock deadline and every failure path falls through.
+**4. Everything degrades to a session that still starts.** A quota router that
+cannot answer must never be the reason a session cannot start, so the pick is capped
+by a wall-clock deadline and every failure path falls through. Two things about *how*
+it falls through were bought on 2026-08-24, when a blown deadline put an interactive
+session on the one account whose weekly window was 100% spent:
+
+* **A degraded launch never wears the banner of a routed one.** The give-up line was
+  byte-identical to a real decision, with the cause written only under ``CL_DEBUG``
+  -- which nobody sets before the thing goes wrong. Anything that is not a routing
+  decision now says so on stderr, unconditionally, ``CL_QUIET`` included.
+* **Where it lands is not a constant.** When the router obtained no usage measurement
+  for *any* candidate, :mod:`quota_router.weekly_reset` still knows when each
+  account's week rolls over: that is fixed when the account is created and needs no
+  network. The fleet's soonest expiry beats the same hardcoded account every time. It
+  is strictly a last resort, and :func:`measured_any` is the gate -- a reading that
+  says an account is empty is still a reading, and a reading always wins.
 
 **5. The real binary is invoked by absolute path.** Calling bare ``claude`` would
 re-enter this launcher if it is ever aliased, and an infinite fork loop at
@@ -66,9 +79,18 @@ from typing import Any, Callable, Final, Mapping, NoReturn, Sequence, TextIO
 from .api import Selection, select_account
 from .config import BANNED_EXEC_ENV, Config, load_config
 from .providers.claude_cli_config import DEFAULT_CLAUDE_CONFIG_DIR_NAMES
+from .providers.claude_oauth import cached_weekly_usage
 from .types import ACCOUNT_CLAUDE
+from .weekly_reset import earliest_weekly_reset
 
-__all__ = ["Deps", "child_env", "choose_account", "detect_model", "main"]
+__all__ = [
+    "Deps",
+    "child_env",
+    "choose_account",
+    "detect_model",
+    "main",
+    "measured_any",
+]
 
 _PROG: Final[str] = "cl"
 
@@ -134,6 +156,10 @@ class Deps:
     select: Callable[..., Selection] = select_account
     exec_: Callable[[str, Sequence[str], Mapping[str, str]], Any] = _execve
     load_config: Callable[..., Config] = load_config
+    #: Read exactly once per launch, so every deadline this run reports is measured
+    #: against the same instant. Injected by tests, which is the only way an assertion
+    #: about "in 6h06m" can be exact rather than approximate.
+    now: Callable[[], float] = time.time
 
 
 # ======================================================================================
@@ -304,6 +330,14 @@ class _Route:
     substituted_from: str | None = None
     #: When the original model becomes available again, if the router knew.
     available_at: float | None = None
+    #: Why this launch is NOT a routing decision, in the words that go in the banner.
+    #: ``None`` means the router really chose this account, and is the only state in
+    #: which the plain ``cl -> account`` line is truthful.
+    unrouted: str | None = None
+    #: The router failed outright, as opposed to answering "nobody has quota". Printed
+    #: on its own line above the banner, because a crashed router and an exhausted
+    #: fleet want completely different things from the operator.
+    failure: str | None = None
 
 
 def choose_account(selection: Selection) -> str | None:
@@ -319,6 +353,30 @@ def choose_account(selection: Selection) -> str | None:
         if isinstance(row, Mapping) and row.get("fits") and row.get("account"):
             return str(row["account"])
     return None
+
+
+def measured_any(selection: Selection, candidates: Sequence[str]) -> bool:
+    """Did the router get a usage reading for ANY of ``candidates``?
+
+    This is the gate on the weekly-reset fallback, and the whole reason that fallback
+    is safe. ``remaining`` is ``None`` for an account nothing could be read for -- an
+    expired token, an unreachable endpoint -- and a number for one that was read.
+    **Zero is a number.** "The bar says this account is empty" and "the bar could not
+    be read" produce the same routing outcome and are opposite facts, and only the
+    second one may fall back to a schedule. A schedule is a static guess; it must
+    never be allowed to overrule a live reading, including a reading of zero.
+
+    Both ``ranked`` and ``excluded`` are searched. Which of the two an unreadable
+    account lands in is a rendering detail of the decision layer, and reading only one
+    of them would make this gate depend on it.
+    """
+    wanted = {str(candidate) for candidate in candidates}
+    for row in (*selection.ranked, *selection.excluded):
+        if not isinstance(row, Mapping):
+            continue
+        if str(row.get("account")) in wanted and row.get("remaining") is not None:
+            return True
+    return False
 
 
 def child_env(
@@ -368,12 +426,14 @@ def _route(
     model: str | None,
     deps: Deps,
     stderr: TextIO,
+    now_s: float,
 ) -> _Route:
     """Ask the router for an account, capped and fully insulated.
 
-    Returns the account id to launch on, falling back to the default account on every
-    failure: an unreachable oracle, a broken config, a pick that ran past its deadline,
-    and a fleet with nothing left all mean "start the session anyway".
+    Returns the account id to launch on. Every failure -- an unreachable oracle, a
+    broken config, a pick that ran past its deadline, a fleet with nothing left --
+    still yields a launch, and every one of them is marked as not-a-routing-decision
+    so the banner cannot pass it off as one.
     """
     timeout_s = _float_env(env, "CL_PICK_TIMEOUT_S", DEFAULT_PICK_TIMEOUT_S)
     only = _list_env(env, "CL_ONLY", DEFAULT_ONLY)
@@ -389,23 +449,41 @@ def _route(
             env=dict(env),
         )
 
-    def pick() -> tuple[Selection, Config]:
-        return pick_with(model), deps.load_config(env=dict(env))
+    # The config is loaded FIRST and left where the failure path can still find it.
+    # It used to be returned alongside the pick, which meant a blown deadline threw it
+    # away with the abandoned thread -- and the fallback that needs the weekly reset
+    # schedules is reached only when the deadline blows. Local TOML reads are also the
+    # cheap half of this call, so doing them first costs the fast path nothing.
+    carried: dict[str, Config] = {}
+
+    def pick() -> Selection:
+        carried["config"] = deps.load_config(env=dict(env))
+        return pick_with(model)
 
     attempt = _within_deadline(pick, timeout_s)
+    config = carried.get("config")
+
     if not attempt.ok:
         # Same degradation, deliberately different report: a crash is a bug in the
         # router and a timeout is a blocked credential read, they have nothing in
-        # common but the outcome, and CL_DEBUG is the only place either is visible.
+        # common but the outcome.
         cause = (
-            f"exceeded {timeout_s}s"
+            f"pick exceeded {timeout_s}s"
             if attempt.timed_out
-            else f"failed: {type(attempt.error).__name__}: {attempt.error}"
+            else f"pick failed: {type(attempt.error).__name__}: {attempt.error}"
         )
-        _debug(env, stderr, f"pick {cause}; using the default account")
-        return _Route(ACCOUNT_CLAUDE, None, model)
+        _debug(env, stderr, f"{cause}; nothing was routed")
+        return _unrouted(
+            f"ROUTER FAILED: {cause}. No usage data for any account.",
+            config,
+            only,
+            model,
+            now_s,
+            env,
+            stderr,
+        )
 
-    selection, config = attempt.value
+    selection = attempt.value
     account = choose_account(selection)
     if account is not None:
         return _Route(account, config, model)
@@ -427,11 +505,188 @@ def _route(
                     available_at=selection.available_at,
                 )
 
+    # The router answered and no account fits. Two very different things look like
+    # this, and only one of them may consult a schedule.
+    if not measured_any(selection, only):
+        return _unrouted(
+            f"ROUTER FAILED: usage could not be read for any of {', '.join(only)}. "
+            f"No usage data for any account.",
+            config,
+            only,
+            model,
+            now_s,
+            env,
+            stderr,
+        )
+
     stderr.write(
         f"{_YELLOW}{_PROG}: no account can serve this right now; using the "
         f"default. Check `quotapick status`.{_RESET}\n"
     )
-    return _Route(ACCOUNT_CLAUDE, config, model)
+    return _Route(
+        ACCOUNT_CLAUDE,
+        config,
+        model,
+        unrouted="hardcoded default; every account was read and every one is spent",
+    )
+
+
+# ======================================================================================
+# Landing somewhere sensible when there is nothing to route on
+# ======================================================================================
+
+
+def _schedules(config: Config | None, only: Sequence[str]) -> dict[str, Any]:
+    """Weekly reset schedules for the candidates that could actually be launched.
+
+    Filtered here rather than in :func:`quota_router.weekly_reset.earliest_weekly_reset`,
+    which knows nothing about candidate sets or disabled accounts and should not: the
+    pure layer answers "which of these expires first", and which accounts are *these*
+    is this launcher's question.
+    """
+    if config is None:
+        return {}
+    found: dict[str, Any] = {}
+    for account_id in only:
+        account = config.account(account_id)
+        if account is None or not account.enabled or account.weekly_reset is None:
+            continue
+        found[account_id] = account.weekly_reset
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class _Spent:
+    """A candidate the cache says had nothing left, in the week we are still in."""
+
+    account: str
+    used_fraction: float
+
+
+def _prune_spent(
+    schedules: Mapping[str, Any],
+    config: Config | None,
+    only: Sequence[str],
+    now_s: float,
+    env: Mapping[str, str],
+    stderr: TextIO,
+) -> tuple[dict[str, Any], list[_Spent]]:
+    """Drop candidates whose last CACHED weekly reading was already spent.
+
+    The schedule alone cannot tell a week that expires in an hour with everything
+    left from one that expires in an hour with nothing left. Both look equally
+    urgent and only one is worth having, and on 2026-08-24 that difference was the
+    whole incident. The cached payload closes it.
+
+    A stale reading is admissible **here specifically** because this path runs only
+    when there is no live one -- it competes with nothing. Two rules keep it honest:
+
+    * **Which week, not how old.** A reading is used only if it was taken inside the
+      window we are still in, decided by the account's own schedule. A reading from
+      before the last rollover describes a window that no longer exists, and skipping
+      on it would reject an account that has since refilled completely -- the exact
+      inversion this fallback exists to avoid. Age would answer the wrong question:
+      six days old can be current, ten minutes old can be a week out of date.
+    * **The router's own bar.** ``eligibility.min_remaining`` is what the live
+      decision layer excludes on, so an account it would have rejected on this
+      reading is the one this path declines to guess onto. Inventing a second
+      threshold would give the operator two numbers to keep in agreement.
+
+    Every uncertainty keeps the account: no cache file, an unparseable one, a reading
+    from another week. Skipping is the destructive move, so it needs positive
+    evidence, and this whole path is already a recovery from a failure.
+    """
+    floor = config.eligibility.min_remaining if config is not None else 0.0
+    kept: dict[str, Any] = {}
+    spent: list[_Spent] = []
+    for account_id, schedule in schedules.items():
+        try:
+            reading = cached_weekly_usage(account_id, env)
+        except Exception as exc:  # noqa: BLE001 - see the docstring; never wedge a shell
+            _debug(env, stderr, f"{account_id}: cached usage unreadable: {exc!r}")
+            reading = None
+        if reading is None or not schedule.same_window(reading.observed_at_s, now_s):
+            kept[account_id] = schedule
+        elif 1.0 - reading.used_fraction <= floor:
+            spent.append(_Spent(account_id, reading.used_fraction))
+        else:
+            kept[account_id] = schedule
+    return kept, spent
+
+
+def _unrouted(
+    failure: str,
+    config: Config | None,
+    only: Sequence[str],
+    model: str | None,
+    now_s: float,
+    env: Mapping[str, str],
+    stderr: TextIO,
+) -> _Route:
+    """Land the session somewhere defensible when nothing could be measured.
+
+    Only ever called with no usage reading for any candidate. The weekly reset
+    schedule is all that is left, and it is enough for the router's own objective:
+    spend the pool whose week expires soonest. :func:`_prune_spent` then removes the
+    candidates the cache already knows are empty.
+
+    With no schedule configured this degrades to the historical behaviour, the
+    hardcoded default account -- but says which setting would have made it better,
+    because a fallback nobody knows exists is a fallback nobody configures.
+    """
+    schedules = _schedules(config, only)
+    spent: list[_Spent] = []
+    try:
+        if schedules:
+            kept, spent = _prune_spent(schedules, config, only, now_s, env, stderr)
+            # Everyone looks spent. Still launch, and on the soonest rollover: that is
+            # the account which becomes usable first, which is the most useful thing
+            # left to say. Ranking the full set again gives exactly that.
+            choice = earliest_weekly_reset(kept or schedules, now_s)
+        else:
+            choice = None
+    except Exception as exc:  # noqa: BLE001 - a bad schedule must not wedge a shell
+        _debug(env, stderr, f"weekly reset fallback failed: {type(exc).__name__}: {exc}")
+        choice = None
+
+    if choice is None:
+        return _Route(
+            ACCOUNT_CLAUDE,
+            config,
+            model,
+            failure=failure,
+            unrouted=(
+                f"hardcoded default -- no [accounts.<id>] weekly_reset is configured "
+                f"for {', '.join(only)}, so there was nothing better to pick on"
+            ),
+        )
+
+    account, resets_at = choice
+    if len(spent) == len(schedules):
+        detail = (
+            f"every candidate's cached weekly reading is spent this week, so "
+            f"{account} -- which refills first{_in_hint(resets_at, now_s)} -- is the "
+            f"least bad"
+        )
+    else:
+        considered = ", ".join(name for name in only if name not in {s.account for s in spent})
+        detail = (
+            f"of {considered}, {account}'s weekly window expires first"
+            f"{_in_hint(resets_at, now_s)}"
+        )
+        if spent:
+            detail += "; skipped " + ", ".join(
+                f"{item.account} (cached weekly reading {item.used_fraction:.0%} spent "
+                f"this week)"
+                for item in spent
+            )
+    return _Route(
+        account,
+        config,
+        model,
+        failure=failure,
+        unrouted=f"WEEKLY-RESET FALLBACK, not live quota: {detail}",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,22 +761,31 @@ def _list_env(env: Mapping[str, str], name: str, default: Sequence[str]) -> list
     return values or list(default)
 
 
-def _reset_hint(available_at: float | None) -> str:
-    """`` (back in 42m)`` when the router knew, empty when it did not.
+def _duration(seconds: float) -> str:
+    """``42m`` / ``6h06m``. Never a clock time.
 
-    Rendered as a duration rather than a clock time on purpose: the reset is a
-    wall-clock instant in some timezone, and formatting it locally is how a stamp ends
-    up an hour off. A duration is unambiguous wherever it is read.
+    A deadline is a wall-clock instant in some timezone, and formatting one against
+    the machine's local zone is how a stamp ends up an hour off for half the year. A
+    duration is unambiguous wherever it is read, and needs no zone at all.
     """
-    if available_at is None:
-        return ""
-    remaining = available_at - time.time()
-    if remaining <= 0:
-        return ""
-    minutes = int(remaining // 60)
+    minutes = int(seconds // 60)
     if minutes < 60:
-        return f" (back in {max(1, minutes)}m)"
-    return f" (back in {minutes // 60}h{minutes % 60:02d}m)"
+        return f"{max(1, minutes)}m"
+    return f"{minutes // 60}h{minutes % 60:02d}m"
+
+
+def _reset_hint(available_at: float | None, now_s: float) -> str:
+    """`` (back in 42m)`` when the router knew, empty when it did not."""
+    if available_at is None or available_at - now_s <= 0:
+        return ""
+    return f" (back in {_duration(available_at - now_s)})"
+
+
+def _in_hint(deadline_s: float | None, now_s: float) -> str:
+    """`` in 6h06m`` when the deadline is ahead, empty when it is not."""
+    if deadline_s is None or deadline_s - now_s <= 0:
+        return ""
+    return f" in {_duration(deadline_s - now_s)}"
 
 
 def _debug(env: Mapping[str, str], stderr: TextIO, message: str) -> None:
@@ -551,7 +815,11 @@ def main(
     model = detect_model(args, home=home)
     _debug(environ, err, f"model={model or '<none>'}")
 
-    route = _route(args, environ, model, resolved, err)
+    # One clock read for the whole launch, so the deadlines this run reports are all
+    # measured against the same instant and cannot disagree with each other.
+    now_s = resolved.now()
+
+    route = _route(args, environ, model, resolved, err, now_s)
     account, config, model = route.account, route.config, route.model
     launch_env = child_env(account, environ, config)
 
@@ -561,8 +829,20 @@ def main(
         err,
         f"account={account} dir={launch_env.get('CLAUDE_CONFIG_DIR', '<default ~/.claude>')}",
     )
-    if not environ.get("CL_QUIET"):
-        suffix = f" · {model}" if model else ""
+    if route.failure:
+        # The router itself broke. Unconditional, and above the banner: on 2026-08-24
+        # this was written only under CL_DEBUG, so a blown deadline reached the
+        # operator as a confident-looking routing decision onto a spent account.
+        err.write(f"{_YELLOW}{_PROG}: {route.failure}{_RESET}\n")
+    suffix = f" · {model}" if model else ""
+    if route.unrouted:
+        # Never silenced by CL_QUIET. CL_QUIET suppresses the routine line, and there
+        # is nothing routine about a launch nobody chose.
+        err.write(
+            f"{_YELLOW}{_PROG} ⚠ {account}{suffix}  "
+            f"[NOT ROUTED -- {route.unrouted}]{_RESET}\n"
+        )
+    elif not environ.get("CL_QUIET"):
         err.write(f"{_DIM}{_PROG} → {account}{suffix}{_RESET}\n")
     if route.substituted_from:
         # Always shown, CL_QUIET or not: the session is about to run something other
@@ -570,7 +850,8 @@ def main(
         # than a launch that fails outright.
         err.write(
             f"{_YELLOW}{_PROG}: {route.substituted_from} is exhausted on every "
-            f"account; substituted {model}{_reset_hint(route.available_at)}.{_RESET}\n"
+            f"account; substituted {model}"
+            f"{_reset_hint(route.available_at, now_s)}.{_RESET}\n"
         )
 
     # The ONLY place --model is injected. Detection elsewhere is a prediction used to

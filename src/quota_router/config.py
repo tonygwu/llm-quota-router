@@ -46,6 +46,7 @@ from .types import (
     normalize_tier,
     provider_for_account_id,
 )
+from .weekly_reset import WeeklyReset, parse_weekly_reset
 
 __all__ = [
     "ConfigError",
@@ -156,6 +157,20 @@ def _as_str(value: Any, section: str, key: str) -> str:
     return value.strip()
 
 
+def _as_weekly_reset(value: Any, section: str, key: str) -> WeeklyReset:
+    """Parse a weekly reset schedule, reporting failure as a *config* error.
+
+    The pure parser raises ``ValueError`` and knows nothing about files or sections.
+    Its message says what is wrong with the value; this adds where the value came
+    from, which is the half the operator needs in order to go and fix it.
+    """
+    text = _as_str(value, section, key)
+    try:
+        return parse_weekly_reset(text)
+    except ValueError as exc:
+        raise ConfigError(f"{_where(section, key)}: {exc}") from None
+
+
 def _as_table(value: Any, section: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ConfigError(f"[{section}] must be a table, got {value!r}")
@@ -255,6 +270,13 @@ class AccountConfig:
             ``AGY_MODEL = "claude"`` to select the Antigravity Claude pool).
         env_var: Overrides the config-dir environment variable name for this account.
         command: Overrides the binary ``quotapick exec`` spawns for this account.
+        weekly_reset: When this account's weekly window rolls over, as a wall time in
+            a named zone (``"Mon 15:59 America/Los_Angeles"``). Fixed when the account
+            is created, so unlike everything else here it stays knowable with no
+            network, no Keychain and no token. It is read ONLY as a last resort, when
+            the router obtained no usage measurement for any candidate at all; a
+            measurement, including one that says the account is empty, always wins.
+            See :mod:`quota_router.weekly_reset`.
     """
 
     id: str
@@ -268,6 +290,7 @@ class AccountConfig:
     env: Mapping[str, str] = field(default_factory=dict)
     env_var: str | None = None
     command: str | None = None
+    weekly_reset: WeeklyReset | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -332,6 +355,9 @@ class AccountConfig:
             "enabled": self.enabled,
             "calls_per_window": self.calls_per_window,
             "env": dict(self.env),
+            "weekly_reset": (
+                self.weekly_reset.to_text() if self.weekly_reset is not None else None
+            ),
         }
 
 
@@ -869,6 +895,11 @@ def _build_accounts(
             command=(
                 _as_str(body["command"], section, "command")
                 if body.get("command") is not None
+                else None
+            ),
+            weekly_reset=(
+                _as_weekly_reset(body["weekly_reset"], section, "weekly_reset")
+                if body.get("weekly_reset") is not None
                 else None
             ),
         )

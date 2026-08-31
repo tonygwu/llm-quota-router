@@ -1821,3 +1821,131 @@ def test_a_429_backoff_is_honored_on_the_next_invocation(tmp_path: Path) -> None
         runner=runner, opener=after, home=tmp_path, configs=[config]
     ).snapshot(NOW + 400)
     assert len(after.requests) == 1
+
+
+# ======================================================================================
+# Reading the usage cache and nothing else
+# ======================================================================================
+#
+# `cl`'s weekly-reset fallback runs only after the router has already failed -- often
+# by blowing a three-second deadline. Whatever it consults there must not repeat the
+# thing that just failed, so it reads the cached payload off disk and stops: no
+# Keychain, no socket, no token. `cached_weekly_usage` is that read.
+
+
+def _cache_file(tmp_path: Path, account_id: str, payload: Any, fetched_at_s: float) -> Path:
+    """Write one cache entry through the adapter's own writer.
+
+    Through the writer, not by hand: a fixture that spelled the envelope out itself
+    would keep passing after the real format changed, which is the one thing a cache
+    test must not do.
+    """
+    from quota_router.providers.claude_oauth import _write_usage_cache
+
+    path = usage_cache_path(account_id, {}, home=tmp_path)
+    _write_usage_cache(path, payload, fetched_at_s)
+    return path
+
+
+def test_the_cached_weekly_reading_is_returned_with_the_time_it_was_taken(tmp_path: Path) -> None:
+    """Both halves matter: the fraction, and which week it describes."""
+    from quota_router.providers.claude_oauth import cached_weekly_usage
+
+    _cache_file(tmp_path, ACCOUNT_CLAUDE, usage_payload(), NOW - 600)
+
+    reading = cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path)
+
+    assert reading is not None
+    assert reading.used_fraction == pytest.approx(0.74)  # `weekly_all` percent 74
+    assert reading.observed_at_s == NOW - 600
+
+
+def test_a_fully_spent_week_reads_as_one(tmp_path: Path) -> None:
+    payload = usage_payload()
+    for row in payload["limits"]:
+        if row["kind"] == "weekly_all":
+            row["percent"] = 100
+    _cache_file(tmp_path, ACCOUNT_CLAUDE, payload, NOW)
+
+    from quota_router.providers.claude_oauth import cached_weekly_usage
+
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path).used_fraction == 1.0
+
+
+def test_no_cache_file_is_no_reading_rather_than_a_zero(tmp_path: Path) -> None:
+    """Absent and empty are opposite facts; conflating them is the whole bug class."""
+    from quota_router.providers.claude_oauth import cached_weekly_usage
+
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path) is None
+
+
+def test_a_cache_with_no_weekly_window_is_no_reading(tmp_path: Path) -> None:
+    payload = usage_payload()
+    payload["limits"] = [row for row in payload["limits"] if row["kind"] != "weekly_all"]
+    _cache_file(tmp_path, ACCOUNT_CLAUDE, payload, NOW)
+
+    from quota_router.providers.claude_oauth import cached_weekly_usage
+
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path) is None
+
+
+def test_the_cache_read_never_leaves_an_injected_home(tmp_path: Path) -> None:
+    """It must be impossible for this to read the operator's real cache under test."""
+    from quota_router.providers.claude_oauth import cached_weekly_usage
+
+    _cache_file(tmp_path, ACCOUNT_CLAUDE, usage_payload(), NOW)
+
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path) is not None
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path / "elsewhere") is None
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        '{"fetched_at_s": 123.0}',                    # envelope, no payload
+        '{"payload": {"limits": []}}',                # payload, no timestamp
+        '{"fetched_at_s": "yesterday", "payload": 1}',  # timestamp of the wrong type
+        "not json at all",
+        "[]",
+    ],
+)
+def test_a_malformed_cache_entry_is_no_reading_and_does_not_raise(tmp_path, blob) -> None:
+    """Regression, 2026-08-24.
+
+    ``_read_usage_cache`` declares a 3-tuple and every path returned one except the
+    malformed-envelope branch, which returned two. Its only caller unpacks three, so a
+    cache file that existed but was missing ``payload`` raised ``ValueError: not
+    enough values to unpack`` from inside the adapter -- turning a recoverable cache
+    miss into a crash, on the account whose cache was half-written.
+
+    Found while building the weekly-reset fallback on top of this reader, which is
+    reached only when the router has ALREADY failed. A second failure there would have
+    taken the shell down with it.
+    """
+    from quota_router.providers.claude_oauth import _read_usage_cache, cached_weekly_usage
+
+    path = usage_cache_path(ACCOUNT_CLAUDE, {}, home=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(blob, encoding="utf-8")
+
+    payload, fetched_at, not_before = _read_usage_cache(path)
+    assert (payload, fetched_at, not_before) == (None, None, None)
+    assert cached_weekly_usage(ACCOUNT_CLAUDE, {}, home=tmp_path) is None
+
+
+def test_the_adapter_survives_a_half_written_cache_entry(tmp_path: Path) -> None:
+    """The same regression, through the caller that actually unpacked the short tuple."""
+    config = make_config(tmp_path)
+    path = usage_cache_path(ACCOUNT_CLAUDE, {}, home=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"fetched_at_s": 123.0}', encoding="utf-8")
+
+    adapter = ClaudeOAuthAdapter(
+        runner=_keychain_with_token((NOW + 3600) * 1000),
+        opener=FakeOpener(usage_payload()),
+        home=tmp_path,
+        configs=[config],
+    )
+    snapshot = adapter.snapshot(NOW)[0]
+
+    assert snapshot.available is True, "a bad cache entry must degrade to a fetch"

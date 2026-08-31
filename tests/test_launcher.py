@@ -47,8 +47,20 @@ from quota_router.api import Selection
 
 
 def _row(account: str, *, fits: bool, score: float = 1.0) -> dict:
-    """One ``ranked`` row, with the keys the launcher actually reads."""
-    return {"account": account, "fits": fits, "score": score, "eligible": True}
+    """One ``ranked`` row, with the keys the launcher actually reads.
+
+    ``remaining`` carries a number, never ``None``: these rows stand for accounts the
+    router successfully READ. ``None`` there means "could not be read", which is the
+    one input that unlocks the weekly-reset fallback, and a fixture that left the key
+    out would put every ordinary test through that branch by accident.
+    """
+    return {
+        "account": account,
+        "fits": fits,
+        "score": score,
+        "eligible": True,
+        "remaining": 0.5 if fits else 0.0,
+    }
 
 
 def selection(*ranked: dict, chosen: str | None = None, fits: bool | None = None) -> Selection:
@@ -659,13 +671,31 @@ def test_the_console_script_entry_point_is_callable_with_no_arguments() -> None:
 # ======================================================================================
 
 
-def cfg(**overrides):
-    """The real builtin config (so account config-dirs resolve), plus overrides."""
-    import dataclasses
+#: A config search root that cannot exist, so ``load_config`` below reads the builtin
+#: defaults and nothing at all off the operator's machine.
+#:
+#: ``load_config(env={})`` does NOT mean "no config": ``config_search_paths`` falls
+#: back to ``Path.home()`` for an absent HOME and to ``Path.cwd()`` for an absent cwd,
+#: so it reads ``~/.config/quota-router/config.toml`` and whatever project file the
+#: suite happens to be run from. Every helper here used it until 2026-08-24, when
+#: adding real ``weekly_reset`` schedules to that file turned four tests red -- tests
+#: that had been asserting on the absence of settings the operator merely had not set
+#: yet. A suite whose result depends on the machine it runs on is not a suite.
+_NO_CONFIG_FILES: str = "/nonexistent/quota-router-test-root"
 
+
+def builtin_only():
+    """The builtin config -- account config-dirs resolve, no file layer is read."""
     from quota_router.config import load_config
 
-    return dataclasses.replace(load_config(env={}), **overrides)
+    return load_config(env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES)
+
+
+def cfg(**overrides):
+    """The builtin config (so account config-dirs resolve), plus overrides."""
+    import dataclasses
+
+    return dataclasses.replace(builtin_only(), **overrides)
 
 
 def _by_model(**answers):
@@ -805,3 +835,674 @@ def test_a_genuinely_unknown_top_level_key_still_warns(tmp_path) -> None:
     cfg = load_config(env={}, explicit_path=path)
 
     assert any("falback_model" in w for w in cfg.warnings), cfg.warnings
+
+
+# ======================================================================================
+# 2026-08-24 -- the give-up branch that landed on the exhausted account, silently
+# ======================================================================================
+#
+# What happened: `cl` printed `cl → claude · opus` and dropped an interactive session
+# on the one account whose weekly window was 100% spent. Replaying the recorded
+# snapshot through the decision layer shows the router had answered `claude_d`. The
+# pick failed inside its three-second cap, and `_route`'s give-up branch is hardcoded
+# to `ACCOUNT_CLAUDE`. Two separate faults, pinned separately below:
+#
+#   1. The give-up banner was byte-identical to a successful route, so there was
+#      nothing on screen to distinguish "chosen" from "gave up". The cause was
+#      written only under CL_DEBUG, which nobody sets before the thing goes wrong.
+#   2. The give-up TARGET was a fixed account. When live usage is unavailable for
+#      every account, the weekly reset schedule is still known -- it is fixed when the
+#      account is created -- so the fleet's most-nearly-expiring week is a better
+#      answer than always picking the same one.
+#
+# The second is a LAST resort. Measured quota always wins, and "measured, and
+# everyone is empty" is a different fact from "not measured" -- it keeps the older
+# exhaustion path, which several tests below hold in place.
+
+import datetime as _datetime
+from zoneinfo import ZoneInfo as _ZoneInfo
+
+_LA = _ZoneInfo("America/Los_Angeles")
+
+#: Monday morning, the hours before every account's weekly window rolls over.
+MONDAY_0953 = _datetime.datetime(2026, 8, 24, 9, 53, tzinfo=_LA).timestamp()
+
+
+def _dark_row(account: str) -> dict:
+    """A candidate whose usage could NOT be read: remaining is unknown, not zero."""
+    return {
+        "account": account,
+        "fits": False,
+        "score": 0.0,
+        "eligible": False,
+        "remaining": None,
+        "source": "live",
+        "reason": "account unavailable (access token expired)",
+    }
+
+
+def _measured_row(account: str, remaining: float) -> dict:
+    """A candidate that WAS read. ``remaining=0.0`` means empty, which is a measurement."""
+    return {
+        "account": account,
+        "fits": remaining > 0.0,
+        "score": 0.0,
+        "eligible": True,
+        "remaining": remaining,
+        "source": "live",
+    }
+
+
+def dark_selection(*rows: dict, excluded: list | None = None) -> Selection:
+    """A router answer that completed but measured nothing."""
+    return Selection.from_payload(
+        {
+            "contract_version": 1,
+            "decision": {"account": None, "provider": None, "fits": False},
+            "exec": {"env": {}},
+            "ranked": list(rows),
+            "excluded": list(excluded or []),
+            "degraded": [],
+            "warnings": [],
+        }
+    )
+
+
+def scheduled(**by_account: str):
+    """The builtin config plus a weekly reset schedule for the named accounts.
+
+    Built on :func:`builtin_only`, so an account is scheduled here if and only if this
+    test said so -- never because the operator's own config happens to schedule it.
+    """
+    import dataclasses
+
+    from quota_router.weekly_reset import parse_weekly_reset
+
+    base = builtin_only()
+    accounts = dict(base.accounts)
+    for account_id, text in by_account.items():
+        accounts[account_id] = dataclasses.replace(
+            accounts[account_id], weekly_reset=parse_weekly_reset(text)
+        )
+    return dataclasses.replace(base, accounts=accounts)
+
+
+def launch_at(argv, env, *, now, **kwargs):
+    """``launch`` with the launcher's clock pinned, so reported durations are exact."""
+    import io
+
+    executor = Exec()
+    err = io.StringIO()
+    answer = kwargs.pop("answer", None)
+    error = kwargs.pop("error", None)
+    select = kwargs.pop("select", None)
+    config = kwargs.pop("config", None)
+    assert not kwargs, kwargs
+
+    if select is None:
+
+        def select(**_kwargs):
+            if error is not None:
+                raise error
+            return answer
+
+    deps_kwargs = {"select": select, "exec_": executor, "now": lambda: now}
+    if config is not None:
+        deps_kwargs["load_config"] = lambda **_kw: config
+
+    code = launcher.main(argv, env=env, stderr=err, deps=launcher.Deps(**deps_kwargs))
+    return code, executor, err.getvalue()
+
+
+# -- fault 1: the give-up banner must not look like a route ----------------------------
+
+
+def test_a_real_route_is_not_marked_as_a_fallback(env) -> None:
+    """The negative half. Without it, marking *everything* would pass every test below."""
+    _, _, err = launch([], env, answer=selection(_row("claude_b", fits=True)))
+
+    assert "claude_b" in err
+    assert "NOT ROUTED" not in err
+    assert "ROUTER FAILED" not in err
+
+
+def test_a_timed_out_pick_says_so_on_stderr_without_cl_debug(env) -> None:
+    """The 2026-08-24 symptom exactly: a silent default that reads as a decision.
+
+    CL_DEBUG is deliberately NOT set here. A failure only visible to someone who
+    already suspected it is not visible.
+    """
+    released = threading.Event()
+
+    def select(**_kwargs):
+        released.wait(30)
+        return selection(_row("claude_b", fits=True))
+
+    try:
+        _, executor, err = launch(
+            [], {**env, "CL_PICK_TIMEOUT_S": "0.1"}, select=select
+        )
+
+        assert executor.calls, "a timed-out pick must still start a session"
+        assert "ROUTER FAILED" in err
+        assert "exceeded" in err
+        assert "NOT ROUTED" in err
+    finally:
+        released.set()
+
+
+def test_a_raising_pick_says_so_on_stderr_without_cl_debug(env) -> None:
+    """A crash and a timeout have different fixes, so they keep different text."""
+    _, _, err = launch([], env, error=RuntimeError("oracle exploded"))
+
+    assert "ROUTER FAILED" in err
+    assert "oracle exploded" in err
+    assert "NOT ROUTED" in err
+    assert "exceeded" not in err
+
+
+def test_an_exhausted_fleet_is_marked_unrouted_but_not_as_a_router_failure(env) -> None:
+    """Measured-and-empty is not the same news as not-measured. Both are non-routes."""
+    answer = selection(_measured_row("claude_b", 0.0), _measured_row("claude_c", 0.0))
+    _, _, err = launch([], env, answer=answer)
+
+    assert "NOT ROUTED" in err
+    assert "ROUTER FAILED" not in err
+    assert "no account can serve" in err
+
+
+def test_the_fallback_banner_survives_cl_quiet(env) -> None:
+    """CL_QUIET hides the routine line. Nothing about this launch is routine."""
+    _, _, err = launch([], {**env, "CL_QUIET": "1"}, error=RuntimeError("oracle exploded"))
+
+    assert "NOT ROUTED" in err
+    assert "ROUTER FAILED" in err
+
+
+# -- fault 2: where the give-up branch lands -------------------------------------------
+
+
+def test_a_failed_pick_falls_back_to_the_soonest_weekly_reset(env) -> None:
+    """The heuristic itself: with nothing measured, spend the week that expires first.
+
+    Reverting this puts every router failure on the same hardcoded account, which is
+    how a 100%-spent account got an interactive session on 2026-08-24.
+    """
+    config = scheduled(
+        claude="Fri 15:59 America/Los_Angeles",
+        claude_b="Wed 15:59 America/Los_Angeles",
+        claude_c="Mon 15:59 America/Los_Angeles",
+        claude_d="Thu 15:59 America/Los_Angeles",
+    )
+
+    code, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("oracle exploded"), config=config
+    )
+
+    assert code == 0
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")
+    assert "WEEKLY-RESET FALLBACK" in err
+    assert "claude_c" in err
+
+
+def test_the_weekly_fallback_says_it_is_not_using_live_quota(env) -> None:
+    """The operator must be able to tell this apart from a measured decision at a glance."""
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+
+    _, _, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("oracle exploded"), config=config
+    )
+
+    assert "WEEKLY-RESET FALLBACK" in err
+    assert "not live quota" in err.lower()
+    assert "6h06m" in err, f"the reset deadline is what justifies the choice; got {err!r}"
+
+
+def test_a_pick_that_hangs_still_reaches_the_weekly_fallback(env) -> None:
+    """Config is read BEFORE the slow part, so a blown deadline does not lose it.
+
+    Loading it inside the same capped call and returning it as a tuple -- the shape
+    this replaces -- discards the config along with the abandoned thread, leaving the
+    fallback with no schedules exactly when it is needed.
+    """
+    released = threading.Event()
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+
+    def select(**_kwargs):
+        released.wait(30)
+        return selection(_row("claude_b", fits=True))
+
+    try:
+        _, executor, err = launch_at(
+            [],
+            {**env, "CL_PICK_TIMEOUT_S": "0.1"},
+            now=MONDAY_0953,
+            select=select,
+            config=config,
+        )
+
+        assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")
+        assert "WEEKLY-RESET FALLBACK" in err
+    finally:
+        released.set()
+
+
+def test_usage_that_could_not_be_read_anywhere_reaches_the_weekly_fallback(env) -> None:
+    """The pick completed and measured nothing -- four dark tokens, say."""
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+    answer = dark_selection(
+        _dark_row("claude"),
+        _dark_row("claude_b"),
+        _dark_row("claude_c"),
+        _dark_row("claude_d"),
+    )
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, answer=answer, config=config)
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")
+    assert "WEEKLY-RESET FALLBACK" in err
+
+
+def test_a_dark_account_reported_only_as_excluded_still_counts_as_unmeasured(env) -> None:
+    """An unreadable account can land in ``excluded`` rather than ``ranked``.
+
+    Reading only ``ranked`` would see an empty list, conclude nothing about usage,
+    and take the wrong branch on the strength of a rendering detail.
+    """
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+    answer = dark_selection(
+        excluded=[
+            _dark_row("claude"),
+            _dark_row("claude_b"),
+            _dark_row("claude_c"),
+            _dark_row("claude_d"),
+        ]
+    )
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, answer=answer, config=config)
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-c")
+    assert "WEEKLY-RESET FALLBACK" in err
+
+
+# -- the "ONLY if" guard: one measurement anywhere disables the heuristic ---------------
+
+
+def test_one_measured_account_keeps_the_weekly_fallback_out_of_it(env) -> None:
+    """``remaining = 0.0`` is a measurement. It says empty; it does not say unknown.
+
+    This is the whole guard. The schedule is a far weaker signal than the bar, so it
+    must never override a reading -- not even a reading that says zero.
+    """
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+    answer = dark_selection(
+        _dark_row("claude"),
+        _dark_row("claude_b"),
+        _measured_row("claude_c", 0.0),
+        _dark_row("claude_d"),
+    )
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, answer=answer, config=config)
+
+    assert "WEEKLY-RESET FALLBACK" not in err
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "the older exhaustion path owns this"
+    assert "no account can serve" in err
+
+
+def test_a_fully_measured_and_fully_spent_fleet_never_reaches_the_weekly_fallback(env) -> None:
+    """The 2026-08-24 fleet, one hour later: everyone readable, everyone empty."""
+    config = scheduled(
+        claude="Mon 15:59 America/Los_Angeles",
+        claude_b="Wed 15:59 America/Los_Angeles",
+    )
+    answer = selection(
+        _measured_row("claude", 0.0),
+        _measured_row("claude_b", 0.0),
+        _measured_row("claude_c", 0.0),
+        _measured_row("claude_d", 0.0),
+    )
+
+    _, _, err = launch_at([], env, now=MONDAY_0953, answer=answer, config=config)
+
+    assert "WEEKLY-RESET FALLBACK" not in err
+    assert "no account can serve" in err
+
+
+def test_a_routable_answer_never_reaches_the_weekly_fallback(env) -> None:
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+
+    _, executor, err = launch_at(
+        [], env, now=MONDAY_0953, answer=selection(_row("claude_b", fits=True)), config=config
+    )
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b")
+    assert "WEEKLY-RESET FALLBACK" not in err
+
+
+# -- the candidate set, and having no schedule at all ----------------------------------
+
+
+def test_the_weekly_fallback_only_considers_the_candidate_set(env) -> None:
+    """``CL_ONLY`` narrows the fleet. It must narrow this branch too."""
+    config = scheduled(
+        claude_b="Wed 15:59 America/Los_Angeles",
+        claude_c="Mon 15:59 America/Los_Angeles",
+    )
+
+    _, executor, _ = launch_at(
+        [],
+        {**env, "CL_ONLY": "claude_b,claude_d"},
+        now=MONDAY_0953,
+        error=RuntimeError("oracle exploded"),
+        config=config,
+    )
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b"), (
+        "claude_c resets soonest but was not a candidate"
+    )
+
+
+def test_the_weekly_fallback_skips_a_disabled_account(env) -> None:
+    import dataclasses
+
+    config = scheduled(
+        claude_b="Wed 15:59 America/Los_Angeles",
+        claude_c="Mon 15:59 America/Los_Angeles",
+    )
+    accounts = dict(config.accounts)
+    accounts["claude_c"] = dataclasses.replace(accounts["claude_c"], enabled=False)
+    config = dataclasses.replace(config, accounts=accounts)
+
+    _, executor, _ = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("oracle exploded"), config=config
+    )
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b")
+
+
+def test_no_schedule_anywhere_still_launches_and_names_the_missing_setting(env) -> None:
+    """Degrading to the old hardcoded default is fine. Doing it quietly is not."""
+    code, executor, err = launch_at(
+        [],
+        env,
+        now=MONDAY_0953,
+        error=RuntimeError("oracle exploded"),
+        config=cfg(),
+    )
+
+    assert code == 0
+    assert executor.calls
+    assert "CLAUDE_CONFIG_DIR" not in executor.env
+    assert "NOT ROUTED" in err
+    assert "weekly_reset" in err, "the operator needs to be told which setting is missing"
+
+
+def test_the_weekly_fallback_books_no_quota_and_injects_no_model(env) -> None:
+    """It is still a dry pick and still not a model substitution."""
+    config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")
+
+    _, executor, _ = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("oracle exploded"), config=config
+    )
+
+    assert "--model" not in executor.argv
+    assert executor.argv[1] == launcher.BYPASS_FLAG
+
+
+# -- the setting itself, end to end through the config layer ----------------------------
+
+
+def test_a_weekly_reset_schedule_survives_the_config_layer(tmp_path) -> None:
+    from quota_router.config import load_config
+    from quota_router.weekly_reset import WeeklyReset
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[accounts.claude]\n"
+        'weekly_reset = "Mon 15:59 America/Los_Angeles"\n',
+        encoding="utf-8",
+    )
+    config = load_config(env={}, explicit_path=path)
+
+    assert config.account("claude").weekly_reset == WeeklyReset(
+        weekday=0, hour=15, minute=59, zone="America/Los_Angeles"
+    )
+    assert not [w for w in config.warnings if "weekly_reset" in w], config.warnings
+
+
+def test_an_account_without_the_setting_has_no_schedule() -> None:
+    """Opt-in. An unscheduled account simply cannot win the fallback."""
+    assert builtin_only().account("claude_b").weekly_reset is None
+
+
+def test_a_malformed_schedule_is_a_config_error_naming_the_account(tmp_path) -> None:
+    """Fail loud. A schedule that quietly defaults would route on a fabricated deadline."""
+    from quota_router.config import ConfigError, load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.claude]\nweekly_reset = "Mon 15:59"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        load_config(env={}, explicit_path=path)
+
+    assert "accounts.claude" in str(caught.value)
+    assert "weekly_reset" in str(caught.value)
+
+
+# ======================================================================================
+# Refinement -- the fallback skips an account it last saw spent
+# ======================================================================================
+#
+# The weekly-reset heuristic alone cannot tell "expires in an hour with a full week
+# left" from "expires in an hour with nothing left". Both look equally urgent, and the
+# second is worthless. Run against the 2026-08-24 fleet it would have picked `claude`,
+# the exhausted account, for exactly that reason.
+#
+# The cached usage payload closes the gap, and it is legitimate here for a reason that
+# does not generalise: the fallback runs only when there is no LIVE reading, so a stale
+# one is not competing with anything. The gate is not age. It is which WEEK the reading
+# describes -- a reading taken before the account's last rollover describes a window
+# that no longer exists, and acting on it would skip an account that has since refilled.
+
+
+def _cache_weekly(env: dict, account: str, used_fraction: float, observed_at_s: float) -> None:
+    """Write a cache entry for ``account`` under the test's HOME.
+
+    Uses the adapter's own writer and the real payload shape, so this cannot keep
+    passing after the format it stands in for has moved.
+    """
+    from quota_router.providers.claude_oauth import _write_usage_cache, usage_cache_path
+
+    payload = {
+        "limits": [
+            {
+                "kind": "weekly_all",
+                "group": "weekly",
+                "percent": used_fraction * 100,
+                "resets_at": "2026-08-31T22:59:00+00:00",
+                "scope": None,
+            }
+        ]
+    }
+    _write_usage_cache(usage_cache_path(account, env), payload, observed_at_s)
+
+
+#: Monday 08:00, inside the same weekly window as MONDAY_0953 for a Mon 15:59 schedule.
+MONDAY_0800 = _datetime.datetime(2026, 8, 24, 8, 0, tzinfo=_LA).timestamp()
+#: The Monday BEFORE last week's rollover: same weekday, previous window.
+LAST_MONDAY_1200 = _datetime.datetime(2026, 8, 17, 12, 0, tzinfo=_LA).timestamp()
+
+
+def _fleet():
+    """Four scheduled accounts. `claude` resets soonest, so it wins on schedule alone."""
+    return scheduled(
+        claude="Mon 15:59 America/Los_Angeles",     # today, in ~6h
+        claude_d="Tue 11:00 America/Los_Angeles",   # tomorrow
+        claude_b="Wed 02:00 America/Los_Angeles",   # Wednesday
+        claude_c="Fri 19:00 America/Los_Angeles",   # Friday
+    )
+
+
+def test_without_any_cache_the_soonest_reset_still_wins(env) -> None:
+    """The baseline the skip is measured against. This IS the 2026-08-24 outcome."""
+    _, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "claude, whose week expires first"
+    assert "WEEKLY-RESET FALLBACK" in err
+
+
+def test_an_account_last_seen_spent_this_week_is_skipped(env) -> None:
+    """The refinement. `claude` still expires first; it just has nothing left to lose."""
+    _cache_weekly(env, "claude", used_fraction=1.0, observed_at_s=MONDAY_0800)
+
+    _, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-d"), (
+        "claude_d resets next after claude"
+    )
+    assert "skipped" in err and "claude" in err
+
+
+def test_the_banner_says_which_account_was_skipped_and_why(env) -> None:
+    _cache_weekly(env, "claude", used_fraction=1.0, observed_at_s=MONDAY_0800)
+
+    _, _, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert "NOT ROUTED" in err
+    assert "WEEKLY-RESET FALLBACK" in err
+    assert "skipped claude" in err
+    assert "100%" in err, f"the reading that justified the skip must be shown; got {err!r}"
+
+
+def test_a_reading_from_before_the_last_rollover_does_not_skip(env) -> None:
+    """The correctness rule. That week is over; the account may be completely fresh.
+
+    Deleting the window check leaves this test asserting the very inversion the
+    fallback exists to prevent: skipping an account BECAUSE it was spent last week.
+    """
+    _cache_weekly(env, "claude", used_fraction=1.0, observed_at_s=LAST_MONDAY_1200)
+
+    _, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "claude's week rolled over since"
+    assert "skipped" not in err
+
+
+def test_an_account_with_no_cache_entry_is_never_skipped(env) -> None:
+    """No reading is not a reading of zero.
+
+    Every candidate except ``claude`` is cached as fully spent, so ``claude`` can only
+    win by being *kept* on the strength of having no cache entry at all. Treating a
+    missing entry as empty would skip the whole fleet and take the last-resort branch
+    instead, which the second assertion pins.
+    """
+    for account in ("claude_b", "claude_c", "claude_d"):
+        _cache_weekly(env, account, used_fraction=1.0, observed_at_s=MONDAY_0800)
+
+    _, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "claude has no cache and still wins"
+    assert "every candidate" not in err.lower()
+    assert "skipped claude_b" in err
+
+
+def test_an_account_with_quota_left_is_not_skipped(env) -> None:
+    _cache_weekly(env, "claude", used_fraction=0.61, observed_at_s=MONDAY_0800)
+
+    _, executor, _ = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert "CLAUDE_CONFIG_DIR" not in executor.env
+
+
+def test_the_skip_bar_is_the_routers_own_eligibility_floor(env) -> None:
+    """Not a second threshold invented for this path.
+
+    An account the live router would have excluded on this reading is the same account
+    this path should decline to guess onto. One bar, one place to change it.
+    """
+    import dataclasses
+
+    base = _fleet()
+    strict = dataclasses.replace(
+        base, eligibility=dataclasses.replace(base.eligibility, min_remaining=0.5)
+    )
+    _cache_weekly(env, "claude", used_fraction=0.60, observed_at_s=MONDAY_0800)
+
+    _, lenient_exec, _ = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=base
+    )
+    _, strict_exec, _ = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=strict
+    )
+
+    assert "CLAUDE_CONFIG_DIR" not in lenient_exec.env, "40% left clears a 2% floor"
+    assert strict_exec.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-d"), (
+        "40% left does not clear a 50% floor"
+    )
+
+
+def test_skipping_every_candidate_still_launches_on_the_soonest_to_refill(env) -> None:
+    """Nowhere good to go is not a reason to refuse a shell.
+
+    When every cached reading says spent, the soonest rollover is the least bad
+    answer: it is the account that becomes usable first.
+    """
+    for account in ("claude", "claude_b", "claude_c", "claude_d"):
+        _cache_weekly(env, account, used_fraction=1.0, observed_at_s=MONDAY_0800)
+
+    code, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert code == 0
+    assert executor.calls
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "claude refills first, in ~6h"
+    assert "every candidate" in err.lower()
+    assert "NOT ROUTED" in err
+
+
+def test_a_corrupt_cache_entry_never_stops_the_launch(env) -> None:
+    """This path is reached because something already failed. It cannot be the second."""
+    from quota_router.providers.claude_oauth import usage_cache_path
+
+    path = usage_cache_path("claude", env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{ not json", encoding="utf-8")
+
+    code, executor, err = launch_at(
+        [], env, now=MONDAY_0953, error=RuntimeError("boom"), config=_fleet()
+    )
+
+    assert code == 0
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "an unreadable cache skips nobody"
+    assert "WEEKLY-RESET FALLBACK" in err
+
+
+def test_the_cache_is_not_consulted_when_the_router_answered(env) -> None:
+    """A live reading is never second-guessed with a stale one."""
+    _cache_weekly(env, "claude_b", used_fraction=1.0, observed_at_s=MONDAY_0800)
+
+    _, executor, err = launch_at(
+        [],
+        env,
+        now=MONDAY_0953,
+        answer=selection(_row("claude_b", fits=True)),
+        config=_fleet(),
+    )
+
+    assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b")
+    assert "skipped" not in err

@@ -80,6 +80,8 @@ __all__ = [
     "read_access_token",
     "usage_cache_path",
     "parse_usage_payload",
+    "CachedWeeklyUsage",
+    "cached_weekly_usage",
     "ClaudeOAuthAdapter",
 ]
 
@@ -225,7 +227,12 @@ def _read_usage_cache(path: Path) -> tuple[Any | None, float | None, float | Non
     fetched_at = blob.get("fetched_at_s")
     payload = blob.get("payload")
     if not isinstance(fetched_at, (int, float)) or payload is None:
-        return None, None
+        # Three values, like every other path. This branch returned two until
+        # 2026-08-24, and the only caller unpacks three -- so a cache file that
+        # existed but was half-written raised ValueError from inside the adapter
+        # instead of degrading to a re-fetch. A cache miss is not an error; a cache
+        # miss that crashes the reader is.
+        return None, None, None
     not_before = blob.get("not_before_s")
     return payload, float(fetched_at), (float(not_before) if isinstance(not_before, (int, float)) else None)
 
@@ -454,6 +461,62 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
         taken.add(window.key)
         windows.append(window)
     return windows, warnings
+
+
+@dataclass(frozen=True, slots=True)
+class CachedWeeklyUsage:
+    """One account's last-known weekly usage, and when it was taken.
+
+    ``observed_at_s`` is not decoration. A weekly reading is only meaningful about
+    the week it was taken in, and whether that is still the current week is decided
+    by the account's own reset schedule rather than by an age threshold -- see
+    :meth:`quota_router.weekly_reset.WeeklyReset.same_window`.
+    """
+
+    account_id: str
+    used_fraction: float
+    observed_at_s: float
+
+
+def cached_weekly_usage(
+    account_id: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    home: Path | str | None = None,
+) -> CachedWeeklyUsage | None:
+    """The weekly window from this account's cache file, reading nothing else.
+
+    **No Keychain, no socket, no token, no clock.** The one caller is ``cl``'s
+    weekly-reset fallback, which runs only after the router has already failed --
+    frequently by blowing a three-second deadline. Anything there that could block on
+    a credential prompt or a hung endpoint would repeat the failure it exists to
+    recover from, so this touches exactly one local file and returns.
+
+    Staleness is deliberately NOT judged here. Every other reader of this cache
+    applies a freshness bound because it is choosing between the cache and a fresh
+    fetch; this caller has no fetch to choose against, and the only question worth
+    asking is which week the reading describes. That is the caller's to answer, with
+    the schedule it already holds.
+
+    Returns:
+        ``None`` when there is no cache file, when it cannot be parsed, or when it
+        carries no weekly window -- all of which mean "no reading", which is a
+        different fact from "read, and the account is empty".
+    """
+    payload, fetched_at_s, _not_before = _read_usage_cache(
+        usage_cache_path(account_id, env, home=home)
+    )
+    if payload is None or fetched_at_s is None:
+        return None
+    windows, _warnings = parse_usage_payload(payload, observed_at_s=fetched_at_s)
+    for window in windows:
+        if window.key == WINDOW_KEY_7D:
+            return CachedWeeklyUsage(
+                account_id=account_id,
+                used_fraction=window.used_fraction,
+                observed_at_s=fetched_at_s,
+            )
+    return None
 
 
 class ClaudeOAuthAdapter(ProviderAdapter):
