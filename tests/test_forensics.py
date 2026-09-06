@@ -33,6 +33,7 @@ from quota_router.forensics import (
     read_credential,
     run_once,
 )
+from quota_router.providers.claude_oauth import keychain_service_for
 
 NOW = 1_760_000_000.0
 ISO = "2025-10-09T09:33:20+00:00"
@@ -139,8 +140,13 @@ def _keychain_runner(payloads: dict[str, str | None]):
 
 
 def test_read_credential_reports_blank_with_field_lengths() -> None:
-    runner = _keychain_runner({"Claude Code-credentials-6bf31a73": _blob(access="")})
-    sample = read_credential("claude_b", "~/.claude-b", now_s=NOW, runner=runner)
+    # The service name is the SHA-256 of the ABSOLUTE config-dir path, so hardcoding
+    # one pins the test to whoever's home directory produced it. Derive it from the
+    # same function the code uses, against an explicit home.
+    home = Path("/Users/somebody")
+    service = keychain_service_for("~/.claude-b", home=home)[0]
+    runner = _keychain_runner({service: _blob(access="")})
+    sample = read_credential("claude_b", "~/.claude-b", now_s=NOW, runner=runner, home=home)
     assert sample.state == STATE_BLANK
     assert sample.lost is True
     assert sample.field_lengths["accessToken"] == 0

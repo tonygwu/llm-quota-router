@@ -320,7 +320,11 @@ def test_no_usage_data_at_all_is_still_valid_json_and_exit_zero(env):
 
 def test_missing_decision_layer_degrades_instead_of_crashing(env, monkeypatch):
     monkeypatch.setattr(cli, "_load_engine", lambda: (None, None, "scoring unavailable"))
-    payload = pick(["pick"], env, snapshots=real_capture(), deps=cli.Deps())
+    # A bare Deps() would leave load_snapshots defaulting to the REAL providers
+    # layer, which reads this machine's accounts. rank/select stay unset so the
+    # monkeypatched _load_engine is still the thing under test.
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(real_capture()), []))
+    payload = pick(["pick"], env, deps=deps)
     assert payload["decision"]["account"] is not None
     assert any("unavailable" in warning for warning in payload["warnings"])
 
@@ -651,7 +655,11 @@ def test_a_genuinely_exhausted_field_reports_fits_false(env):
 
 def test_a_missing_decision_layer_does_not_claim_healthy_accounts_are_spent(env, monkeypatch):
     monkeypatch.setattr(cli, "_load_engine", lambda: (None, None, "scoring unavailable"))
-    payload = pick(["pick"], env, snapshots=real_capture(), deps=cli.Deps())
+    # A bare Deps() would leave load_snapshots defaulting to the REAL providers
+    # layer, which reads this machine's accounts. rank/select stay unset so the
+    # monkeypatched _load_engine is still the thing under test.
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(real_capture()), []))
+    payload = pick(["pick"], env, deps=deps)
     assert payload["decision"]["fits"] is True, (
         "the scoring layer being absent says nothing about whether the account works"
     )

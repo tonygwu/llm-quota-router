@@ -1657,6 +1657,11 @@ def test_the_offline_switch_reaches_the_real_adapter_through_select_account(
 
     home = tmp_path / "home"
     (home / ".claude-b").mkdir(parents=True)
+    # HOME has to move in the PROCESS environment too, not just in the injected env
+    # dict. Account config_dirs arrive from config as "~/.claude-b" and are expanded
+    # with os.path.expanduser, which reads os.environ. Without this the test silently
+    # resolved to the author's real ~/.claude-b and passed for the wrong reason.
+    monkeypatch.setenv("HOME", str(home))
     env = {
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
