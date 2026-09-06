@@ -158,6 +158,10 @@ uv add git+ssh://git@github.com/tonygwu/llm-quota-router
 Those are different things. `uv tool install` deliberately isolates the package,
 so it will *not* satisfy an `import` in your project.
 
+On the author's machine this repo has several checkouts, and the live `cl` and
+`quotapick` are installed from exactly one of them. See `AGENTS.md` before
+running `uv tool install` from a checkout.
+
 Zero runtime dependencies, Python >= 3.12.
 
 ## Use
