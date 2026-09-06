@@ -18,31 +18,54 @@
 #   2. writes waste.jsonl -- one row per window reset, which is the measurement the whole
 #      project is judged on (README, "Measuring the thing it exists for").
 #
-# The router still reads usage live on every invocation, so not running this costs no
-# correctness. It does cost the measurement: a reset seen by nothing leaves an
-# `observed: false` row and its remainder is unrecoverable, so the longer this job is
-# down the more of the series is holes. That is why the writer lives here rather than in
-# a command someone has to remember to run.
+# It also keeps the per-account usage cache warm. The router serves a cached payload
+# for DEFAULT_USAGE_TTL_S (120s) before reading live again, and every `cl` launch
+# that finds the cache cold pays for four endpoint round trips inside a three-second
+# budget. Not running this costs no correctness -- the router still reads live -- but
+# it does cost the measurement: a reset seen by nothing leaves an `observed: false`
+# row and its remainder is unrecoverable, so the longer this job is down the more of
+# the series is holes. That is why the writer lives here rather than in a command
+# someone has to remember to run.
 #
 #   ./ops/install-launchd.sh              install and start
 #   ./ops/install-launchd.sh --uninstall  stop and remove
 #   ./ops/install-launchd.sh --print      print the plist, install nothing
 #
-# Env: POLL_INTERVAL_S (default 900 -- see below; do not raise it casually)
+# Env: POLL_INTERVAL_S    (default 120 -- see below; do not raise it casually)
+#      POLL_LOG_MAX_BYTES (default 20000000 -- the log rotates itself past this)
 
 set -uo pipefail
 
 LABEL="local.llm-quota-router.usage-poll"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/llm-quota-router"
-# 900s is not a taste. `quota_router.history.ADOPTION_MAX_STEP_S` refuses any
-# calibration series whose TYPICAL step exceeds it, and this job is what produces
-# that series -- so polling slower than the gate means no k estimate is ever
-# adoptable, with no symptom beyond calibrate quietly never saying ADOPT. The waste
-# series has the same exposure: a reset can only be located to within one interval.
-# tests/test_k_calibration.py asserts this default against the Python constant,
-# because a shell default and a Python constant cannot share a definition.
-INTERVAL="${POLL_INTERVAL_S:-900}"
+# 120s is not a taste; two Python constants bound it, and tests/test_k_calibration.py
+# asserts this default against both, because a shell default and a Python constant
+# cannot share a definition:
+#
+#   * `quota_router.providers.claude_oauth.DEFAULT_USAGE_TTL_S` (120s) is how long a
+#     fetched payload is reused. Polling slower than that leaves the cache cold for
+#     the difference -- at the old 900s it was cold 87% of the time, so nearly every
+#     `cl` launch read live, and on 2026-09-06 four such reads blew the launcher's
+#     three-second deadline.
+#   * `quota_router.history.ADOPTION_MAX_STEP_S` (900s) refuses any calibration
+#     series whose TYPICAL step exceeds it, and this job is what produces that
+#     series -- so polling slower than the gate means no k estimate is ever
+#     adoptable, with no symptom beyond calibrate quietly never saying ADOPT. The
+#     waste series has the same exposure: a reset can only be located to within one
+#     interval.
+#
+# Cost of 120s: one endpoint read per account every two minutes. The endpoint
+# throttled at roughly seventeen reads on one token inside six minutes, so this
+# sits well under it, and the adapter serves its cache on a 429 anyway.
+INTERVAL="${POLL_INTERVAL_S:-120}"
+
+# launchd appends every run's full JSON to one file and never rotates it: ~19 KB a
+# run, 25 MB after six weeks at 900s, ~13 MB a day at 120s. The job trims itself
+# (see the ProgramArguments below): past this many bytes the log is moved aside as
+# `.1`, one generation kept, so at most twice this is ever on disk.
+LOG_MAX_BYTES="${POLL_LOG_MAX_BYTES:-20000000}"
+LOG_FILE="${LOG_DIR}/usage-poll.log"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
@@ -68,11 +91,17 @@ read -r -d '' PLIST_XML <<XML
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
+  <!-- \$0 is quotapick, \$1 the log, \$2 the cap. The run's own output lands in the
+       log first; the rotation happens after it, from inside the same process, which is
+       safe because launchd reopens StandardOutPath fresh for every run. -->
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>"\$0" status --json; rc=\$?; size=\$(stat -f %z "\$1" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$1" "\$1.1"; fi; exit \$rc</string>
     <string>${QUOTAPICK}</string>
-    <string>status</string>
-    <string>--json</string>
+    <string>${LOG_FILE}</string>
+    <string>${LOG_MAX_BYTES}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -86,8 +115,8 @@ read -r -d '' PLIST_XML <<XML
   </dict>
   <key>StartInterval</key><integer>${INTERVAL}</integer>
   <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>${LOG_DIR}/usage-poll.log</string>
-  <key>StandardErrorPath</key><string>${LOG_DIR}/usage-poll.log</string>
+  <key>StandardOutPath</key><string>${LOG_FILE}</string>
+  <key>StandardErrorPath</key><string>${LOG_FILE}</string>
   <key>ProcessType</key><string>Background</string>
 </dict>
 </plist>
@@ -113,4 +142,4 @@ fi
 
 echo "installed ${LABEL}"
 echo "  every ${INTERVAL}s   quotapick=${QUOTAPICK}"
-echo "  log: ${LOG_DIR}/usage-poll.log"
+echo "  log: ${LOG_FILE}  (rotates itself past ${LOG_MAX_BYTES} bytes)"

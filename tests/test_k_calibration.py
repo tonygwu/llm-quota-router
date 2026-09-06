@@ -876,3 +876,90 @@ def test_an_unmeasurable_account_says_whose_floor_rejected_it() -> None:
         f"the reason must say the floor was caller-set, since the identical built-in "
         f"default would NOT have rejected this account: {reason}"
     )
+
+
+def _print_installer_plist(tmp_path, *, quotapick: str, **env_overrides: str) -> dict:
+    """Run ``ops/install-launchd.sh --print`` under a throwaway HOME and parse the plist."""
+    import os
+    import plistlib
+    import subprocess
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "ops" / "install-launchd.sh"
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": "/usr/bin:/bin",
+        "QUOTAPICK_BIN": quotapick,
+        **env_overrides,
+    }
+    completed = subprocess.run(
+        ["/bin/bash", str(script), "--print"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return plistlib.loads(completed.stdout.encode("utf-8"))
+
+
+def test_the_installer_polls_at_least_as_often_as_the_usage_cache_lives() -> None:
+    """The poller exists to keep the usage cache warm; a cadence slower than the
+    cache's lifetime leaves it cold most of the time.
+
+    The adapter reuses a fetched payload for ``DEFAULT_USAGE_TTL_S``. At the old 900s
+    default the cache was fresh for two minutes in fifteen, so almost every `cl`
+    launch read live -- which is how four sequential reads came to race a
+    three-second deadline on 2026-09-06. Same cross-language assertion as the
+    calibration gate above, for the same reason.
+    """
+    import re
+    from pathlib import Path
+
+    from quota_router.providers.claude_oauth import DEFAULT_USAGE_TTL_S
+
+    script = Path(__file__).resolve().parent.parent / "ops" / "install-launchd.sh"
+    match = re.search(r'INTERVAL="\$\{POLL_INTERVAL_S:-(\d+)\}"', script.read_text())
+    assert match
+    default_s = int(match.group(1))
+
+    assert default_s <= DEFAULT_USAGE_TTL_S, (
+        f"the installer polls every {default_s}s but the usage cache lives "
+        f"{DEFAULT_USAGE_TTL_S:.0f}s, so the cache is cold "
+        f"{100 * (1 - DEFAULT_USAGE_TTL_S / default_s):.0f}% of the time"
+    )
+
+
+def test_the_poll_job_rotates_its_own_log_at_the_cap(tmp_path) -> None:
+    """launchd appends every run's full JSON to one file and never rotates it.
+
+    At ~19 KB a run that was 25 MB after six weeks at 900s; at 120s it would be
+    ~13 MB a day. The job therefore trims itself: after each run, a log past the cap
+    is moved aside as ``.1`` (one generation kept, so nothing is lost until the next
+    rotation). Exercised by running the plist's own ProgramArguments the way launchd
+    would -- stdout appended to the log path -- against a log already past the cap.
+    """
+    import subprocess
+
+    cap = 1000
+    plist = _print_installer_plist(tmp_path, quotapick="/bin/echo", POLL_LOG_MAX_BYTES=str(cap))
+    args = plist["ProgramArguments"]
+    log = tmp_path / "Library" / "Logs" / "llm-quota-router" / "usage-poll.log"
+    assert plist["StandardOutPath"] == str(log)
+    log.parent.mkdir(parents=True)
+    log.write_text("x" * (cap + 1))
+
+    with log.open("a") as out:
+        subprocess.run(args, stdout=out, stderr=subprocess.STDOUT, check=True)
+
+    rotated = log.with_name(log.name + ".1")
+    assert rotated.exists(), f"a {cap + 1}-byte log was not rotated; args={args}"
+    assert rotated.read_text().startswith("x" * cap)
+    assert "status --json" in rotated.read_text(), "the run's own output precedes the rotation"
+    assert not log.exists() or log.stat().st_size < cap
+
+    # A log under the cap is left alone.
+    log.write_text("y" * (cap // 2))
+    with log.open("a") as out:
+        subprocess.run(args, stdout=out, stderr=subprocess.STDOUT, check=True)
+    assert log.read_text().startswith("y" * (cap // 2))
+    assert rotated.read_text().startswith("x" * cap), "an under-cap run must not rotate"

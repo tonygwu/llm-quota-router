@@ -11,9 +11,9 @@
 # against the existing data and two died -- see src/quota_router/forensics.py for the
 # full account.
 #
-# The usage poller cannot settle it. It runs every 900s, so both outages have a
-# fifteen-minute blind spot around the transition, and that is exactly the window the
-# answer lives in. This job samples every 60s and, on the sample where a credential is
+# The usage poller could not settle it. It ran every 900s at the time, so both
+# outages have a fifteen-minute blind spot around the transition, and that is exactly
+# the window the answer lives in. This job samples every 60s and, on the sample where a credential is
 # lost, writes down the preceding ten minutes: what the credential looked like and
 # which processes held that directory at each step.
 #
@@ -42,8 +42,8 @@ LABEL="local.llm-quota-router.credential-forensics"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_DIR="$HOME/Library/Logs/llm-quota-router"
 # 60s is the measurement resolution, and it is the whole point of the job. The blind
-# spot around a transition equals this number, and 900s (the usage poller's interval)
-# was already proven too coarse to see either recorded outage happen. Raising this
+# spot around a transition equals this number, and 900s (the usage poller's interval
+# when the outages were recorded) was already proven too coarse to see either happen. Raising this
 # trades away the only thing this job produces.
 INTERVAL="${FORENSICS_INTERVAL_S:-60}"
 
