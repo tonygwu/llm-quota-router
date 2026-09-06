@@ -78,8 +78,9 @@ from typing import Any, Callable, Final, Mapping, NoReturn, Sequence, TextIO
 
 from .api import Selection, select_account
 from .config import BANNED_EXEC_ENV, Config, load_config
+from .explain import format_duration
 from .providers.claude_cli_config import DEFAULT_CLAUDE_CONFIG_DIR_NAMES
-from .providers.claude_oauth import cached_weekly_usage
+from .providers.claude_oauth import USAGE_OFFLINE_ENV, cached_weekly_usage
 from .types import ACCOUNT_CLAUDE
 from .weekly_reset import earliest_weekly_reset
 
@@ -438,7 +439,12 @@ def _route(
     timeout_s = _float_env(env, "CL_PICK_TIMEOUT_S", DEFAULT_PICK_TIMEOUT_S)
     only = _list_env(env, "CL_ONLY", DEFAULT_ONLY)
 
-    def pick_with(which: str | None) -> Selection:
+    def pick_with(which: str | None, *, offline: bool = False) -> Selection:
+        call_env = dict(env)
+        if offline:
+            # Read by the usage adapter, and by nothing the session inherits: the
+            # child is built from ``env``, not from this copy.
+            call_env[USAGE_OFFLINE_ENV] = "1"
         return deps.select(
             model=which,
             only=only,
@@ -446,7 +452,7 @@ def _route(
             # abandoned (wrong directory, changed mind), and a session that never
             # starts must not be booked against anyone's quota.
             record=False,
-            env=dict(env),
+            env=call_env,
         )
 
     # The config is loaded FIRST and left where the failure path can still find it.
@@ -472,9 +478,10 @@ def _route(
             if attempt.timed_out
             else f"pick failed: {type(attempt.error).__name__}: {attempt.error}"
         )
-        _debug(env, stderr, f"{cause}; nothing was routed")
-        return _unrouted(
-            f"ROUTER FAILED: {cause}. No usage data for any account.",
+        _debug(env, stderr, f"{cause}; nothing was routed live")
+        cached = _route_from_cache(cause, pick_with, timeout_s, config, only, model, env, stderr)
+        return cached or _unrouted(
+            f"ROUTER FAILED: {cause}. No usable usage data, live or cached, for any account.",
             config,
             only,
             model,
@@ -508,9 +515,10 @@ def _route(
     # The router answered and no account fits. Two very different things look like
     # this, and only one of them may consult a schedule.
     if not measured_any(selection, only):
-        return _unrouted(
-            f"ROUTER FAILED: usage could not be read for any of {', '.join(only)}. "
-            f"No usage data for any account.",
+        cause = f"usage could not be read for any of {', '.join(only)}"
+        cached = _route_from_cache(cause, pick_with, timeout_s, config, only, model, env, stderr)
+        return cached or _unrouted(
+            f"ROUTER FAILED: {cause}. No usable usage data, live or cached, for any account.",
             config,
             only,
             model,
@@ -528,6 +536,78 @@ def _route(
         config,
         model,
         unrouted="hardcoded default; every account was read and every one is spent",
+    )
+
+
+# ======================================================================================
+# Second attempt: the same router, on the readings already on disk
+# ======================================================================================
+
+
+def _oldest_reading_age(selection: Selection, only: Sequence[str]) -> float | None:
+    """How old the oldest reading behind this decision is, or ``None`` if unreported."""
+    wanted = {str(candidate) for candidate in only}
+    ages = [
+        float(row["age_s"])
+        for row in (*selection.ranked, *selection.excluded)
+        if isinstance(row, Mapping)
+        and str(row.get("account")) in wanted
+        and isinstance(row.get("age_s"), (int, float))
+    ]
+    return max(ages) if ages else None
+
+
+def _route_from_cache(
+    cause: str,
+    pick_with: Callable[..., Selection],
+    timeout_s: float,
+    config: Config | None,
+    only: Sequence[str],
+    model: str | None,
+    env: Mapping[str, str],
+    stderr: TextIO,
+) -> _Route | None:
+    """Ask the router again with the usage adapter reading only its cache.
+
+    The live pick failed -- a blown deadline, a crash, or four dark tokens. The poller
+    leaves a reading for every account on disk, minutes old on an ordinary day, and
+    the router's own ranking, eligibility floor and hysteresis all apply to those
+    readings exactly as they would to live ones. On 2026-09-06 that reading was
+    fifteen minutes old for every account while the schedule-only fallback put the
+    session on the one with 3% of its week left.
+
+    Capped like the live attempt. The offline read touches one file per account and
+    nothing slow, but a cap that exists only on the path that already failed is a cap
+    the next surprise walks straight past.
+
+    Returns ``None`` when the cache has nothing usable either, so the caller can fall
+    through to the schedule.
+    """
+    attempt = _within_deadline(lambda: pick_with(model, offline=True), timeout_s)
+    if not attempt.ok:
+        detail = (
+            f"cached pick exceeded {timeout_s}s"
+            if attempt.timed_out
+            else f"cached pick failed: {type(attempt.error).__name__}: {attempt.error}"
+        )
+        _debug(env, stderr, detail)
+        return None
+    account = choose_account(attempt.value)
+    if account is None:
+        _debug(env, stderr, "cached readings fit no account")
+        return None
+    age_s = _oldest_reading_age(attempt.value, only)
+    basis = (
+        f"ranked on readings cached up to {format_duration(age_s)} ago"
+        if age_s is not None
+        else "ranked on cached readings of unreported age"
+    )
+    return _Route(
+        account,
+        config,
+        model,
+        failure=f"ROUTER FAILED: {cause}; routed on cached usage instead.",
+        unrouted=f"CACHED-USAGE FALLBACK, not live quota: {basis}",
     )
 
 

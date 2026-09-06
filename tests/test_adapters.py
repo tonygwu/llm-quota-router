@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -52,9 +53,11 @@ from quota_router.providers.claude_cli_config import (
     discover_claude_configs,
 )
 from quota_router.providers.claude_oauth import (
+    DEFAULT_USAGE_STALE_MAX_S,
     HTTP_METHOD,
     KEYCHAIN_SERVICE_BASE,
     USAGE_URL,
+    _write_usage_cache,
     keychain_service_for,
     parse_usage_payload,
     read_access_token,
@@ -1949,3 +1952,154 @@ def test_the_adapter_survives_a_half_written_cache_entry(tmp_path: Path) -> None
     snapshot = adapter.snapshot(NOW)[0]
 
     assert snapshot.available is True, "a bad cache entry must degrade to a fetch"
+
+
+# ======================================================================================
+# Concurrency and offline mode -- the 2026-09-06 `cl` timeout
+# ======================================================================================
+#
+# `cl` gives its whole routing decision three seconds. The live adapter read the four
+# accounts one after another, ~0.3s each on a good day, so an ordinary tail latency on
+# any one of them blew the deadline -- and the fallback then ignored fifteen-minute-old
+# readings sitting on disk for every account. Two properties close that: the reads
+# overlap, and there is a mode that serves the cache without touching anything slow.
+
+#: The switch the launcher flips on its second attempt. A literal here rather than the
+#: package constant, so the module still imports while the constant does not exist yet
+#: and only these tests go red.
+OFFLINE_SWITCH = "QUOTA_ROUTER_USAGE_OFFLINE"
+
+
+def _fleet_of_three(home: Path) -> list[ClaudeAccountConfig]:
+    return [
+        make_config(home, account_id=ACCOUNT_CLAUDE, dir_name=".claude", index=0),
+        make_config(home, account_id=ACCOUNT_CLAUDE_B, dir_name=".claude-b", index=1),
+        make_config(home, account_id=ACCOUNT_CLAUDE_C, dir_name=".claude-c", index=2),
+    ]
+
+
+def _keychain_for(home: Path, configs: list[ClaudeAccountConfig]) -> FakeKeychain:
+    return FakeKeychain(
+        {
+            service: keychain_blob(expires_at_s=NOW + 3600)
+            for config in configs
+            for service in keychain_service_for(config.config_dir, home=home)
+        }
+    )
+
+
+def test_oauth_reads_every_account_concurrently_and_keeps_config_order(tmp_path: Path) -> None:
+    """Sequential reads cost the SUM of the latencies; overlapped reads cost the worst one.
+
+    The gate opens only once every account's request has arrived. Read one at a time,
+    the first request waits for companions that can never come, the gate breaks, and
+    every account comes back unreadable -- which is the assertion message you will
+    see if this regresses to a loop.
+    """
+    configs = _fleet_of_three(tmp_path)
+    gate = threading.Barrier(len(configs), timeout=2.0)
+
+    class GatedOpener(FakeOpener):
+        def __call__(self, request: urllib.request.Request, timeout: Any = None) -> FakeResponse:
+            try:
+                gate.wait()
+            except threading.BrokenBarrierError:
+                raise urllib.error.URLError(
+                    "read one at a time: the other accounts' requests never arrived"
+                ) from None
+            return super().__call__(request, timeout=timeout)
+
+    opener = GatedOpener(usage_payload())
+    adapter = ClaudeOAuthAdapter(
+        runner=_keychain_for(tmp_path, configs), opener=opener, home=tmp_path, configs=configs
+    )
+
+    snapshots = adapter.snapshot(NOW)
+
+    assert [snapshot.note for snapshot in snapshots if not snapshot.available] == []
+    # Overlapping the reads must not reorder the answer: the merge layer and every
+    # `ranked` payload list accounts in configuration order.
+    assert [snapshot.id for snapshot in snapshots] == [
+        ACCOUNT_CLAUDE,
+        ACCOUNT_CLAUDE_B,
+        ACCOUNT_CLAUDE_C,
+    ]
+    assert len(opener.requests) == len(configs)
+
+
+def test_offline_mode_serves_the_cached_reading_and_touches_nothing_slow(tmp_path: Path) -> None:
+    """With the switch set, the adapter reads one local file per account and returns.
+
+    No Keychain, no socket: both are exactly what a launcher that has already blown its
+    deadline cannot afford to wait on again. The reading is reported as what it is --
+    a cache, observed when it was fetched -- never dressed up as live.
+    """
+    config = make_config(tmp_path)
+    env = {OFFLINE_SWITCH: "1"}
+    fetched_at = NOW - 900.0
+    _write_usage_cache(
+        usage_cache_path(config.account_id, env, home=tmp_path), usage_payload(), fetched_at
+    )
+    keychain = _keychain_for(tmp_path, [config])
+    opener = FakeOpener(usage_payload())
+    adapter = ClaudeOAuthAdapter(
+        runner=keychain, opener=opener, home=tmp_path, env=env, configs=[config]
+    )
+
+    [snapshot] = adapter.snapshot(NOW)
+
+    assert snapshot.available, snapshot.note
+    assert snapshot.source == SOURCE_CACHE
+    assert len(snapshot.windows) == 3
+    assert {"5h", "7d"} <= {window.key for window in snapshot.windows}
+    assert all(window.observed_at_s == pytest.approx(fetched_at) for window in snapshot.windows)
+    assert keychain.calls == [], "offline mode must not run `security`"
+    assert opener.requests == [], "offline mode must not call the usage endpoint"
+    assert "offline" in (snapshot.note or "").lower()
+
+
+def test_offline_mode_with_no_cached_reading_reports_the_account_dark_not_absent(
+    tmp_path: Path,
+) -> None:
+    """A missing cache is "could not read", which the launcher's gate treats differently
+    from "read, and empty". Falling through to a live fetch here would defeat the mode."""
+    config = make_config(tmp_path)
+    keychain = _keychain_for(tmp_path, [config])
+    opener = FakeOpener(usage_payload())
+    adapter = ClaudeOAuthAdapter(
+        runner=keychain, opener=opener, home=tmp_path, env={OFFLINE_SWITCH: "1"}, configs=[config]
+    )
+
+    [snapshot] = adapter.snapshot(NOW)
+
+    assert snapshot.id == ACCOUNT_CLAUDE
+    assert not snapshot.available
+    assert snapshot.windows == ()
+    note = (snapshot.note or "").lower()
+    assert "offline" in note and "no cached" in note, snapshot.note
+    assert keychain.calls == [] and opener.requests == []
+
+
+def test_offline_mode_refuses_a_reading_older_than_the_stale_bound(tmp_path: Path) -> None:
+    """Past one session length the reading may describe a window that has since reset,
+    which is wrong rather than merely old. Same bound the served-cache path applies."""
+    config = make_config(tmp_path)
+    env = {OFFLINE_SWITCH: "1"}
+    _write_usage_cache(
+        usage_cache_path(config.account_id, env, home=tmp_path),
+        usage_payload(),
+        NOW - DEFAULT_USAGE_STALE_MAX_S - 60.0,
+    )
+    adapter = ClaudeOAuthAdapter(
+        runner=_keychain_for(tmp_path, [config]),
+        opener=FakeOpener(usage_payload()),
+        home=tmp_path,
+        env=env,
+        configs=[config],
+    )
+
+    [snapshot] = adapter.snapshot(NOW)
+
+    assert not snapshot.available
+    note = (snapshot.note or "").lower()
+    assert "offline" in note and "old" in note, snapshot.note

@@ -1506,3 +1506,198 @@ def test_the_cache_is_not_consulted_when_the_router_answered(env) -> None:
 
     assert executor.env["CLAUDE_CONFIG_DIR"].endswith("/.claude-b")
     assert "skipped" not in err
+
+
+# ======================================================================================
+# Regression 5 -- 2026-09-06: rank on the cache before guessing from a schedule
+# ======================================================================================
+#
+# A pick blew the three-second deadline (four sequential endpoint reads on a slow
+# afternoon) and the weekly-reset fallback landed the session on the account with 3%
+# of its week left, while two others had 66%. Fifteen-minute-old readings for every
+# account were on disk the whole time; the fallback only ever used them to prune.
+#
+# The fix asks the real router a second time with the usage adapter in OFFLINE mode --
+# one local file per account, no Keychain, no socket -- so the ranking, the eligibility
+# floor and the hysteresis all apply to the cached readings. The schedule is consulted
+# only when the cache has nothing usable either.
+
+#: The switch the launcher sets on its second attempt. A literal, not the package
+#: constant, so this module keeps importing while the constant does not exist yet.
+OFFLINE_SWITCH = "QUOTA_ROUTER_USAGE_OFFLINE"
+
+
+def _offline_only(answer, *, hang: threading.Event | None = None):
+    """A router that answers only when asked to read from cache.
+
+    The live attempt hangs on ``hang`` when given, else raises -- the two ways a pick
+    fails. Returns ``(select, calls)`` so a test can inspect every call it saw.
+    """
+    calls: list[dict] = []
+
+    def select(**kwargs):
+        calls.append(dict(kwargs))
+        if (kwargs.get("env") or {}).get(OFFLINE_SWITCH):
+            return answer
+        if hang is not None:
+            hang.wait(30)
+            return selection(_row("claude", fits=True))
+        raise RuntimeError("endpoint unreachable")
+
+    return select, calls
+
+
+def test_a_timed_out_pick_is_ranked_on_cached_usage_before_any_schedule(env) -> None:
+    """The 2026-09-06 incident: `claude` expires first, so the schedule picks it; the
+    cache says `claude_b` is the one with quota left. The cache must win."""
+    released = threading.Event()
+    select, _ = _offline_only(selection(_row("claude_b", fits=True)), hang=released)
+    try:
+        code, executor, err = launch_at(
+            [],
+            {**env, "CL_PICK_TIMEOUT_S": "0.1"},
+            now=MONDAY_0953,
+            select=select,
+            config=_fleet(),
+        )
+
+        assert code == 0
+        assert executor.env.get("CLAUDE_CONFIG_DIR", "").endswith("/.claude-b"), err
+        assert "CACHED-USAGE FALLBACK" in err
+        assert "WEEKLY-RESET" not in err
+        assert "ROUTER FAILED" in err and "exceeded" in err
+        assert "not live quota" in err.lower()
+    finally:
+        released.set()
+
+
+def test_a_crashed_pick_is_ranked_on_cached_usage_too(env) -> None:
+    select, _ = _offline_only(selection(_row("claude_d", fits=True)))
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, select=select, config=_fleet())
+
+    assert executor.env.get("CLAUDE_CONFIG_DIR", "").endswith("/.claude-d"), err
+    assert "CACHED-USAGE FALLBACK" in err
+    assert "endpoint unreachable" in err, "the original failure must still be named"
+
+
+def test_a_pick_that_measured_nothing_live_is_ranked_on_cached_usage(env) -> None:
+    """Four dark tokens: the live pick completed and read nothing. The readings the
+    poller cached while the tokens were still good are the best information left."""
+    dark = dark_selection(*(_dark_row(a) for a in ("claude", "claude_b", "claude_c", "claude_d")))
+
+    def select(**kwargs):
+        if (kwargs.get("env") or {}).get(OFFLINE_SWITCH):
+            return selection(_row("claude_d", fits=True))
+        return dark
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, select=select, config=_fleet())
+
+    assert executor.env.get("CLAUDE_CONFIG_DIR", "").endswith("/.claude-d"), err
+    assert "CACHED-USAGE FALLBACK" in err
+    assert "could not be read" in err
+
+
+def test_with_nothing_usable_in_the_cache_the_weekly_fallback_still_runs(env) -> None:
+    """Guard, not a regression: the schedule remains the last resort, and the failure
+    line then says that neither live nor cached usage was available."""
+    nothing_cached = dark_selection(
+        *(_dark_row(a) for a in ("claude", "claude_b", "claude_c", "claude_d"))
+    )
+    select, _ = _offline_only(nothing_cached)
+
+    _, executor, err = launch_at([], env, now=MONDAY_0953, select=select, config=_fleet())
+
+    assert "CLAUDE_CONFIG_DIR" not in executor.env, "claude, whose week expires first"
+    assert "WEEKLY-RESET FALLBACK" in err
+    assert "CACHED-USAGE" not in err
+    assert "live or cached" in err, err
+
+
+def test_the_cached_usage_fallback_books_no_quota_and_keeps_the_switch_out_of_the_session(
+    env,
+) -> None:
+    select, calls = _offline_only(selection(_row("claude_b", fits=True)))
+
+    _, executor, _ = launch_at([], env, now=MONDAY_0953, select=select, config=_fleet())
+
+    offline_calls = [c for c in calls if (c.get("env") or {}).get(OFFLINE_SWITCH)]
+    assert len(offline_calls) == 1, [sorted(c) for c in calls]
+    assert offline_calls[0]["record"] is False
+    assert offline_calls[0]["only"] == calls[0]["only"], "same candidate set both times"
+    # The session must not inherit the switch: Claude Code's own statusline runs
+    # `quotapick`, and an inherited switch would blind it to live usage for good.
+    assert OFFLINE_SWITCH not in executor.env
+
+
+def test_the_cached_usage_banner_says_how_old_the_readings_are(env) -> None:
+    """A decision on stale data must say how stale, so the operator can judge it."""
+    winner = {**_row("claude_b", fits=True), "age_s": 840.0}
+    other = {**_row("claude_d", fits=True, score=0.5), "age_s": 300.0}
+    select, _ = _offline_only(selection(winner, other))
+
+    _, _, err = launch_at([], env, now=MONDAY_0953, select=select, config=_fleet())
+
+    assert "CACHED-USAGE FALLBACK" in err
+    assert "14m" in err, err
+
+
+def test_the_offline_switch_reaches_the_real_adapter_through_select_account(
+    tmp_path, monkeypatch
+) -> None:
+    """The launcher sets one variable and the adapter reads it, with the whole CLI in
+    between. A rename on either side would leave every fake-router test green and the
+    real fallback fetching live -- or worse, hanging on the Keychain it was meant to
+    avoid. So: the real router, a real cache file, and a guard on both slow paths."""
+    import subprocess
+    import urllib.request
+
+    from quota_router import select_account
+    from quota_router.providers.claude_oauth import _write_usage_cache, usage_cache_path
+
+    home = tmp_path / "home"
+    (home / ".claude-b").mkdir(parents=True)
+    env = {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        OFFLINE_SWITCH: "1",
+    }
+
+    def explode(*args, **kwargs):
+        raise AssertionError(f"offline must touch neither the Keychain nor the network: {args!r}")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    monkeypatch.setattr(urllib.request, "urlopen", explode)
+
+    payload = {
+        "limits": [
+            {
+                "kind": "session",
+                "group": "session",
+                "percent": 10,
+                "resets_at": "2026-08-24T22:00:00+00:00",
+                "scope": None,
+            },
+            {
+                "kind": "weekly_all",
+                "group": "weekly",
+                "percent": 40,
+                "resets_at": "2026-08-31T22:59:00+00:00",
+                "scope": None,
+            },
+        ]
+    }
+    _write_usage_cache(usage_cache_path("claude_b", env), payload, MONDAY_0953 - 900.0)
+
+    answer = select_account(
+        only=["claude", "claude_b", "claude_c", "claude_d"],
+        record=False,
+        env=env,
+        now_s=MONDAY_0953,
+    )
+
+    assert answer.account == "claude_b", json.dumps(answer.to_dict(), indent=1)
+    row = next(r for r in answer.ranked if r["account"] == "claude_b")
+    assert row["source"] == "cache"
+    assert row["age_s"] == pytest.approx(900.0, abs=1.0)

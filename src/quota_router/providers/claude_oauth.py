@@ -46,11 +46,13 @@ import json
 import os
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
 from ..types import (
+    SOURCE_CACHE,
     SOURCE_LIVE,
     TIER_UNKNOWN,
     AccountSnapshot,
@@ -74,6 +76,7 @@ from .claude_cli_config import ClaudeAccountConfig, discover_claude_configs
 
 __all__ = [
     "USAGE_URL",
+    "USAGE_OFFLINE_ENV",
     "HTTP_METHOD",
     "KEYCHAIN_SERVICE_BASE",
     "keychain_service_for",
@@ -128,6 +131,26 @@ DEFAULT_USAGE_STALE_MAX_S: Final[float] = 5 * 3600.0
 #: Backoff assumed when a 429 arrives without a parseable ``Retry-After``. Never
 #: zero: retrying immediately is what the server just asked us not to do.
 DEFAULT_RETRY_AFTER_S: Final[float] = 60.0
+
+#: Set to ``1`` and the adapter serves each account's cached payload and touches
+#: nothing else -- no Keychain, no socket. The launcher sets it on its second attempt,
+#: after a live pick has blown its deadline, because the two things a live read waits
+#: on are exactly the two things that just made it late. Named here and imported by
+#: the launcher so the two cannot disagree on the spelling.
+USAGE_OFFLINE_ENV: Final[str] = "QUOTA_ROUTER_USAGE_OFFLINE"
+
+_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+
+
+def _env_flag(env: Mapping[str, str] | None, name: str) -> bool:
+    environ = os.environ if env is None else env
+    return (environ.get(name) or "").strip().lower() in _TRUTHY
+
+
+def _label(config: ClaudeAccountConfig) -> str:
+    identity = config.identity
+    return identity.email if identity and identity.email else config.account_id
+
 
 #: ``limits[].kind`` -> (window key, window length). ``weekly_scoped`` is handled
 #: separately because its key comes from the model it is scoped to.
@@ -572,13 +595,12 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         cadence far shorter than a token's life, and it is where an account going dark
         is first observable.
         """
-        environ = os.environ if self._env is None else self._env
-        return (environ.get("QUOTA_ROUTER_REFRESH_AUTH") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        return _env_flag(self._env, "QUOTA_ROUTER_REFRESH_AUTH")
+
+    @property
+    def offline(self) -> bool:
+        """Whether to serve the cache and touch nothing slow. See :data:`USAGE_OFFLINE_ENV`."""
+        return _env_flag(self._env, USAGE_OFFLINE_ENV)
 
     @property
     def configs(self) -> tuple[ClaudeAccountConfig, ...]:
@@ -587,10 +609,27 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         return self._configs
 
     def snapshot(self, now_s: float) -> list[AccountSnapshot]:
-        snapshots: list[AccountSnapshot] = []
-        for config in self.configs:
-            snapshots.extend(self._snapshot_one(config, now_s))
-        return snapshots
+        """Read every account at once; answer in configuration order.
+
+        One Keychain read and one HTTPS round trip per account, ~0.3s each on a good
+        day. Read in sequence they cost the SUM, and the interactive launcher caps its
+        whole decision at three seconds -- on 2026-09-06 four ordinary reads plus one
+        slow one blew it. Overlapped, the fleet costs whatever the slowest account
+        costs. Each account writes only its own cache file, so nothing here is shared
+        between the threads except the read-only config list.
+        """
+        configs = self.configs
+        if len(configs) <= 1:
+            return [
+                snapshot for config in configs for snapshot in self._snapshot_one(config, now_s)
+            ]
+        with ThreadPoolExecutor(
+            max_workers=len(configs), thread_name_prefix="claude-usage"
+        ) as pool:
+            per_account = list(
+                pool.map(lambda config: self._snapshot_one(config, now_s), configs)
+            )
+        return [snapshot for group in per_account for snapshot in group]
 
     def _refresh(self, config: ClaudeAccountConfig, now_s: float) -> Any:
         """Ask Claude Code to renew this account's token. Never raises.
@@ -613,9 +652,69 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         except Exception:  # noqa: BLE001 -- a repair may never break a routing decision
             return None
 
+    def _unavailable(
+        self, config: ClaudeAccountConfig, note: str, *, source: str = SOURCE_LIVE
+    ) -> AccountSnapshot:
+        """Unavailable, not absent, and never guessed at: the operator needs to see
+        *which* account went dark and why."""
+        return AccountSnapshot(
+            id=config.account_id,
+            windows=(),
+            tier=config.tier,
+            source=source,
+            confidence=0.0,
+            available=False,
+            note=note,
+            identity=config.identity,
+        )
+
+    def _snapshot_offline(self, config: ClaudeAccountConfig, now_s: float) -> list[AccountSnapshot]:
+        """Serve the cached payload and touch nothing else.
+
+        **No Keychain, no socket.** The caller is a launcher that has already waited
+        its full budget on a live read; repeating either wait would repeat the
+        failure. Reported as a cache, observed when it was fetched, so the decision
+        layer's staleness handling sees it for what it is.
+
+        The stale bound is the same one the served-cache path applies: past one
+        session length the reading may describe a window that has since reset, which
+        is wrong rather than merely old. A missing or too-old cache comes back as
+        *unreadable*, never as a live fetch -- falling through would defeat the mode.
+        """
+        label = _label(config)
+        cached, cached_at, _not_before = _read_usage_cache(
+            usage_cache_path(config.account_id, self._env, home=self._home)
+        )
+        if cached is None or cached_at is None:
+            return [
+                self._unavailable(
+                    config, f"{label}: offline and no cached usage reading", source=SOURCE_CACHE
+                )
+            ]
+        age_s = now_s - cached_at
+        if age_s >= self._stale_max_s:
+            return [
+                self._unavailable(
+                    config,
+                    f"{label}: offline and the cached reading is {age_s:.0f}s old, past "
+                    f"the {self._stale_max_s:.0f}s bound",
+                    source=SOURCE_CACHE,
+                )
+            ]
+        return self._snapshot_from_payload(
+            config,
+            cached,
+            cached_at,
+            now_s,
+            ["offline: served the cached reading; no token or endpoint consulted"],
+            source=SOURCE_CACHE,
+        )
+
     def _snapshot_one(self, config: ClaudeAccountConfig, now_s: float) -> list[AccountSnapshot]:
         if not config.config_dir.exists():
             return []
+        if self.offline:
+            return self._snapshot_offline(config, now_s)
         read = read_access_token(
             config.config_dir,
             runner=self._runner,
@@ -623,8 +722,7 @@ class ClaudeOAuthAdapter(ProviderAdapter):
             timeout_s=self._timeout_s,
             now_s=now_s,
         )
-        identity = config.identity
-        label = identity.email if identity and identity.email else config.account_id
+        label = _label(config)
 
         if not read.usable and self.refresh_enabled:
             # The starvation loop, broken here. An access token is renewed only when
@@ -646,34 +744,10 @@ class ClaudeOAuthAdapter(ProviderAdapter):
                 )
             if not read.usable:
                 detail = outcome.reason if outcome is not None else "not attempted"
-                return [
-                    AccountSnapshot(
-                        id=config.account_id,
-                        windows=(),
-                        tier=config.tier,
-                        source=SOURCE_LIVE,
-                        confidence=0.0,
-                        available=False,
-                        note=f"{label}: {read.problem} (refresh: {detail})",
-                        identity=identity,
-                    )
-                ]
+                return [self._unavailable(config, f"{label}: {read.problem} (refresh: {detail})")]
 
         if not read.usable:
-            # Unavailable, not absent, and never guessed at: the operator needs to
-            # see *which* account went dark and why.
-            return [
-                AccountSnapshot(
-                    id=config.account_id,
-                    windows=(),
-                    tier=config.tier,
-                    source=SOURCE_LIVE,
-                    confidence=0.0,
-                    available=False,
-                    note=f"{label}: {read.problem}",
-                    identity=identity,
-                )
-            ]
+            return [self._unavailable(config, f"{label}: {read.problem}")]
 
         cache_path = usage_cache_path(config.account_id, self._env, home=self._home)
         cached, cached_at, not_before = _read_usage_cache(cache_path)
@@ -706,38 +780,40 @@ class ClaudeOAuthAdapter(ProviderAdapter):
                     # is what earns the throttle in the first place.
                     _write_usage_cache(cache_path, cached, cached_at, now_s + retry_after)
             else:
-                return [
-                    AccountSnapshot(
-                        id=config.account_id,
-                        windows=(),
-                        tier=config.tier,
-                        source=SOURCE_LIVE,
-                        confidence=0.0,
-                        available=False,
-                        note=f"{label}: usage read failed ({error})",
-                        identity=identity,
-                    )
-                ]
+                return [self._unavailable(config, f"{label}: usage read failed ({error})")]
 
+        return self._snapshot_from_payload(
+            config, payload, observed_at_s, now_s, extra, source=SOURCE_LIVE
+        )
+
+    def _snapshot_from_payload(
+        self,
+        config: ClaudeAccountConfig,
+        payload: Any,
+        observed_at_s: float,
+        now_s: float,
+        extra: Sequence[str],
+        *,
+        source: str,
+    ) -> list[AccountSnapshot]:
+        """Turn one usage payload into the account's snapshot, whatever fetched it."""
+        label = _label(config)
+        identity = config.identity
         windows, warnings = parse_usage_payload(payload, observed_at_s=observed_at_s)
         warnings.extend(extra)
         if not windows:
             return [
-                AccountSnapshot(
-                    id=config.account_id,
-                    windows=(),
-                    tier=config.tier,
-                    source=SOURCE_LIVE,
-                    confidence=0.0,
-                    available=False,
-                    note=f"{label}: usage payload carried no usable window "
+                self._unavailable(
+                    config,
+                    f"{label}: usage payload carried no usable window "
                     f"({'; '.join(warnings) or 'no reason given'})",
-                    identity=identity,
+                    source=source,
                 )
             ]
 
         confidence = 1.0
-        notes = [f"live usage endpoint; config dir {config.config_dir}"]
+        origin = "live usage endpoint" if source == SOURCE_LIVE else "cached usage reading"
+        notes = [f"{origin}; config dir {config.config_dir}"]
         if observed_at_s < now_s:
             notes.append(f"reading is {now_s - observed_at_s:.0f}s old (cached)")
         if config.tier == TIER_UNKNOWN:
@@ -750,7 +826,7 @@ class ClaudeOAuthAdapter(ProviderAdapter):
                 id=config.account_id,
                 windows=tuple(windows),
                 tier=config.tier,
-                source=SOURCE_LIVE,
+                source=source,
                 confidence=confidence,
                 available=True,
                 note="; ".join(notes),
