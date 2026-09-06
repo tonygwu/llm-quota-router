@@ -1,5 +1,22 @@
 # Notes for coding agents working in this repo
 
+## Coordinator notice, 2026-09-06: history rewritten, repo now public
+
+STOP before any git command if your checkout still has commit `0f5bfd4`.
+Every commit hash changed on 2026-09-06 when author emails were rewritten to
+the GitHub noreply address ahead of making the repo public. The commit that
+was `0f5bfd4` ("Say which checkout owns the live cl") is now `ac0b610`.
+
+- Clean checkout: `git fetch origin && git reset --hard origin/main`
+- Local commits on top of the old history:
+  `git fetch origin && git rebase --onto ac0b610 0f5bfd4`
+- Then, in every checkout:
+  `git config user.email 446441+tonygwu@users.noreply.github.com`
+  GitHub rejects pushes that carry the old address.
+
+Never force-push over `origin/main`. This notice is the canonical statement of
+the new base.
+
 ## A word this repo already owns
 
 **"Fleet" in the README and in the code means the operator's fleet of

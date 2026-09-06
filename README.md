@@ -3,8 +3,8 @@
 Picks which of **your own already-authorized** LLM accounts to spend on each
 invocation, so quota that would otherwise expire unused gets used first.
 
-> **Status: private.** This repo is not published. See
-> [Publishing](#publishing) for the bar it has to clear first.
+> **Status: published 2026-09-06.** Installable from GitHub, not on PyPI. See
+> [Publishing](#publishing) for what the router has still not measured.
 
 ## The problem
 
@@ -144,15 +144,15 @@ As a **command-line tool** (gives you `quotapick` and `cl` on PATH, isolated
 venv, not importable elsewhere):
 
 ```sh
-uv tool install git+ssh://git@github.com/tonygwu/llm-quota-router
+uv tool install git+https://github.com/tonygwu/llm-quota-router
 ```
 
 As a **library dependency** of another project (this is what you want if you are
 going to `import quota_router`):
 
 ```sh
-uv add git+ssh://git@github.com/tonygwu/llm-quota-router
-# or: uv pip install git+ssh://git@github.com/tonygwu/llm-quota-router
+uv add git+https://github.com/tonygwu/llm-quota-router
+# or: uv pip install git+https://github.com/tonygwu/llm-quota-router
 ```
 
 Those are different things. `uv tool install` deliberately isolates the package,
@@ -579,8 +579,10 @@ history.
 
 ## Publishing
 
-This repo stays private until the routing actually demonstrates its premise.
-The bar is a measured reduction in **wasted quota** — remaining fraction at each
+This repo went public on 2026-09-06 because
+[verbatim-index](https://github.com/tonygwu/verbatim-index) imports it as a
+library. The bar it was meant to clear first still stands as the test of whether
+the router works: a measured reduction in **wasted quota** — remaining fraction at each
 window reset, per account, compared against the previous router — across at
 least one full weekly cycle. Agreement rate against the old dial is explicitly
 *not* the metric: the point is to disagree with it, correctly.
@@ -594,9 +596,10 @@ because a fleet that turns out to waste almost nothing shelves the project regar
 what the counterfactual says. `BACKLOG.md` item 1 states what a counterfactual would
 need.
 
-Before any public push: strip absolute home paths, account emails and identity
-keys, and operator-specific measurements in favor of synthetic fixtures. Once
-published, `contract_version` becomes a public stability commitment.
+The pre-publication check ran on 2026-09-06: the history holds no account
+emails or identity keys outside the synthetic fixtures, and the only absolute
+home paths describe the author's machine in `AGENTS.md`. `contract_version` is
+now a public stability commitment.
 
 Upstreaming the scorer into `claude-swap` is a live alternative to publishing
 separately, and would likely reach more people with less maintenance — both

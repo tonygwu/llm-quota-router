@@ -16,7 +16,8 @@ dependencies = []
 keywords = ["llm", "quota", "router", "scheduling", "claude", "codex"]
 
 classifiers = [
-  # Belt-and-braces guard: this project is private and must never be uploaded to PyPI.
+  # Belt-and-braces guard: this project is installed from GitHub and must never be
+  # uploaded to PyPI without a deliberate release decision.
   "Private :: Do Not Upload",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
