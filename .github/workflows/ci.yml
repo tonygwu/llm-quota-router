@@ -1,0 +1,82 @@
+name: CI
+
+# The suite is hermetic and fast (~7s, no network, no Keychain), so there is no
+# reason to run it on anything but every push and every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macOS only, and deliberately. Every credential read shells out to
+    # `security find-generic-password` and both schedulers in ops/ write launchd
+    # plists, so a green Ubuntu run would assert support this project does not
+    # have. Add a matrix entry when a Linux credential reader exists.
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No editable install: pyproject sets `pythonpath = ["src"]`, so pytest
+      # imports the packaged code straight from the checkout. This is the exact
+      # command AGENTS.md tells a human to run.
+      - run: uv venv --python ${{ matrix.python-version }}
+      - run: uv pip install pytest
+
+      # Tests marked `live` touch the real machine and are deselected by the
+      # `addopts` in pyproject. They must never run here: there is no Keychain
+      # and no authorized account on a runner.
+      - name: Run tests
+        run: ./.venv/bin/python -m pytest -q
+
+  build:
+    # The package is installed straight from git (`uv tool install
+    # git+https://...`), so a broken build is a broken install for every
+    # consumer. Catch it here rather than in someone else's terminal.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - run: uv build --wheel --out-dir dist .
+
+      # Assert the metadata actually carries the license and the readme. A
+      # missing `license-files` or a setuptools too old for PEP 639 fails
+      # silently otherwise: the wheel still builds, just without the license.
+      - name: Check wheel metadata
+        run: |
+          python3 - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as z:
+              name = next(n for n in z.namelist() if n.endswith("dist-info/METADATA"))
+              meta = z.read(name).decode()
+          required = [
+              "License-Expression: MIT",
+              "License-File: LICENSE",
+              "Description-Content-Type: text/markdown",
+              "Project-URL: Repository,",
+          ]
+          missing = [r for r in required if r not in meta]
+          if missing:
+              sys.exit("wheel metadata missing: " + ", ".join(missing))
+          print("wheel metadata OK:", wheel)
+          PY

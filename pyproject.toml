@@ -1,11 +1,18 @@
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 is required for PEP 639: the SPDX `license` string and `license-files` below
+# are only understood from that version on. Builds run in an isolated environment
+# that resolves setuptools fresh, so this costs nothing at install time.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-quota-router"
 description = "Per-invocation router that picks which of the operator's own already-authorized LLM accounts to spend from, maximizing use of quota that would otherwise expire unused."
 requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tony Wu", email = "446441+tonygwu@users.noreply.github.com" }]
 dynamic = ["version"]
 
 # ZERO runtime dependencies, on purpose. The router is a decision function plus a
@@ -22,9 +29,17 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Intended Audience :: Developers",
+  # macOS only, and that is a statement about the code rather than about testing:
+  # every credential read shells out to `security find-generic-password`, and both
+  # schedulers in ops/ write launchd plists. There is no second code path. Add a
+  # Linux classifier when a Linux credential reader exists, not before.
   "Operating System :: MacOS :: MacOS X",
-  "Operating System :: POSIX :: Linux",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tonygwu/llm-quota-router"
+Repository = "https://github.com/tonygwu/llm-quota-router"
+Issues = "https://github.com/tonygwu/llm-quota-router/issues"
 
 [project.scripts]
 quotapick = "quota_router.cli:main"
