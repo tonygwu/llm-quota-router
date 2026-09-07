@@ -118,3 +118,43 @@ the counterfactual says.
   vanished from `ranked`, `excluded` and `degraded` alike, and the only warning blamed
   a missing model-scoped window. It is now reported with `remaining: null` and the real
   cause. This was accept-and-guess in its exact classic form.
+
+---
+
+## First-run experience for an operator with a mixed fleet
+
+Found by walking a fresh clone as somebody holding several Claude accounts, more than
+one Codex account, Antigravity and Cursor. Adding an account beyond the builtin set now
+*warns* rather than failing in silence, and Cursor is a real provider. The gaps below
+are what that audit left open.
+
+**There is no `setup`, `init` or `doctor` command.** The subcommands are `pick`, `exec`,
+`status`, `explain`, `calibrate`, `forensics` and `waste`. Nothing walks a new operator
+from clone to first routed call, and there is no example config in the repo. Closing it:
+a `quotapick doctor` that names every account it looked for, where it looked, what it
+found, and the single next action for each one that failed.
+
+**A machine with no accounts gets an unhelpful first answer.** `status` on a clean home
+prints two Antigravity pools and `no candidate can serve this call right now`. It never
+says it looked for Claude accounts and found none, so the output reads as a broken tool
+rather than an unconfigured one. Closing it: report the accounts that were looked for
+and missed, not only the ones that answered. The warning added for *configured* accounts
+does not cover builtin ones, which are still dropped quietly when their directory is
+absent.
+
+**Only one Codex account is representable.** `CodexSessionsAdapter` already accepts
+`codex_home` and `account_id`, so the adapter can do more than one; `build_default_adapters`
+constructs exactly one and passes no config. The capability exists and is unreachable.
+Closing it: give Codex the same treatment Cursor just got — ids and homes derived from
+the operator config, via `account_ids_for_provider`.
+
+**Antigravity's two entries are pools, not accounts.** `account_ids` defaults to a fixed
+pair and nothing reads config, so a second Antigravity *account* cannot be declared. This
+is a genuine design question rather than an oversight: the pair is selected by `AGY_MODEL`
+behind one binary, so a second account needs a second seam identified first.
+
+**Cursor's tier is not read.** `cursor-agent about --format json` reports
+`subscriptionTier`, and reading it costs a subprocess plus a network round trip (~0.9s
+measured) on the critical path of opening a terminal. The tier is therefore declared by
+the operator. Closing it: cache the value on disk with a long TTL and refresh it out of
+band, the way the statusline cache already works for Claude.
