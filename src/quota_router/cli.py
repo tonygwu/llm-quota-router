@@ -207,21 +207,27 @@ def _configure_adapters(
     Keychain and calls the vendor usage endpoint, so it is the one adapter with a
     latency budget worth configuring; the others read local files. An adapter that
     cannot be rebuilt is kept exactly as the providers layer constructed it.
+
+    The account list is passed as ``configs``, which is what both Claude adapters
+    declare. An earlier version built a ``config_dirs`` mapping instead; no adapter
+    declares that name, so :func:`_supported_kwargs` dropped it without a word and the
+    adapters fell back to the builtin ``~/.claude*`` directories. An operator who
+    declared an account beyond those builtins got it silently ignored.
     """
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
+    from_policy = getattr(providers, "claude_configs_from_policy", None)
+
+    claude_configs: tuple[Any, ...] | None = None
+    if config is not None and callable(from_policy):
+        claude_configs = tuple(from_policy(config, env=env)) or None
+
     out: list[Any] = []
 
     for adapter in adapters:
         cls = type(adapter)
-        settings: dict[str, Any] = {"env": env, "runner": run}
+        settings: dict[str, Any] = {"env": env, "runner": run, "configs": claude_configs}
         if live_cls is not None and cls is live_cls and config is not None:
             settings["timeout_s"] = timeout_s
-            dirs = {
-                account.id: account.config_dir
-                for account in config.accounts.values()
-                if account.config_dir
-            }
-            settings["config_dirs"] = dirs or None
 
         wanted = {key: value for key, value in settings.items() if value is not None}
         try:

@@ -31,6 +31,8 @@ from typing import Any, Iterator, Mapping
 
 import pytest
 
+from quota_router import cli
+from quota_router.config import load_config
 from quota_router.providers import (
     AntigravityAdapter,
     ClaudeOAuthAdapter,
@@ -1632,6 +1634,50 @@ def test_load_snapshots_is_the_one_call_the_cli_needs(tmp_path: Path) -> None:
     assert all(isinstance(warning, str) for warning in warnings)
     # The account filter really filters.
     assert ACCOUNT_CLAUDE_B not in by_id
+
+
+def test_an_operator_declared_fifth_account_reaches_the_live_adapter(tmp_path: Path) -> None:
+    """An account past the builtin four, declared only in the operator's config, is read.
+
+    Regression. The CLI's adapter rebuild passed ``config_dirs=`` while
+    ``ClaudeOAuthAdapter`` declares the parameter as ``configs=``, and
+    ``_supported_kwargs`` drops any key the constructor does not name. The operator's
+    ``[accounts.*] config_dir`` therefore never reached the live adapter, which fell
+    back to the four builtin ``~/.claude*`` directories -- so adding a fifth
+    subscription did nothing, silently and with no warning.
+
+    Hermetic: every directory this asserts on is under ``tmp_path``, so a machine with
+    no Claude accounts at all still runs it.
+    """
+    write_claude_config(
+        tmp_path, "custom-e", email="acct5@example.com",
+        uuid="00000000-0000-4000-8000-000000000005",
+        tier="default_claude_max_20x",
+    )
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text(
+        "[accounts.claude_e]\n"
+        f'config_dir = "{tmp_path / "custom-e"}"\n'
+        'provider = "claude"\n',
+        encoding="utf-8",
+    )
+    config = load_config(env={"HOME": str(tmp_path)}, explicit_path=config_toml)
+    assert "claude_e" in config.accounts, "the config layer already accepts the account"
+
+    keychain = FakeKeychain({})
+    deps = cli.Deps.resolve(cli.Deps(run=keychain))
+    warnings: list[str] = []
+    degraded: list[dict[str, Any]] = []
+    snapshots = cli._fetch_snapshots(config, deps, {"HOME": str(tmp_path)}, NOW, warnings, degraded)
+
+    by_id = {snapshot.id: snapshot for snapshot in snapshots}
+    assert "claude_e" in by_id, (
+        f"the operator's fifth account was dropped; the CLI saw {sorted(by_id)}"
+    )
+    # No credential exists for it, so it must appear unavailable rather than vanish.
+    assert by_id["claude_e"].available is False
+    # The tier still came off disk, proving the declared directory was the one read.
+    assert by_id["claude_e"].tier == TIER_MAX_20X
 
 
 def test_load_snapshots_signature_matches_what_the_cli_injects() -> None:
