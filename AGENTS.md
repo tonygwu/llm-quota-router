@@ -47,7 +47,7 @@ route on it. The failure mode is a wedged or mis-routed launch, not a red test.
 To test your own changes, use your checkout's venv, which is isolated:
 
 ```sh
-./.venv/bin/python -m pytest -q          # 702 tests, ~7s
+./.venv/bin/python -m pytest -q          # 705 tests, ~7s
 ./.venv/bin/quotapick status             # your code, not the installed copy
 ```
 
@@ -55,8 +55,14 @@ To ship a change to the live binaries, after it is pushed:
 
 ```sh
 git -C ~/Code/llm-quota-router/repo-prod pull
-uv tool install --force ~/Code/llm-quota-router/repo-prod
+uv tool install --force --reinstall --no-cache ~/Code/llm-quota-router/repo-prod
 ```
+
+`--reinstall --no-cache` is not belt-and-braces. The version is static at
+`0.1.0`, so `--force` alone can rebuild from uv's cache and reinstall the code
+you just replaced, reporting success the whole way. Observed on 2026-09-07: the
+pull landed, `--force` said `Installed 2 executables`, and the installed
+`launcher.py` was still the previous revision.
 
 Verify the receipt still names `repo-prod` afterwards:
 
@@ -66,6 +72,14 @@ cat ~/.local/share/uv/tools/llm-quota-router/uv-receipt.toml
 
 If it names a working checkout, the live launcher is running someone's
 uncommitted work. Reinstall from repo-prod.
+
+The receipt only proves *where* it installed from, never *what* landed. Check a
+symbol your change actually introduced:
+
+```sh
+grep -c '<a name your change added>' \
+  ~/.local/share/uv/tools/llm-quota-router/lib/python3.12/site-packages/quota_router/launcher.py
+```
 
 ## The two launchd jobs run the installed copy, not your checkout
 
