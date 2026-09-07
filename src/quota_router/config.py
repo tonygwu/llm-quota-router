@@ -40,6 +40,8 @@ from .types import (
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CODEX,
+    PROVIDER_UNKNOWN,
+    PROVIDERS,
     TIER_CAPACITY,
     TIER_UNKNOWN,
     UNKNOWN_TIER_CAPACITY,
@@ -903,6 +905,24 @@ def _build_accounts(
                 else None
             ),
         )
+
+        # An account whose provider resolves to nothing has no adapter behind it, so it
+        # can never be read and never be routed to. Saying so here is the difference
+        # between a config that does nothing and a config that says it does nothing:
+        # the account is accepted by every layer above and then quietly vanishes from
+        # `status`, which reads as a broken router rather than a rejected account.
+        resolved_provider = accounts[str(account_id)].provider
+        if resolved_provider not in PROVIDERS:
+            named = (
+                f"provider {resolved_provider!r}"
+                if resolved_provider != PROVIDER_UNKNOWN
+                else "no provider, and none could be inferred from the account id"
+            )
+            warnings.append(
+                f"[{section}] has {named}; this router has adapters for "
+                f"{', '.join(PROVIDERS)}. The account is configured but unroutable: "
+                f"nothing will read it and nothing can launch on it"
+            )
     return accounts
 
 

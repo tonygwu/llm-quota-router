@@ -1519,3 +1519,69 @@ def test_a_reservation_stops_deflecting_once_its_burn_is_on_the_bar(env, tmp_pat
         f"the claim is fully realised on the bar and must no longer be subtracted; "
         f"warnings={second['warnings']}"
     )
+
+
+# ======================================================================================
+# An account the router cannot serve must say so, never vanish
+# ======================================================================================
+
+
+def test_an_account_under_an_unsupported_provider_says_so(tmp_path) -> None:
+    """A provider with no adapter is unroutable, and the config layer must say it.
+
+    Every layer above accepts the account: the TOML parses, ``_build_accounts`` builds
+    it, and it appears in ``config.accounts``. Then nothing reads it and it is simply
+    missing from ``status``. Silence there reads as a broken router rather than as a
+    rejected account, which is the wrong thing for the operator to go and debug.
+    """
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[accounts.cursor]\nprovider = "cursor"\n', encoding="utf-8")
+    cfg = load_config(env={}, explicit_path=path)
+
+    hits = [w for w in cfg.warnings if "accounts.cursor" in w]
+    assert hits, f"an unsupported provider passed in silence: {cfg.warnings}"
+    assert "unroutable" in hits[0]
+
+
+def test_an_account_no_adapter_reports_is_named(tmp_path) -> None:
+    """A *known* provider that reports a fixed account set still drops extras.
+
+    ``codex_b`` is a valid codex account as far as configuration is concerned, and the
+    codex adapter reports only its default account, so it disappears. The config layer
+    cannot know this. Only the gap between "configured" and "reported" shows it.
+    """
+    from quota_router.cli import _unclaimed_account_warnings
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.codex_b]\nprovider = "codex"\n[accounts.cursor]\nprovider = "cursor"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(env={}, explicit_path=path)
+    served = AccountSnapshot(id="codex", provider="codex", windows=(), source=SOURCE_LIVE)
+
+    out = _unclaimed_account_warnings(cfg, [served])
+
+    assert any("codex_b" in w for w in out), f"the extra codex account vanished: {out}"
+    # The unsupported provider belongs to the config layer's warning. Saying it twice,
+    # in two different wordings, invites a hunt for two separate problems.
+    assert not [w for w in out if "cursor" in w], out
+
+
+def test_an_account_that_was_reported_draws_no_warning(tmp_path) -> None:
+    """The check must stay silent about every account that actually worked."""
+    from quota_router.cli import _unclaimed_account_warnings
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[accounts.claude_e]\nprovider = "claude"\n', encoding="utf-8")
+    cfg = load_config(env={}, explicit_path=path)
+    served = [
+        AccountSnapshot(id=a.id, provider=a.provider, windows=(), source=SOURCE_LIVE)
+        for a in cfg.enabled_accounts()
+    ]
+
+    assert _unclaimed_account_warnings(cfg, served) == []

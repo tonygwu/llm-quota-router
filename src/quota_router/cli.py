@@ -63,6 +63,7 @@ from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_con
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
     PROVIDER_CLAUDE,
+    PROVIDERS,
     WINDOW_KEY_5H,
     normalize_model_class,
     QUOTA_ROUTER_CONTRACT_VERSION,
@@ -372,6 +373,36 @@ class Prepared:
         return {snapshot.id: snapshot for snapshot in self.snapshots}
 
 
+def _unclaimed_account_warnings(
+    config: Config, snapshots: Sequence[AccountSnapshot]
+) -> list[str]:
+    """Name every enabled account that no adapter reported on.
+
+    The config layer accepts any account id under any known provider, but the adapters
+    decide what they actually read. A Claude account is discovered from its config
+    directory, so declaring one works; the codex and antigravity adapters each report a
+    fixed set, so declaring a second account under them produces nothing at all.
+
+    Without this the operator gets the worst possible answer to "I added an account":
+    the file parses, no error appears, and the account is simply missing from `status`.
+    That reads as a broken router rather than an unsupported request, so it is worth a
+    line naming the account and saying plainly that nothing will read it.
+    """
+    reported = {snapshot.id for snapshot in snapshots}
+    out: list[str] = []
+    for account in config.enabled_accounts():
+        if account.id in reported or account.provider not in PROVIDERS:
+            # An unknown provider is already reported by the config layer; saying it
+            # twice in different words invites a hunt for two separate problems.
+            continue
+        out.append(
+            f"account {account.id!r} is configured under provider {account.provider!r} "
+            f"but no adapter reported it, so it cannot be routed to. The {account.provider} "
+            f"adapter may support only its default account"
+        )
+    return out
+
+
 def _fetch_snapshots(
     config: Config,
     deps: Deps,
@@ -403,6 +434,7 @@ def _fetch_snapshots(
             snapshots, loader_warnings = _normalize_snapshot_result(result)
             warnings.extend(loader_warnings)
             if snapshots:
+                warnings.extend(_unclaimed_account_warnings(config, snapshots))
                 return snapshots
             warnings.append("oracle returned no accounts")
         except Exception as exc:  # noqa: BLE001 - the oracle may fail any way it likes
