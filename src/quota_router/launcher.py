@@ -81,7 +81,7 @@ from .config import BANNED_EXEC_ENV, Config, load_config
 from .explain import format_duration
 from .providers.claude_cli_config import DEFAULT_CLAUDE_CONFIG_DIR_NAMES
 from .providers.claude_oauth import USAGE_OFFLINE_ENV, cached_weekly_usage
-from .types import ACCOUNT_CLAUDE
+from .types import ACCOUNT_CLAUDE, PROVIDER_CLAUDE
 from .weekly_reset import earliest_weekly_reset
 
 __all__ = [
@@ -109,9 +109,11 @@ BYPASS_FLAG: Final[str] = "--dangerously-skip-permissions"
 #: hang every single new terminal.
 DEFAULT_PICK_TIMEOUT_S: Final[float] = 3.0
 
-#: The interactive fleet: the Claude accounts this operator can actually be dropped
-#: into. Taken from the config-directory map so registering a new slot (``claude_d``
-#: was added this way) does not need a second edit here.
+#: Last-resort interactive fleet, used only when the operator's config yields no Claude
+#: accounts at all -- an unreadable or empty config file. The real list is derived from
+#: the config by :func:`_interactive_accounts`, because an operator who declares a fifth
+#: account in their own config expects ``cl`` to launch on it. This constant is the
+#: floor, not the answer.
 DEFAULT_ONLY: Final[tuple[str, ...]] = tuple(DEFAULT_CLAUDE_CONFIG_DIR_NAMES)
 
 #: How much of a transcript's tail to read per step when looking for the last model.
@@ -421,6 +423,33 @@ def child_env(
     return out
 
 
+def _interactive_accounts(config: Config | None) -> tuple[str, ...]:
+    """Every Claude account the operator configured, in config order.
+
+    ``cl`` drops the operator into an interactive Claude Code session, so only
+    Claude-provider accounts are candidates: codex and antigravity cannot serve one.
+
+    Derived from the config rather than from the builtin ``~/.claude*`` map. An
+    operator who adds a fifth subscription declares it in their own config, and
+    reading the builtin map instead meant ``cl`` silently ignored it while
+    ``quotapick status`` listed it -- the two disagreeing about what the fleet is.
+
+    Returns ``()`` when the config is missing or unreadable, which the caller reads
+    as "fall back to :data:`DEFAULT_ONLY`".
+    """
+    if config is None:
+        return ()
+    try:
+        accounts = config.enabled_accounts()
+    except Exception:  # noqa: BLE001 - a broken config must still yield a launch
+        return ()
+    return tuple(
+        account.id
+        for account in accounts
+        if getattr(account, "provider", "") == PROVIDER_CLAUDE and getattr(account, "id", "")
+    )
+
+
 def _route(
     argv: Sequence[str],
     env: Mapping[str, str],
@@ -437,7 +466,11 @@ def _route(
     so the banner cannot pass it off as one.
     """
     timeout_s = _float_env(env, "CL_PICK_TIMEOUT_S", DEFAULT_PICK_TIMEOUT_S)
-    only = _list_env(env, "CL_ONLY", DEFAULT_ONLY)
+    # An explicit CL_ONLY is the operator naming the fleet by hand and always wins.
+    # Otherwise the fleet is whatever the config says, resolved once the config is
+    # loaded below; DEFAULT_ONLY is only the floor for when that yields nothing.
+    pinned = _list_env(env, "CL_ONLY", ())
+    only = list(pinned) if pinned else list(DEFAULT_ONLY)
 
     def pick_with(which: str | None, *, offline: bool = False) -> Selection:
         call_env = dict(env)
@@ -463,7 +496,13 @@ def _route(
     carried: dict[str, Config] = {}
 
     def pick() -> Selection:
-        carried["config"] = deps.load_config(env=dict(env))
+        config = deps.load_config(env=dict(env))
+        carried["config"] = config
+        if not pinned:
+            # Refined before the first select and before every failure path below,
+            # all of which run after this returns.
+            nonlocal only
+            only = list(_interactive_accounts(config)) or list(DEFAULT_ONLY)
         return pick_with(model)
 
     attempt = _within_deadline(pick, timeout_s)

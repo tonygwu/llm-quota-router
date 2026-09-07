@@ -365,7 +365,8 @@ has the failure that motivated it written next to it.
 Environment overrides: `CL_CLAUDE_BIN` (default `~/.local/bin/claude`),
 `CL_PICK_TIMEOUT_S` (default 3 — a wall-clock cap, after which the session
 starts on the fallback above rather than a terminal hanging on a Keychain
-prompt), `CL_ONLY` (default `claude,claude_b,claude_c,claude_d`), `CL_QUIET`,
+prompt), `CL_ONLY` (default: every Claude-provider account in your config, so a
+subscription you add there is launchable without a second edit), `CL_QUIET`,
 `CL_DEBUG`.
 
 ## The poller

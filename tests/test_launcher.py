@@ -609,6 +609,63 @@ def test_the_candidate_set_can_be_narrowed(env) -> None:
     assert list(seen["only"]) == ["claude_b", "claude_c"]
 
 
+def test_a_config_declared_fifth_account_joins_the_interactive_fleet(env, tmp_path) -> None:
+    """``cl`` launches on an account the operator added past the builtin four.
+
+    Regression. The candidate set came from the builtin ``~/.claude*`` directory map,
+    so a fifth subscription declared in the operator's own config was invisible to
+    ``cl`` while ``quotapick status`` listed it -- the launcher and the status command
+    disagreeing about what the fleet is. Only the launcher could actually start a
+    session, so the operator's new account was unreachable in the one place that
+    mattered.
+    """
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.claude_e]\nconfig_dir = "~/.claude-e"\nprovider = "claude"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(env={}, explicit_path=path)
+
+    seen: dict = {}
+
+    def select(**kwargs):
+        seen.update(kwargs)
+        return selection(_row("claude_e", fits=True))
+
+    launch([], env, select=select, config=cfg)
+
+    assert "claude_e" in list(seen["only"]), (
+        f"the operator's fifth account never became a candidate; cl offered {seen['only']}"
+    )
+    # The non-Claude accounts are still excluded: cl starts a Claude session, and
+    # codex/antigravity cannot serve one.
+    assert "codex" not in list(seen["only"])
+    assert not [account for account in seen["only"] if account.startswith("antigravity")]
+
+
+def test_an_explicit_cl_only_still_beats_the_config(env, tmp_path) -> None:
+    """Naming the fleet by hand is the operator overriding their own config."""
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.claude_e]\nconfig_dir = "~/.claude-e"\nprovider = "claude"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(env={}, explicit_path=path)
+
+    seen: dict = {}
+
+    def select(**kwargs):
+        seen.update(kwargs)
+        return selection(_row("claude_b", fits=True))
+
+    launch([], {**env, "CL_ONLY": "claude_b"}, select=select, config=cfg)
+    assert list(seen["only"]) == ["claude_b"]
+
+
 def test_the_banner_names_the_account_and_model(env, home) -> None:
     session = "9d1f7c22-0000-4000-8000-000000000008"
     transcript(home, session, ["claude-fable-5"] * 3)
