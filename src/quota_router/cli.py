@@ -63,6 +63,7 @@ from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_con
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
     PROVIDER_CLAUDE,
+    PROVIDER_CURSOR,
     PROVIDERS,
     WINDOW_KEY_5H,
     normalize_model_class,
@@ -216,11 +217,17 @@ def _configure_adapters(
     declared an account beyond those builtins got it silently ignored.
     """
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
+    cursor_cls = getattr(providers, "CursorAdapter", None)
     from_policy = getattr(providers, "claude_configs_from_policy", None)
+    ids_for_provider = getattr(providers, "account_ids_for_provider", None)
 
     claude_configs: tuple[Any, ...] | None = None
     if config is not None and callable(from_policy):
         claude_configs = tuple(from_policy(config, env=env)) or None
+
+    cursor_accounts: tuple[str, ...] | None = None
+    if config is not None and callable(ids_for_provider):
+        cursor_accounts = ids_for_provider(config, PROVIDER_CURSOR) or None
 
     out: list[Any] = []
 
@@ -229,6 +236,11 @@ def _configure_adapters(
         settings: dict[str, Any] = {"env": env, "runner": run, "configs": claude_configs}
         if live_cls is not None and cls is live_cls and config is not None:
             settings["timeout_s"] = timeout_s
+        # Only the Cursor adapter. The Antigravity adapter also declares ``account_ids``,
+        # and its two entries are pools behind one binary rather than operator accounts,
+        # so handing it this list would invent Antigravity pools that do not exist.
+        if cursor_cls is not None and cls is cursor_cls:
+            settings["account_ids"] = cursor_accounts
 
         wanted = {key: value for key, value in settings.items() if value is not None}
         try:

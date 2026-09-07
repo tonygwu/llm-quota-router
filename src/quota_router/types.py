@@ -76,6 +76,8 @@ __all__ = [
     "ACCOUNT_ANTIGRAVITY_GEMINI",
     "ACCOUNT_ANTIGRAVITY_CLAUDE",
     "ACCOUNT_IDS",
+    "ACCOUNT_CURSOR",
+    "PROVIDER_CURSOR",
     "ACCOUNT_PROVIDERS",
     "PROVIDER_CLAUDE",
     "PROVIDER_CODEX",
@@ -199,6 +201,7 @@ ACCOUNT_CLAUDE_B: Final[str] = "claude_b"
 ACCOUNT_CLAUDE_C: Final[str] = "claude_c"
 ACCOUNT_CLAUDE_D: Final[str] = "claude_d"
 ACCOUNT_CODEX: Final[str] = "codex"
+ACCOUNT_CURSOR: Final[str] = "cursor"
 ACCOUNT_ANTIGRAVITY_GEMINI: Final[str] = "antigravity_gemini"
 ACCOUNT_ANTIGRAVITY_CLAUDE: Final[str] = "antigravity_claude"
 
@@ -211,12 +214,14 @@ ACCOUNT_IDS: Final[tuple[str, ...]] = (
     ACCOUNT_CLAUDE_C,
     ACCOUNT_CLAUDE_D,
     ACCOUNT_CODEX,
+    ACCOUNT_CURSOR,
     ACCOUNT_ANTIGRAVITY_GEMINI,
     ACCOUNT_ANTIGRAVITY_CLAUDE,
 )
 
 PROVIDER_CLAUDE: Final[str] = "claude"
 PROVIDER_CODEX: Final[str] = "codex"
+PROVIDER_CURSOR: Final[str] = "cursor"
 PROVIDER_ANTIGRAVITY: Final[str] = "antigravity"
 PROVIDER_UNKNOWN: Final[str] = "unknown"
 
@@ -226,6 +231,7 @@ PROVIDER_UNKNOWN: Final[str] = "unknown"
 PROVIDERS: Final[tuple[str, ...]] = (
     PROVIDER_CLAUDE,
     PROVIDER_CODEX,
+    PROVIDER_CURSOR,
     PROVIDER_ANTIGRAVITY,
 )
 
@@ -237,6 +243,7 @@ ACCOUNT_PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(
         ACCOUNT_CLAUDE_C: PROVIDER_CLAUDE,
         ACCOUNT_CLAUDE_D: PROVIDER_CLAUDE,
         ACCOUNT_CODEX: PROVIDER_CODEX,
+        ACCOUNT_CURSOR: PROVIDER_CURSOR,
         ACCOUNT_ANTIGRAVITY_GEMINI: PROVIDER_ANTIGRAVITY,
         ACCOUNT_ANTIGRAVITY_CLAUDE: PROVIDER_ANTIGRAVITY,
     }
@@ -266,7 +273,7 @@ def provider_for_account_id(account_id: str) -> str:
     if known is not None:
         return known
     text = (account_id or "").strip().casefold()
-    for provider in (PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, PROVIDER_CODEX):
+    for provider in (PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, PROVIDER_CODEX, PROVIDER_CURSOR):
         if text == provider or text.startswith(f"{provider}_"):
             return provider
     return PROVIDER_UNKNOWN

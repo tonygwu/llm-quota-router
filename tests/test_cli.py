@@ -1537,10 +1537,10 @@ def test_an_account_under_an_unsupported_provider_says_so(tmp_path) -> None:
     from quota_router.config import load_config
 
     path = tmp_path / "config.toml"
-    path.write_text('[accounts.cursor]\nprovider = "cursor"\n', encoding="utf-8")
+    path.write_text('[accounts.windsurf]\nprovider = "windsurf"\n', encoding="utf-8")
     cfg = load_config(env={}, explicit_path=path)
 
-    hits = [w for w in cfg.warnings if "accounts.cursor" in w]
+    hits = [w for w in cfg.warnings if "accounts.windsurf" in w]
     assert hits, f"an unsupported provider passed in silence: {cfg.warnings}"
     assert "unroutable" in hits[0]
 
@@ -1557,7 +1557,8 @@ def test_an_account_no_adapter_reports_is_named(tmp_path) -> None:
 
     path = tmp_path / "config.toml"
     path.write_text(
-        '[accounts.codex_b]\nprovider = "codex"\n[accounts.cursor]\nprovider = "cursor"\n',
+        '[accounts.codex_b]\nprovider = "codex"\n'
+        '[accounts.windsurf]\nprovider = "windsurf"\n',
         encoding="utf-8",
     )
     cfg = load_config(env={}, explicit_path=path)
@@ -1568,7 +1569,7 @@ def test_an_account_no_adapter_reports_is_named(tmp_path) -> None:
     assert any("codex_b" in w for w in out), f"the extra codex account vanished: {out}"
     # The unsupported provider belongs to the config layer's warning. Saying it twice,
     # in two different wordings, invites a hunt for two separate problems.
-    assert not [w for w in out if "cursor" in w], out
+    assert not [w for w in out if "windsurf" in w], out
 
 
 def test_an_account_that_was_reported_draws_no_warning(tmp_path) -> None:
@@ -1585,3 +1586,42 @@ def test_an_account_that_was_reported_draws_no_warning(tmp_path) -> None:
     ]
 
     assert _unclaimed_account_warnings(cfg, served) == []
+
+
+def test_the_cli_hands_cursor_its_configured_accounts(tmp_path) -> None:
+    """A second Cursor account declared in config must reach the Cursor adapter.
+
+    Same shape as the Claude `configs` bug: the CLI rebuilds the providers layer's
+    adapters with this run's settings, and any setting it fails to pass is dropped in
+    silence, leaving the adapter on its own default of one account.
+    """
+    from quota_router import providers
+    from quota_router.cli import _configure_adapters
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.cursor_work]\nprovider = "cursor"\n', encoding="utf-8"
+    )
+    cfg = load_config(env={}, explicit_path=path)
+
+    rebuilt = _configure_adapters(
+        providers,
+        [providers.CursorAdapter(), providers.AntigravityAdapter()],
+        config=cfg,
+        env={},
+        run=None,
+        timeout_s=None,
+    )
+    cursor = next(a for a in rebuilt if isinstance(a, providers.CursorAdapter))
+    ids = [snapshot.id for snapshot in cursor.snapshot(0.0)]
+    assert "cursor_work" in ids, f"the operator's second Cursor account was dropped: {ids}"
+
+    # The Antigravity adapter also declares `account_ids`, and its entries are pools
+    # behind one binary rather than operator accounts. Handing it the Cursor list would
+    # invent pools that do not exist.
+    antigravity = next(a for a in rebuilt if isinstance(a, providers.AntigravityAdapter))
+    assert [s.id for s in antigravity.snapshot(0.0)] == [
+        "antigravity_gemini",
+        "antigravity_claude",
+    ]

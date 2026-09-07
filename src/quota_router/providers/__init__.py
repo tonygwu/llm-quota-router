@@ -11,6 +11,7 @@ runner is injectable), never invent data.
 | :class:`ClaudeOAuthAdapter`   | vendor usage endpoint (primary, live)             |
 | :class:`ClaudeStatuslineAdapter` | ``~/Library/Caches/.../claude*-rate-limits.json`` |
 | :class:`CodexSessionsAdapter` | ``$CODEX_HOME/sessions/**/*.jsonl`` tails         |
+| :class:`CursorAdapter`        | ``~/.cursor/cli-config.json`` identity only        |
 | :class:`AntigravityAdapter`   | nothing observable; failure-learned deadline only |
 +-------------------------------+---------------------------------------------------+
 
@@ -28,7 +29,9 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..types import (
+    ACCOUNT_CURSOR,
     PROVIDER_CLAUDE,
+    PROVIDER_CURSOR,
     SOURCE_ASSUMED,
     SOURCE_CACHE,
     SOURCE_CLAUDE_JSON,
@@ -56,6 +59,7 @@ from .claude_cli_config import (
 from .claude_oauth import ClaudeOAuthAdapter
 from .claude_statusline import ClaudeStatuslineAdapter
 from .codex_sessions import CodexSessionsAdapter
+from .cursor import CursorAdapter
 
 __all__ = [
     "ProviderAdapter",
@@ -68,6 +72,8 @@ __all__ = [
     "ClaudeAccountConfig",
     "discover_claude_configs",
     "CodexSessionsAdapter",
+    "CursorAdapter",
+    "account_ids_for_provider",
     "AntigravityAdapter",
     "SOURCE_RANK",
     "build_default_adapters",
@@ -167,6 +173,35 @@ def claude_configs_from_policy(
     return tuple(resolved)
 
 
+def account_ids_for_provider(config: Any, provider: str) -> tuple[str, ...]:
+    """Ids of every enabled account the policy assigns to ``provider``, in config order.
+
+    The Claude adapters need whole ``ClaudeAccountConfig`` objects, because a Claude
+    account is a directory to be read. A Cursor account is just an id plus an exec
+    environment, so its adapter needs only the names.
+
+    ``config`` is duck-typed the same way :func:`claude_configs_from_policy` duck-types
+    it, so this module still never imports the policy layer. An absent or broken policy
+    yields ``()``, which every caller reads as "use your own default".
+    """
+    accounts_fn = getattr(config, "enabled_accounts", None)
+    if not callable(accounts_fn):
+        return ()
+    try:
+        accounts = list(accounts_fn())
+    except Exception:  # pragma: no cover - a broken policy object is not our failure mode
+        return ()
+    out: list[str] = []
+    for account in accounts:
+        account_id = getattr(account, "id", None)
+        if not isinstance(account_id, str) or not account_id:
+            continue
+        resolved = getattr(account, "provider", "") or provider_for_account_id(account_id)
+        if resolved == provider:
+            out.append(account_id)
+    return tuple(out)
+
+
 def build_default_adapters(
     *,
     config: Any = None,
@@ -177,12 +212,14 @@ def build_default_adapters(
 ) -> tuple[ProviderAdapter, ...]:
     """The standard adapter set, in preference order (live read first, guesses last)."""
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
+    cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
     return (
         ClaudeOAuthAdapter(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
         ),
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
         CodexSessionsAdapter(env=env),
+        CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
         AntigravityAdapter(env=env),
     )
 

@@ -40,6 +40,7 @@ from .types import (
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CODEX,
+    PROVIDER_CURSOR,
     PROVIDER_UNKNOWN,
     PROVIDERS,
     TIER_CAPACITY,
@@ -103,6 +104,7 @@ PROVIDER_COMMANDS: Final[Mapping[str, str]] = MappingProxyType(
     {
         PROVIDER_CLAUDE: "claude",
         PROVIDER_CODEX: "codex",
+        PROVIDER_CURSOR: "cursor-agent",
         PROVIDER_ANTIGRAVITY: "agy",
     }
 )
@@ -715,6 +717,9 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "claude_c": {"config_dir": "~/.claude-c"},
             "claude_d": {"config_dir": "~/.claude-d"},
             "codex": {"config_dir": "~/.codex"},
+            # Cursor has no per-account config directory. A second Cursor account is
+            # declared with its own CURSOR_API_KEY in this table's `env` overlay.
+            "cursor": {},
             # Antigravity has no per-account config directory: the two pools behind the
             # one CLI are selected by AGY_MODEL, where a value containing "claude" means
             # the Claude pool and anything else means Gemini. An empty overlay is
@@ -723,7 +728,7 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "antigravity_claude": {"env": {"AGY_MODEL": "claude"}},
         },
         "tiers": {"max_20x": 1.0, "max_5x": 0.25, "pro": 1.0, "unknown": 1.0},
-        "providers": {"claude": 1.0, "codex": 0.7, "antigravity": 0.3},
+        "providers": {"claude": 1.0, "codex": 0.7, "cursor": 0.5, "antigravity": 0.3},
         "model_classes": {
             "multipliers": dict(mc.DEFAULT_MULTIPLIERS),
             "patterns": dict(mc.DEFAULT_PATTERNS),

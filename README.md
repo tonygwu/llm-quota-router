@@ -69,6 +69,39 @@ deciding which of *their own* already-authorized accounts to spend from on a
 given run. It shells out to each vendor's official CLI using that account's own
 credentials.
 
+### Providers, and what can actually be measured
+
+A provider is a billing pool with its own CLI. What the router can *know* about
+each one differs, and it never pretends otherwise:
+
+| Provider | Accounts | Usage readable? | Read from |
+|---|---|---|---|
+| `claude` | many, one config directory each | **yes**, real windows | vendor usage endpoint, statusline cache |
+| `codex` | one | partial | `$CODEX_HOME/sessions` transcript tails |
+| `cursor` | many, one API key each | **no** | `~/.cursor/cli-config.json`, identity only |
+| `antigravity` | two pools behind one binary | **no** | nothing; failure-learned deadlines only |
+
+"Usage readable: no" is a statement about the vendor, not a gap to be filled by
+estimating. Cursor's CLI has `status` and `about`, and neither reports a quota
+figure; Antigravity exposes nothing at all. Those accounts carry no windows and
+`confidence=0.0`, so they are routable but never scored as if measured.
+
+Cursor has no per-account config directory, so a second Cursor account is
+declared with its own key:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.cursor_work]
+provider = "cursor"
+tier = "pro"
+env = { CURSOR_API_KEY = "..." }
+```
+
+An account this router has no adapter for is **reported, not ignored**. If you
+declare a provider that does not exist here, or a second account under a
+provider that only ever reports one, `status` says so on stderr rather than
+leaving the account quietly missing.
+
 ## What this is *not*
 
 - **Not a gateway or proxy.** It never sets `ANTHROPIC_BASE_URL` or
@@ -162,7 +195,10 @@ On the author's machine this repo has several checkouts, and the live `cl` and
 `quotapick` are installed from exactly one of them. See `AGENTS.md` before
 running `uv tool install` from a checkout.
 
-Zero runtime dependencies, Python >= 3.12.
+Zero runtime dependencies, Python >= 3.12. **macOS only**, and that is the code
+rather than the testing: every credential read shells out to `security
+find-generic-password`, and both schedulers in `ops/` write launchd plists.
+There is no second code path.
 
 ## Use
 

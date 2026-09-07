@@ -38,7 +38,9 @@ from quota_router.providers import (
     ClaudeOAuthAdapter,
     ClaudeStatuslineAdapter,
     CodexSessionsAdapter,
+    CursorAdapter,
     ProviderAdapter,
+    account_ids_for_provider,
     claude_configs_from_policy,
     collect_snapshots,
     load_snapshots,
@@ -714,11 +716,19 @@ def test_oauth_reads_every_configured_account_independently(tmp_path: Path) -> N
         "acct3@example.com",
     ]
     # One Keychain read and one HTTP GET per account -- never a shared token.
-    assert keychain.services == [
+    #
+    # Compared as a set with an explicit length check, because the accounts are read
+    # CONCURRENTLY and the order these calls land in is genuinely not deterministic.
+    # Asserting the list made this test fail roughly one run in ten. What the adapter
+    # actually promises is one read per account and no sharing, which is exactly the
+    # count plus the membership; the ordering of the snapshots it returns is asserted
+    # above, and that part is deterministic.
+    assert len(keychain.services) == 3
+    assert set(keychain.services) == {
         KEYCHAIN_SERVICE_BASE,
         keychain_service_for(tmp_path / ".claude-b", home=tmp_path)[0],
         keychain_service_for(tmp_path / ".claude-c", home=tmp_path)[0],
-    ]
+    }
     assert len(opener.requests) == 3
 
 
@@ -1689,6 +1699,125 @@ def test_load_snapshots_signature_matches_what_the_cli_injects() -> None:
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in parameters.values()
     )
+
+
+# ======================================================================================
+# Cursor: identity is readable, quota is not
+# ======================================================================================
+
+
+def _cursor_home(root: Path, *, email: str | None = "user@example.com") -> Path:
+    """Write a `~/.cursor/cli-config.json` in the shape the real CLI writes."""
+    home = root / ".cursor"
+    home.mkdir(parents=True, exist_ok=True)
+    auth: dict[str, Any] = {"userId": 157610015, "authId": "x" * 45, "displayName": ""}
+    if email is not None:
+        auth["email"] = email
+    (home / "cli-config.json").write_text(
+        json.dumps({"authInfo": auth, "version": 1}), encoding="utf-8"
+    )
+    return home
+
+
+def test_cursor_reports_identity_and_no_quota(tmp_path: Path) -> None:
+    """The whole point: Cursor is identifiable and its quota is not observable.
+
+    A window here would be invented. The CLI has no usage or quota surface at all, so
+    the honest snapshot carries zero windows and zero confidence, exactly like the
+    Antigravity pools.
+    """
+    _cursor_home(tmp_path)
+    adapter = CursorAdapter(home=tmp_path / ".cursor", which=lambda _b: "/usr/bin/cursor-agent")
+
+    (snapshot,) = adapter.snapshot(NOW)
+
+    assert snapshot.id == "cursor"
+    assert snapshot.provider == "cursor"
+    assert snapshot.windows == (), "a Cursor quota window would be invented data"
+    assert snapshot.confidence == 0.0
+    assert snapshot.available is True
+    assert snapshot.identity is not None and snapshot.identity.email == "user@example.com"
+
+
+def test_cursor_is_unavailable_when_the_cli_is_absent(tmp_path: Path) -> None:
+    """Nothing can be launched on an account whose binary is not installed."""
+    _cursor_home(tmp_path)
+    adapter = CursorAdapter(home=tmp_path / ".cursor", which=lambda _b: None)
+
+    (snapshot,) = adapter.snapshot(NOW)
+
+    assert snapshot.available is False
+    assert "not on PATH" in snapshot.note
+
+
+def test_cursor_is_unavailable_when_signed_out(tmp_path: Path) -> None:
+    """A missing config file means the CLI was never signed in, which is a real answer."""
+    adapter = CursorAdapter(home=tmp_path / ".cursor", which=lambda _b: "/usr/bin/cursor-agent")
+
+    (snapshot,) = adapter.snapshot(NOW)
+
+    assert snapshot.available is False
+    assert snapshot.identity is None
+    assert "no readable cli-config.json" in snapshot.note
+
+
+def test_cursor_never_spawns_a_process(tmp_path: Path) -> None:
+    """Identity comes off disk, never from `cursor-agent about`.
+
+    `about` reports `subscriptionTier`, which is tempting and costs a subprocess plus a
+    network round trip (~0.9s measured). This adapter runs whenever a terminal opens, so
+    it reads the local file and lets the operator declare the tier instead.
+    """
+    _cursor_home(tmp_path)
+    calls: list[str] = []
+
+    def which(binary: str) -> str:
+        calls.append(binary)
+        return "/usr/bin/cursor-agent"
+
+    adapter = CursorAdapter(home=tmp_path / ".cursor", which=which)
+    adapter.snapshot(NOW)
+
+    # `which` is a PATH lookup, not a process. It is the only outside call allowed here.
+    assert calls == ["cursor-agent"]
+
+
+def test_a_second_cursor_account_gets_its_own_snapshot(tmp_path: Path) -> None:
+    """Cursor has no per-account directory; the seam is a per-account CURSOR_API_KEY.
+
+    The adapter therefore takes ids rather than directories, and an operator who
+    declares a second Cursor account gets a second candidate instead of silence.
+    """
+    _cursor_home(tmp_path)
+    adapter = CursorAdapter(
+        home=tmp_path / ".cursor",
+        account_ids=("cursor", "cursor_work"),
+        which=lambda _b: "/usr/bin/cursor-agent",
+    )
+
+    snapshots = adapter.snapshot(NOW)
+
+    assert [s.id for s in snapshots] == ["cursor", "cursor_work"]
+    assert all(s.provider == "cursor" for s in snapshots)
+
+
+def test_cursor_accounts_come_from_the_operator_config() -> None:
+    """`build_default_adapters` must hand the adapter the operator's Cursor accounts."""
+    policy = FakePolicy(
+        FakePolicyAccount("cursor", provider="cursor"),
+        FakePolicyAccount("cursor_work", provider="cursor"),
+        FakePolicyAccount(ACCOUNT_CLAUDE),
+    )
+    assert account_ids_for_provider(policy, "cursor") == ("cursor", "cursor_work")
+
+
+def test_cursor_exec_spawns_the_cursor_cli() -> None:
+    """Routing to Cursor is worthless if `exec` then launches the wrong binary."""
+    from quota_router.config import builtin_config
+
+    account = builtin_config().account("cursor")
+    assert account is not None
+    assert account.exec_command == "cursor-agent"
 
 
 # ======================================================================================
