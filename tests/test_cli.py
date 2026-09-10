@@ -25,7 +25,7 @@ import pytest
 from quota_router.types import WINDOW_KEY_5H
 from quota_router import cli
 from quota_router.config import BANNED_EXEC_ENV
-from quota_router.explain import explain_decision
+from quota_router.explain import explain_decision, format_pace, format_status_table
 from quota_router.model_classes import classify, demand_multiplier, resolve
 from quota_router.types import (
     QUOTA_ROUTER_CONTRACT_VERSION,
@@ -1012,6 +1012,143 @@ def test_status_reports_every_window(env):
     assert "5h" in out and "7d" in out and "fable" in out
 
 
+def test_status_is_one_line_per_account_by_default(env):
+    """The default view has to fit a screen, so an account gets one row, not a block.
+
+    The block form said `0.24 slack = 0.80 remaining - 0.56 expected` per window, which
+    is three lines per account plus a note, and on the operator's six-account fleet it
+    ran past a screen before the warnings even started.
+    """
+    code, out, _ = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+
+    rows = [line for line in out.splitlines() if line.startswith(("claude", "codex"))]
+    assert len(rows) == 3, f"expected one row per account, got:\n{out}"
+    assert "slack =" not in out, "the arithmetic belongs to --verbose now"
+    for account_id in ("claude", "claude_b", "claude_c"):
+        assert any(row.startswith(account_id + " ") for row in rows), out
+
+
+def test_status_states_the_binding_window_as_pace_not_slack(env):
+    """Slack is `remaining - expected demand`, which is unreadable at a glance.
+
+    Positive slack is budget the reset will take back unless something spends it, and
+    negative slack is a window burning faster than an even burn. The compact view says
+    exactly that, in those words.
+    """
+    half = SEVEN_DAYS / 2.0
+    spare = account(
+        "claude", window("seven_day", 0.10, resets_in_s=half, expected_used=0.50)
+    )
+    burning = account(
+        "claude_b", window("seven_day", 0.90, resets_in_s=half, expected_used=0.50)
+    )
+    code, out, _ = run(["status"], env, snapshots=(spare, burning))
+    assert code == cli.EXIT_OK
+
+    rows = {line.split()[0]: line for line in out.splitlines() if line.startswith("claude")}
+    # 0.90 remaining - 0.50 expected demand = +0.40 of budget that will expire unused.
+    assert "40% to spare" in rows["claude"], out
+    # 0.10 remaining - 0.50 expected demand = -0.40: already ahead of an even burn.
+    assert "40% over pace" in rows["claude_b"], out
+
+
+def test_pace_states_the_sign_of_slack_in_words():
+    """`slack` is `remaining - expected demand`; the sign is the whole message.
+
+    Positive is budget the reset will take back unless something spends it -- the thing
+    this router exists to find. Negative is a window already burning faster than an even
+    burn to reset. A bare signed number made those two read the same at a glance.
+    """
+    assert format_pace(0.15) == "15% to spare"
+    assert format_pace(-0.64) == "64% over pace"
+    assert format_pace(0.0) == "on pace"
+    # Under half a point either way is not a direction worth naming.
+    assert format_pace(0.004) == "on pace"
+    assert format_pace(-0.004) == "on pace"
+
+
+def test_status_columns_line_up_when_a_window_is_exactly_on_pace(env):
+    """`on pace` occupies the width the percentage would have, or the column breaks."""
+    half = SEVEN_DAYS / 2.0
+    level = account("claude", window("seven_day", 0.50, resets_in_s=half, expected_used=0.50))
+    burning = account(
+        "claude_b", window("seven_day", 0.90, resets_in_s=half, expected_used=0.50)
+    )
+    table = format_status_table((level, burning), NOW)
+    lines = table.splitlines()
+    assert "on pace" in lines[1] and "over pace" in lines[2], table
+    assert lines[1].index("on pace") == lines[2].index("over pace"), table
+
+
+def test_status_verbose_keeps_the_full_arithmetic(env):
+    """Nothing was deleted -- the slack decomposition is one flag away, under both spellings."""
+    code, long_form, _ = run(["status", "--verbose"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert "slack =" in long_form
+    assert "remaining -" in long_form and "expected" in long_form
+
+    _, short_flag, _ = run(["status", "-v"], env, snapshots=real_capture())
+    assert short_flag == long_form
+
+
+def test_status_names_an_unmeasurable_account_instead_of_tabling_it(env):
+    """An account with no windows gets named, with its reason, and no row of dashes.
+
+    A row of dashes reads as "measured, and empty", which is the opposite of the truth:
+    Cursor's CLI publishes no quota at all, so there is nothing to put in the cells.
+    Omitting it entirely would be worse still -- a provider with no usage API would be
+    indistinguishable from one that is not configured.
+    """
+    blind = AccountSnapshot(
+        id="cursor",
+        provider="cursor",
+        windows=(),
+        source=SOURCE_ASSUMED,
+        confidence=0.0,
+        note="no usage API; unobservable",
+    )
+    code, out, _ = run(["status"], env, snapshots=real_capture() + (blind,))
+    assert code == cli.EXIT_OK
+    assert "not measurable: cursor (no usage API; unobservable)" in out
+    assert not any(line.startswith("cursor ") for line in out.splitlines()), out
+
+
+def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):
+    """Two populations of warning, and only one of them is about this reading.
+
+    The waste scan re-walks every retained history record on every run, so its notes
+    describe transitions seen days ago and their count only grows -- thirty-eight of them
+    on the operator's machine, burying the five warnings that were about the snapshot
+    just taken. The default view counts the history notes and prints every live warning.
+    """
+    notes = [f"codex/7d: incoherent pair -- observation {index}" for index in range(12)]
+    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+    blind = AccountSnapshot(id="cursor", provider="cursor", windows=(), note="no API")
+
+    code, _, err = run(["status"], env, snapshots=real_capture() + (blind,))
+    assert code == cli.EXIT_OK
+    assert "12 note(s) about past window transitions" in err
+    assert notes[0] not in err, "history notes must not be printed by default"
+    assert "cursor: snapshot carries no usage windows" in err, "a live warning was lost"
+
+    _, _, verbose_err = run(["status", "-v"], env, snapshots=real_capture() + (blind,))
+    assert all(note in verbose_err for note in notes), verbose_err
+    assert "cursor: snapshot carries no usage windows" in verbose_err
+
+
+def test_status_json_still_carries_every_warning(env, monkeypatch):
+    """The compact view is a rendering choice; the machine-readable contract loses nothing."""
+    notes = ["codex/7d: incoherent pair -- observation 0"]
+    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+    blind = AccountSnapshot(id="cursor", provider="cursor", windows=(), note="no API")
+
+    _, out, _ = run(["status", "--json"], env, snapshots=real_capture() + (blind,))
+    warnings = json.loads(out)["warnings"]
+    assert notes[0] in warnings
+    assert any("cursor" in warning for warning in warnings)
+
+
 def test_status_json_carries_the_full_snapshot(env):
     code, out, _ = run(["status", "--json"], env, snapshots=real_capture())
     payload = json.loads(out)
@@ -1619,9 +1756,69 @@ def test_the_cli_hands_cursor_its_configured_accounts(tmp_path) -> None:
 
     # The Antigravity adapter also declares `account_ids`, and its entries are pools
     # behind one binary rather than operator accounts. Handing it the Cursor list would
-    # invent pools that do not exist.
+    # invent pools that do not exist, so with no Antigravity account declared it keeps
+    # its own defaults rather than inheriting `cursor_work`.
     antigravity = next(a for a in rebuilt if isinstance(a, providers.AntigravityAdapter))
     assert [s.id for s in antigravity.snapshot(0.0)] == [
         "antigravity_gemini",
         "antigravity_claude",
     ]
+
+
+def test_antigravity_pools_come_from_the_operator_config(tmp_path: Path) -> None:
+    """A declared pool reaches the adapter; an undeclared one is never invented.
+
+    Antigravity is opt-in because it publishes nothing measurable, so the config is the
+    only statement of which pools exist. An operator who declares Gemini alone must not
+    get a Claude pool row they never asked for.
+    """
+    from quota_router import providers
+    from quota_router.cli import _configure_adapters
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.antigravity_gemini]\nprovider = "antigravity"\n', encoding="utf-8"
+    )
+    cfg = load_config(env={}, explicit_path=path)
+
+    rebuilt = _configure_adapters(
+        providers,
+        [providers.AntigravityAdapter()],
+        config=cfg,
+        env={},
+        run=None,
+        timeout_s=None,
+    )
+    adapter = next(a for a in rebuilt if isinstance(a, providers.AntigravityAdapter))
+    assert [s.id for s in adapter.snapshot(0.0)] == ["antigravity_gemini"]
+
+
+def test_antigravity_is_opt_in_and_absent_from_the_builtin_fleet(env, tmp_path):
+    """Nothing ships an Antigravity pool: not the config defaults, not the adapter set.
+
+    The two pools publish no quota at all -- no API, no cache, no file on disk -- and
+    `agy` has no account seam either, so a second Antigravity subscription is invisible
+    to this router and to itself. Shipping them on put two rows in `status` that could
+    never carry a number, and two candidates `pick` could only ever choose blind.
+    """
+    from types import SimpleNamespace
+
+    from quota_router import providers
+    from quota_router.config import load_config
+
+    config = load_config(env=env, cwd=str(tmp_path))
+    assert not [name for name in config.accounts if name.startswith("antigravity")]
+
+    names = [type(a).__name__ for a in providers.build_default_adapters(config=config)]
+    assert "AntigravityAdapter" not in names, names
+    assert "CursorAdapter" in names, "only Antigravity is opt-in"
+
+    class _Policy:
+        def enabled_accounts(self):
+            return (SimpleNamespace(id="antigravity_gemini", provider="antigravity"),)
+
+    declared = [
+        type(a).__name__ for a in providers.build_default_adapters(config=_Policy())
+    ]
+    assert "AntigravityAdapter" in declared, declared

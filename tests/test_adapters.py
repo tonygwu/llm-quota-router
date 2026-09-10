@@ -1622,6 +1622,9 @@ def test_load_snapshots_is_the_one_call_the_cli_needs(tmp_path: Path) -> None:
     policy = FakePolicy(
         FakePolicyAccount(ACCOUNT_CLAUDE),
         FakePolicyAccount(ACCOUNT_CLAUDE_C),
+        # Declared, because the Antigravity adapter is opt-in: it publishes nothing
+        # measurable, so it runs only when the operator's config names its pools.
+        FakePolicyAccount(ACCOUNT_ANTIGRAVITY_GEMINI, provider="antigravity"),
     )
     keychain = FakeKeychain({})
 

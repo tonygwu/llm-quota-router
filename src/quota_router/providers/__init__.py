@@ -30,6 +30,7 @@ from typing import Any, Final
 
 from ..types import (
     ACCOUNT_CURSOR,
+    PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CURSOR,
     SOURCE_ASSUMED,
@@ -213,15 +214,24 @@ def build_default_adapters(
     """The standard adapter set, in preference order (live read first, guesses last)."""
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
     cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
-    return (
+    # Antigravity is opt-in, unlike every other adapter here. The others read something
+    # real -- a usage endpoint, a statusline cache, session transcripts, a signed-in
+    # identity -- so running them costs a local file read and yields a fact. Antigravity
+    # publishes nothing at all, so an unconditional adapter only ever manufactures rows
+    # that say "unmeasurable", and rows that say nothing are how a fleet listing stops
+    # being read. It runs when, and only when, the operator's config names its pools.
+    antigravity_accounts = account_ids_for_provider(config, PROVIDER_ANTIGRAVITY)
+    adapters: list[ProviderAdapter] = [
         ClaudeOAuthAdapter(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
         ),
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
         CodexSessionsAdapter(env=env),
         CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
-        AntigravityAdapter(env=env),
-    )
+    ]
+    if antigravity_accounts:
+        adapters.append(AntigravityAdapter(env=env, account_ids=antigravity_accounts))
+    return tuple(adapters)
 
 
 def _rank(snapshot: AccountSnapshot) -> tuple[int, int, float, int]:

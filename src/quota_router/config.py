@@ -720,12 +720,22 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             # Cursor has no per-account config directory. A second Cursor account is
             # declared with its own CURSOR_API_KEY in this table's `env` overlay.
             "cursor": {},
-            # Antigravity has no per-account config directory: the two pools behind the
-            # one CLI are selected by AGY_MODEL, where a value containing "claude" means
-            # the Claude pool and anything else means Gemini. An empty overlay is
-            # therefore the correct, complete description of the Gemini pool.
-            "antigravity_gemini": {},
-            "antigravity_claude": {"env": {"AGY_MODEL": "claude"}},
+            # Antigravity is deliberately NOT here. Its two pools publish no quota at
+            # all -- no API, no cache, no file on disk -- and the `agy` CLI has no
+            # account seam either, so a second Antigravity subscription is invisible to
+            # this router and to itself. Shipping the pools on by default put two rows
+            # in `status` that could never carry a number, and two candidates that
+            # `pick` could only choose blind. An operator who wants them declares them:
+            #
+            #     [accounts.antigravity_gemini]
+            #     provider = "antigravity"
+            #
+            #     [accounts.antigravity_claude]
+            #     provider = "antigravity"
+            #     env = { AGY_MODEL = "claude" }
+            #
+            # AGY_MODEL is the pool selector: a value containing "claude" means the
+            # Claude pool, anything else means Gemini.
         },
         "tiers": {"max_20x": 1.0, "max_5x": 0.25, "pro": 1.0, "unknown": 1.0},
         "providers": {"claude": 1.0, "codex": 0.7, "cursor": 0.5, "antigravity": 0.3},

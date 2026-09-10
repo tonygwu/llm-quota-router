@@ -135,12 +135,13 @@ a `quotapick doctor` that names every account it looked for, where it looked, wh
 found, and the single next action for each one that failed.
 
 **A machine with no accounts gets an unhelpful first answer.** `status` on a clean home
-prints two Antigravity pools and `no candidate can serve this call right now`. It never
-says it looked for Claude accounts and found none, so the output reads as a broken tool
-rather than an unconfigured one. Closing it: report the accounts that were looked for
-and missed, not only the ones that answered. The warning added for *configured* accounts
-does not cover builtin ones, which are still dropped quietly when their directory is
-absent.
+says `no candidate can serve this call right now`. It never says it looked for Claude
+accounts and found none, so the output reads as a broken tool rather than an
+unconfigured one. Closing it: report the accounts that were looked for and missed, not
+only the ones that answered. The warning added for *configured* accounts does not cover
+builtin ones, which are still dropped quietly when their directory is absent. Partly
+narrowed: the two Antigravity pools that used to be the whole of that first answer are
+no longer builtin, so a clean home now shows an empty fleet rather than a fake one.
 
 **Only one Codex account is representable.** `CodexSessionsAdapter` already accepts
 `codex_home` and `account_id`, so the adapter can do more than one; `build_default_adapters`
@@ -148,10 +149,13 @@ constructs exactly one and passes no config. The capability exists and is unreac
 Closing it: give Codex the same treatment Cursor just got — ids and homes derived from
 the operator config, via `account_ids_for_provider`.
 
-**Antigravity's two entries are pools, not accounts.** `account_ids` defaults to a fixed
-pair and nothing reads config, so a second Antigravity *account* cannot be declared. This
-is a genuine design question rather than an oversight: the pair is selected by `AGY_MODEL`
-behind one binary, so a second account needs a second seam identified first.
+**Antigravity's two entries are pools, not accounts.** The pools now come from the
+operator config through `account_ids_for_provider`, and the adapter runs only when the
+config names them, so nothing is invented and the pair is no longer fixed. The design
+question underneath is still open and is not this router's to answer: `agy` selects a
+pool with `AGY_MODEL` behind one binary and offers no login or config-directory seam at
+all, so a second Antigravity *subscription* remains indistinguishable from the first --
+to this router and to `agy` itself. Closing it needs that seam to exist upstream.
 
 **Cursor's tier is not read.** `cursor-agent about --format json` reports
 `subscriptionTier`, and reading it costs a subprocess plus a network round trip (~0.9s

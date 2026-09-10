@@ -28,6 +28,8 @@ from typing import Final
 from .types import (
     REGIME_A,
     REGIME_B,
+    SOURCE_LIVE,
+    AccountSnapshot,
     Decision,
     ScoreBreakdown,
     WindowSlack,
@@ -44,6 +46,9 @@ __all__ = [
     "explain_decision",
     "format_ranked_table",
     "explain_verbose",
+    "format_pace",
+    "format_status_table",
+    "format_unmeasurable",
 ]
 
 #: Window key -> short label. Unknown keys fall through to a readable derivation, so a
@@ -354,3 +359,172 @@ def explain_verbose(
         blocks.append("\n".join(f"! {warning}" for warning in decision.warnings))
 
     return "\n\n".join(block for block in blocks if block)
+
+
+# ======================================================================================
+# The compact status view
+# ======================================================================================
+#
+# `quotapick status` answers one question -- "how much is left where?" -- and it answers
+# it in one screen. The slack identity that the decision layer ranks on is exact and
+# unreadable at a glance, so this view states the same number as pace: a window with
+# positive slack has quota that will expire unless something spends it ("to spare"), and
+# a window with negative slack is burning faster than an even burn to reset ("over
+# pace"). Nothing is dropped -- `status --verbose` still prints the arithmetic.
+
+#: Sort priority for a window column. Anything unlisted sorts after these, then by label,
+#: so a window this table has never seen still lands in a stable place.
+_WINDOW_COLUMN_ORDER: Final[Mapping[str, int]] = {"5h": 0, "7d": 1}
+
+#: Cell for a window the account does not publish at all, distinct from ``n/a``, which
+#: means the window exists and does not constrain the model class being asked about.
+_ABSENT: Final[str] = "-"
+
+
+def format_pace(slack: float) -> str:
+    """One window's slack as pace: ``24% to spare``, ``35% over pace``, ``on pace``.
+
+    ``slack`` is ``remaining - expected demand``, so a positive value is budget that the
+    reset will take back unless it is spent, and a negative value is the amount by which
+    this window is already ahead of an even burn.
+    """
+    rounded = round(slack * 100.0)
+    if rounded == 0:
+        return "on pace"
+    if rounded > 0:
+        return f"{rounded}% to spare"
+    return f"{-rounded}% over pace"
+
+
+def _pace_cell(slack: float, label: str, label_width: int) -> str:
+    """``fable  61% over pace`` -- window, magnitude, direction, columns aligned."""
+    rounded = round(slack * 100.0)
+    if rounded == 0:
+        # Blank where the magnitude would go, so the direction words stay in one column.
+        return f"{label:<{label_width}}      on pace"
+    direction = "to spare" if rounded > 0 else "over pace"
+    return f"{label:<{label_width}} {abs(rounded):>3}% {direction}"
+
+
+def _source_cell(snapshot: AccountSnapshot, now_s: float) -> str:
+    """Where these numbers came from, and how old they are.
+
+    A fresh live read is the boring case and says only ``live``. Everything else names
+    the source and its age, because a cached or assumed reading is exactly the kind of
+    thing that must not be mistaken for a measurement.
+    """
+    if not snapshot.available:
+        return "UNAVAILABLE"
+    age = snapshot.staleness_s(now_s)
+    if snapshot.source == SOURCE_LIVE and (age is None or age < 60.0):
+        return SOURCE_LIVE
+    if age is None:
+        return snapshot.source
+    return f"{snapshot.source} {format_duration(age)}"
+
+
+def _window_columns(
+    rows_by_account: Mapping[str, Mapping[str, WindowSlack]],
+) -> list[str]:
+    """Every window label any account publishes, in a stable, readable order."""
+    labels = {label for rows in rows_by_account.values() for label in rows}
+    return sorted(labels, key=lambda label: (_WINDOW_COLUMN_ORDER.get(label, 2), label))
+
+
+def _aligned_table(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[str]],
+    right: Sequence[bool],
+) -> str:
+    """Fixed-width table with per-column alignment and no separator rule.
+
+    Distinct from :func:`_render_table`, which left-justifies everything and underlines
+    the header. This view has numeric columns, and a rule under a six-row table costs a
+    line for nothing.
+    """
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+    lines: list[str] = []
+    for source in (headers, *rows):
+        cells = [
+            cell.rjust(widths[index]) if right[index] else cell.ljust(widths[index])
+            for index, cell in enumerate(source)
+        ]
+        lines.append("  ".join(cells).rstrip())
+    return "\n".join(lines)
+
+
+def format_status_table(
+    snapshots: Iterable[AccountSnapshot],
+    now_s: float,
+    model_class: str | None = None,
+) -> str:
+    """One line per measurable account: what is left in each window, and its pace.
+
+    An account with no windows at all is not in this table -- there is nothing to put in
+    the cells, and a row of dashes would read as "measured, and empty". Those accounts
+    are named by :func:`format_unmeasurable` instead.
+    """
+    measurable = [snapshot for snapshot in snapshots if snapshot.windows]
+    if not measurable:
+        return ""
+
+    per_account: dict[str, dict[str, WindowSlack]] = {}
+    for snapshot in measurable:
+        per_account[snapshot.id] = {
+            window_label(row.key): row for row in snapshot.slacks(now_s, model_class)
+        }
+    columns = _window_columns(per_account)
+    label_width = max((len(label) for label in columns), default=0)
+
+    rows: list[list[str]] = []
+    for snapshot in measurable:
+        rows_by_label = per_account[snapshot.id]
+        cells = [snapshot.id, snapshot.tier]
+        for label in columns:
+            row = rows_by_label.get(label)
+            if row is None:
+                cells.append(f"{_ABSENT:>3}")
+            elif not row.applicable:
+                cells.append("n/a")
+            else:
+                reset = (
+                    "now"
+                    if row.time_to_reset_s <= 0.0
+                    else format_duration(row.time_to_reset_s)
+                )
+                cells.append(f"{round(row.remaining_fraction * 100.0):>3}% {reset}")
+        binding = next(
+            (row for row in rows_by_label.values() if row.binding and row.applicable),
+            None,
+        )
+        cells.append(
+            ""
+            if binding is None
+            else _pace_cell(binding.slack, window_label(binding.key), label_width)
+        )
+        cells.append(_source_cell(snapshot, now_s))
+        rows.append(cells)
+
+    headers = ["ACCOUNT", "TIER", *columns, "TIGHTEST", "SOURCE"]
+    right = [False, False, *(False for _ in columns), False, False]
+    return _aligned_table(headers, rows, right)
+
+
+def format_unmeasurable(snapshots: Iterable[AccountSnapshot]) -> str:
+    """The accounts that published no windows, named rather than silently omitted.
+
+    Leaving them out entirely would make a provider with no usage API indistinguishable
+    from one that is not configured. Each is listed with the reason its adapter gave.
+    """
+    lines: list[str] = []
+    for snapshot in snapshots:
+        if snapshot.windows:
+            continue
+        reason = snapshot.note or "no usage windows published"
+        lines.append(f"{snapshot.id} ({reason})")
+    if not lines:
+        return ""
+    return "not measurable: " + "\n                ".join(lines)

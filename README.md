@@ -79,12 +79,30 @@ each one differs, and it never pretends otherwise:
 | `claude` | many, one config directory each | **yes**, real windows | vendor usage endpoint, statusline cache |
 | `codex` | one | partial | `$CODEX_HOME/sessions` transcript tails |
 | `cursor` | many, one API key each | **no** | `~/.cursor/cli-config.json`, identity only |
-| `antigravity` | two pools behind one binary | **no** | nothing; failure-learned deadlines only |
+| `antigravity` | two pools behind one binary, **opt-in** | **no** | nothing; failure-learned deadlines only |
 
 "Usage readable: no" is a statement about the vendor, not a gap to be filled by
 estimating. Cursor's CLI has `status` and `about`, and neither reports a quota
 figure; Antigravity exposes nothing at all. Those accounts carry no windows and
 `confidence=0.0`, so they are routable but never scored as if measured.
+`quotapick status` lists them under **not measurable**, with the reason, rather
+than giving them a table row that would read as "measured, and empty".
+
+Antigravity is the one provider that is **not** configured by default. It
+publishes no quota anywhere, and `agy` has no per-account seam either, so a
+second Antigravity subscription is invisible to this router and to `agy` itself.
+Declare the pools if you want them; `AGY_MODEL` is the selector, and a value
+containing `claude` means the Claude pool:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.antigravity_gemini]
+provider = "antigravity"
+
+[accounts.antigravity_claude]
+provider = "antigravity"
+env = { AGY_MODEL = "claude" }
+```
 
 Cursor has no per-account config directory, so a second Cursor account is
 declared with its own key:
@@ -205,12 +223,47 @@ There is no second code path.
 From the command line:
 
 ```sh
-quotapick status                         # every pool at a glance
+quotapick status                         # every pool at a glance, one line each
+quotapick status --verbose               # per-window slack arithmetic, every warning
 quotapick explain --model fable          # why that account won
 quotapick pick --model fable --json      # decision + full ranking as JSON
 quotapick exec --only claude_b -- claude -p "..."   # pick, then run
 quotapick waste                          # what expired unused, per account, in PSE
 ```
+
+### Reading `quotapick status`
+
+```
+quota LEFT + time to reset ("-" = no such window); TIGHTEST = pace vs an even burn
+
+ACCOUNT   TIER     5h         7d         fable      TIGHTEST              SOURCE
+claude    max_20x   70% 2.5h   29% 4.6d    2% 4.6d  fable  64% over pace  live
+claude_b  max_20x   70% 3.0h   91% 6.0d   85% 6.0d  fable   1% over pace  live
+claude_d  max_20x   89% 4.6h   84% 5.4d   81% 5.4d  5h      3% over pace  live
+codex     pro        -         83% 4.7d    -        7d     15% to spare   cache 1.7h
+
+not measurable: cursor (no usage API; unobservable)
+```
+
+Each window cell is **what is left**, then how long until that window rolls over.
+`-` means the account publishes no such window; `n/a` means it publishes one that
+does not constrain the model class you asked about.
+
+**TIGHTEST** is the window with the least room, and it is what throttles the
+account. Its number is *pace*: the same quantity the scoring layer calls
+`slack`, which is `remaining - expected demand`, where expected demand is what a
+perfectly even burn would still consume before the reset.
+
+- **`15% to spare`** — positive slack. 15% of the budget will expire unused
+  unless something spends it. This is what the router hunts for.
+- **`64% over pace`** — negative slack. The window is 64% of a budget ahead of
+  an even burn, so it will run dry well before it resets.
+- **`on pace`** — the two are within a percentage point.
+
+Pace is not "how full" — an account can be 70% empty and still have quota to
+spare if its reset is close, which is exactly the case the router exists to
+catch. `quotapick status --verbose` prints the subtraction for every window, per
+account, plus every warning the history scan produced.
 
 From Python:
 

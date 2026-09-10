@@ -8,7 +8,9 @@ Subcommands
     ``pick``, then spawn that account's own vendor CLI. The child's exit code is passed
     through **unchanged**; only a router-level failure (nothing to spawn) uses 127.
 ``status``
-    What the router currently believes about every account and window.
+    What quota is left on every account, one line each, with the tightest window
+    stated as pace against an even burn. ``--verbose`` restores the per-window slack
+    arithmetic and every note the history scan produced.
 ``explain``
     The same decision as ``pick``, rendered for a human.
 ``calibrate``
@@ -62,6 +64,7 @@ from . import waste as waste_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
+    PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CURSOR,
     PROVIDERS,
@@ -218,6 +221,7 @@ def _configure_adapters(
     """
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
     cursor_cls = getattr(providers, "CursorAdapter", None)
+    antigravity_cls = getattr(providers, "AntigravityAdapter", None)
     from_policy = getattr(providers, "claude_configs_from_policy", None)
     ids_for_provider = getattr(providers, "account_ids_for_provider", None)
 
@@ -226,8 +230,10 @@ def _configure_adapters(
         claude_configs = tuple(from_policy(config, env=env)) or None
 
     cursor_accounts: tuple[str, ...] | None = None
+    antigravity_accounts: tuple[str, ...] | None = None
     if config is not None and callable(ids_for_provider):
         cursor_accounts = ids_for_provider(config, PROVIDER_CURSOR) or None
+        antigravity_accounts = ids_for_provider(config, PROVIDER_ANTIGRAVITY) or None
 
     out: list[Any] = []
 
@@ -236,11 +242,14 @@ def _configure_adapters(
         settings: dict[str, Any] = {"env": env, "runner": run, "configs": claude_configs}
         if live_cls is not None and cls is live_cls and config is not None:
             settings["timeout_s"] = timeout_s
-        # Only the Cursor adapter. The Antigravity adapter also declares ``account_ids``,
-        # and its two entries are pools behind one binary rather than operator accounts,
-        # so handing it this list would invent Antigravity pools that do not exist.
+        # ``account_ids`` means a different population to each adapter that declares it:
+        # operator accounts for Cursor, pools behind one binary for Antigravity. Each
+        # therefore gets the list drawn for its own provider, and handing either the
+        # other's list would invent accounts or pools that do not exist.
         if cursor_cls is not None and cls is cursor_cls:
             settings["account_ids"] = cursor_accounts
+        elif antigravity_cls is not None and cls is antigravity_cls:
+            settings["account_ids"] = antigravity_accounts
 
         wanted = {key: value for key, value in settings.items() if value is not None}
         try:
@@ -1505,7 +1514,19 @@ def _cmd_status(
 ) -> int:
     prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False)
     model_class = prepared.model.model_class
-    prepared.warnings = prepared.warnings + tuple(_record_waste(prepared.config, env))
+
+    # Two populations of warning, and only one of them is about this reading. The waste
+    # scan re-walks every retained history record on every run, so its notes describe
+    # window transitions observed days ago and their count only grows. Printing them
+    # beside a warning about the snapshot just taken buries the second in the first --
+    # on the operator's fleet, seven live warnings under thirty-four history notes. The
+    # default view prints every live warning and states how many history notes exist;
+    # --verbose prints both in full, and --json still carries both, in that order.
+    history_notes = tuple(dict.fromkeys(_record_waste(prepared.config, env)))
+    live_warnings = tuple(
+        note for note in dict.fromkeys(prepared.warnings) if note not in set(history_notes)
+    )
+    prepared.warnings = live_warnings + history_notes
 
     if getattr(args, "json", False):
         payload = {
@@ -1532,6 +1553,44 @@ def _cmd_status(
 
     if not prepared.snapshots:
         stdout.write("no accounts visible\n")
+    elif getattr(args, "verbose", False):
+        _write_status_verbose(prepared, now_s, model_class, stdout)
+    else:
+        _write_status_compact(prepared, now_s, model_class, stdout)
+
+    _flush(stdout)
+    for warning in live_warnings:
+        stderr.write(f"! {warning}\n")
+    if getattr(args, "verbose", False):
+        for note in history_notes:
+            stderr.write(f"! {note}\n")
+    elif history_notes:
+        stderr.write(
+            f"! {len(history_notes)} note(s) about past window transitions in retained "
+            f"history; {_PROG} status --verbose prints them\n"
+        )
+    return EXIT_OK
+
+
+def _flush(stream: TextIO) -> None:
+    """Flush a stream that has a ``flush``; a test's StringIO does, a pipe may not."""
+    flush = getattr(stream, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def _write_status_verbose(
+    prepared: Prepared,
+    now_s: float,
+    model_class: str | None,
+    stdout: TextIO,
+) -> None:
+    """One block per account with the full slack arithmetic -- the pre-table rendering.
+
+    Kept verbatim because it is the view that shows the quantity the router actually
+    ranks on. The compact view restates that quantity as pace, which is easier to read
+    and loses the decomposition; this is where the decomposition still lives.
+    """
     for snapshot in prepared.snapshots:
         age = snapshot.staleness_s(now_s)
         stdout.write(
@@ -1556,9 +1615,25 @@ def _cmd_status(
         if snapshot.note:
             stdout.write(f"    note: {snapshot.note}\n")
 
-    for warning in dict.fromkeys(prepared.warnings):
-        stderr.write(f"! {warning}\n")
-    return EXIT_OK
+
+def _write_status_compact(
+    prepared: Prepared,
+    now_s: float,
+    model_class: str | None,
+    stdout: TextIO,
+) -> None:
+    """The default view: one line per measurable account, one screen for the fleet."""
+    scope = "" if model_class is None else f" (model class {model_class})"
+    stdout.write(
+        f'quota LEFT + time to reset ("-" = no such window); '
+        f"TIGHTEST = pace vs an even burn{scope}\n\n"
+    )
+    table = explain_mod.format_status_table(prepared.snapshots, now_s, model_class)
+    if table:
+        stdout.write(table + "\n")
+    unmeasurable = explain_mod.format_unmeasurable(prepared.snapshots)
+    if unmeasurable:
+        stdout.write(("\n" if table else "") + unmeasurable + "\n")
 
 
 def _cmd_exec(
@@ -2024,8 +2099,19 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="-- COMMAND ...",
         help="command to run (defaults to the winning provider's CLI)",
     )
-    subparsers.add_parser(
-        "status", parents=[common], help="show every account's windows and slack"
+    status_parser = subparsers.add_parser(
+        "status",
+        parents=[common],
+        help="show what quota is left on every account, and how it is pacing",
+    )
+    status_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "one block per account with the full slack arithmetic, plus every note the "
+            "history scan produced"
+        ),
     )
     subparsers.add_parser(
         "explain", parents=[common], help="explain the decision in prose"
