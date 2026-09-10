@@ -93,6 +93,22 @@ the second reason the install belongs to repo-prod alone.
 `quotapick` resolves on your PATH. Run it from a working checkout only if you
 intend to change the live schedule.
 
+The receipt and the symbol grep above both check the *file on disk*. Neither
+shows that a poller has actually run the new code and survived it. The poller's
+own log does, because it appends one `status --json` record every 120s:
+
+```sh
+grep -o '"generated_at": "[^"]*"' \
+  ~/Library/Logs/llm-quota-router/usage-poll.log | tail -3
+```
+
+Take the two records either side of your install and compare a field your change
+touches. On 2026-09-10, dropping Antigravity from the builtin accounts showed up
+as nine account ids at `08:50:32Z` and seven at `08:52:39Z` -- proof the job
+picked up the new code and exited cleanly, from the data rather than from an
+mtime. `launchctl list | grep llm-quota-router` gives the last exit status, and
+the run before yours is the one it may still be reporting.
+
 ## Git protocol between checkouts
 
 Other agents work the other checkouts at the same time, and git is the only
