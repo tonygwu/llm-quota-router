@@ -62,6 +62,8 @@ __all__ = [
     "ExecConfig",
     "Config",
     "BANNED_EXEC_ENV",
+    "DEFAULT_MACOS_USER_WRAPPER",
+    "MACOS_USER_UNSET_ENV",
     "PROVIDER_CONFIG_DIR_ENV",
     "PROVIDER_COMMANDS",
     "builtin_config",
@@ -87,6 +89,37 @@ class ConfigError(ValueError):
 #: operator's OAuth session", which Anthropic blocked on 2026-04-04 and which this
 #: package does not do. Config that tries to set them is rejected, loudly.
 BANNED_EXEC_ENV: Final[tuple[str, ...]] = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN")
+
+#: Root-owned wrapper that runs a binary as another macOS user, INSIDE that user's
+#: login session. Overridable per account (``launch_wrapper``) for a machine that
+#: installs it elsewhere.
+#:
+#: It exists because ``agy`` keeps its credential in ONE Keychain item per macOS
+#: USER (service "gemini", account "antigravity"). Two HOME directories under one
+#: user therefore serve the SAME Google account: measured 2026-09-10, where 567
+#: grades believed to span two accounts had all come from one. A second account is
+#: a second macOS user, and nothing else on one machine.
+#:
+#: ``sudo -u <user>`` alone is NOT enough, and this is the part every consumer
+#: reimplements wrongly. Measured 2026-09-11: with a correct sudoers rule and a
+#: readable binary, the call still failed with "error getting token source: You are
+#: not logged into Antigravity", because a process started from another user's
+#: terminal sits in the WRONG security session and cannot read the target user's
+#: Keychain. ``launchctl asuser <uid>`` is what fixes it, and the wrapper is where
+#: that lives.
+DEFAULT_MACOS_USER_WRAPPER: Final[str] = "/usr/local/libexec/agy-as-user"
+
+#: Variables a ``macos_user`` account must NOT inherit from the calling process.
+#:
+#: ``HOME`` is the only thing that selects an Antigravity profile directory, so
+#: leaving this process's HOME in place points the spawned binary at the CALLING
+#: user's profile while it runs as somebody else. The wrapper sets HOME for the
+#: target user (``sudo -H``), and an inherited value would override that.
+#:
+#: This is a separate concept from :meth:`AccountConfig.exec_env`, which can only
+#: SET variables. Unsetting one cannot be expressed as an overlay, which is why it
+#: travels as its own field all the way out to the wire.
+MACOS_USER_UNSET_ENV: Final[tuple[str, ...]] = ("HOME",)
 
 #: Provider -> the environment variable that points its CLI at an account's own config.
 #: This is the entire execution mechanism: no proxying, no token juggling, just "run the
@@ -272,6 +305,14 @@ class AccountConfig:
             (``multiplier / calls_per_window``); ``quotapick calibrate`` estimates it.
         env: Extra environment overlaid on the spawned CLI (for example
             ``AGY_MODEL = "claude"`` to select the Antigravity Claude pool).
+        macos_user: The macOS user whose login Keychain holds this account's
+            credential. Antigravity only. Set it and the account is no longer reached
+            by an environment variable at all: it is reached by running the binary as
+            that user, through :data:`DEFAULT_MACOS_USER_WRAPPER`. Leave it unset for
+            the account served by the calling user, which is the ordinary case.
+            See :attr:`launch_argv_prefix` for why this cannot be an env overlay.
+        launch_wrapper: Overrides :data:`DEFAULT_MACOS_USER_WRAPPER` for this account.
+            Only meaningful alongside :attr:`macos_user`.
         env_var: Overrides the config-dir environment variable name for this account.
         command: Overrides the binary ``quotapick exec`` spawns for this account.
         weekly_reset: When this account's weekly window rolls over, as a wall time in
@@ -292,6 +333,8 @@ class AccountConfig:
     weekly_to_session: float | None = None
     calls_per_window: float | None = None
     env: Mapping[str, str] = field(default_factory=dict)
+    macos_user: str | None = None
+    launch_wrapper: str | None = None
     env_var: str | None = None
     command: str | None = None
     weekly_reset: WeeklyReset | None = None
@@ -312,6 +355,37 @@ class AccountConfig:
     def exec_command(self) -> str:
         """Binary to spawn for this account."""
         return self.command or PROVIDER_COMMANDS.get(self.provider, self.provider or self.id)
+
+    @property
+    def launch_argv_prefix(self) -> tuple[str, ...]:
+        """Argv that must come BEFORE the binary to reach this account.
+
+        Empty for every account reached by an environment variable, which is all of
+        them except an Antigravity account declaring :attr:`macos_user`.
+
+        The account is selected by WHO RUNS the binary, so there is no variable to
+        set and no config directory to point at. ``sudo -n`` means a missing sudoers
+        rule fails at once rather than waiting on a password prompt no headless
+        caller can answer.
+
+        The binary is passed to the wrapper as an argument and is NOT trusted by it:
+        the wrapper refuses any path but its own allowlisted one, so a consumer whose
+        binary path has drifted fails loudly instead of running something else.
+        """
+        if not self.macos_user:
+            return ()
+        wrapper = self.launch_wrapper or DEFAULT_MACOS_USER_WRAPPER
+        return ("sudo", "-n", wrapper, self.macos_user)
+
+    @property
+    def launch_unset_env(self) -> tuple[str, ...]:
+        """Variables the caller must DELETE from the child environment.
+
+        See :data:`MACOS_USER_UNSET_ENV`. An overlay cannot express a deletion, so a
+        consumer that merges :meth:`exec_env` and ignores this runs the binary as the
+        right user against the WRONG user's profile directory.
+        """
+        return MACOS_USER_UNSET_ENV if self.macos_user else ()
 
     def exec_env(self) -> dict[str, str]:
         """The environment overlay for this account.
@@ -359,6 +433,7 @@ class AccountConfig:
             "enabled": self.enabled,
             "calls_per_window": self.calls_per_window,
             "env": dict(self.env),
+            "macos_user": self.macos_user,
             "weekly_reset": (
                 self.weekly_reset.to_text() if self.weekly_reset is not None else None
             ),
@@ -904,6 +979,16 @@ def _build_accounts(
                 else None
             ),
             env=extra_env,
+            macos_user=(
+                _as_str(body["macos_user"], section, "macos_user") or None
+                if body.get("macos_user") is not None
+                else None
+            ),
+            launch_wrapper=(
+                _as_str(body["launch_wrapper"], section, "launch_wrapper") or None
+                if body.get("launch_wrapper") is not None
+                else None
+            ),
             env_var=(
                 _as_str(body["env_var"], section, "env_var")
                 if body.get("env_var") is not None
@@ -927,6 +1012,28 @@ def _build_accounts(
         # the account is accepted by every layer above and then quietly vanishes from
         # `status`, which reads as a broken router rather than a rejected account.
         resolved_provider = accounts[str(account_id)].provider
+
+        # `macos_user` is not a general execution knob. The wrapper behind it
+        # allowlists ONE binary (`agy`), and the reason the field exists at all is
+        # Antigravity's one-Keychain-item-per-macOS-user credential. A claude or codex
+        # account is selected by its config directory, so a macOS user there is a
+        # mistake with no valid reading: it would build an argv the wrapper refuses,
+        # and it would do so on every call rather than once at load.
+        if accounts[str(account_id)].macos_user and resolved_provider != PROVIDER_ANTIGRAVITY:
+            raise ConfigError(
+                f"[{section}] sets macos_user but its provider is "
+                f"{resolved_provider!r}. Running as another macOS user is how an "
+                f"{PROVIDER_ANTIGRAVITY} account is selected, because `agy` keeps one "
+                f"credential per macOS user; a {resolved_provider!r} account is "
+                f"selected by its own config_dir instead. Remove macos_user, or set "
+                f"provider = \"{PROVIDER_ANTIGRAVITY}\"."
+            )
+        if accounts[str(account_id)].launch_wrapper and not accounts[str(account_id)].macos_user:
+            warnings.append(
+                f"[{section}] sets launch_wrapper without macos_user; the wrapper is "
+                f"only used to run as another macOS user, so it will be ignored"
+            )
+
         if resolved_provider not in PROVIDERS:
             named = (
                 f"provider {resolved_provider!r}"

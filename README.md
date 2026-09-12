@@ -89,10 +89,8 @@ figure; Antigravity exposes nothing at all. Those accounts carry no windows and
 than giving them a table row that would read as "measured, and empty".
 
 Antigravity is the one provider that is **not** configured by default. It
-publishes no quota anywhere, and `agy` has no per-account seam either, so a
-second Antigravity subscription is invisible to this router and to `agy` itself.
-Declare the pools if you want them; `AGY_MODEL` is the selector, and a value
-containing `claude` means the Claude pool:
+publishes no quota anywhere, so declare the pools if you want them; `AGY_MODEL`
+is the pool selector, and a value containing `claude` means the Claude pool:
 
 ```toml
 # ~/.config/quota-router/config.toml
@@ -103,6 +101,75 @@ provider = "antigravity"
 provider = "antigravity"
 env = { AGY_MODEL = "claude" }
 ```
+
+### A second Antigravity account is a second macOS user
+
+`agy` keeps its credential in **one Keychain item per macOS user** (service
+`gemini`, account `antigravity`). Every `HOME` under one user therefore serves
+the **same** Google account, and a refresh under one rewrites the item the other
+reads. Measured 2026-09-10: 567 graded results believed to span two accounts had
+all come from one, and the rotation could not see it. A second `HOME` adds no
+quota while taking half the calls.
+
+A second account is a second **macOS user**. Name it, and the account is no
+longer reached by an environment variable at all — it is reached by running the
+binary as that user:
+
+```toml
+[accounts.antigravity_gemini_b]
+provider   = "antigravity"
+macos_user = "tonyagents"
+identity_email = "second@example.com"   # what you can assert the call served
+
+[accounts.antigravity_claude_b]
+provider   = "antigravity"
+macos_user = "tonyagents"
+env = { AGY_MODEL = "claude" }
+```
+
+`sudo -u <user>` alone does **not** work, and this is the part every consumer
+reimplements wrongly. A process started from another user's terminal sits in the
+wrong security session and cannot read the target user's Keychain; `agy` then
+reports `You are not logged into Antigravity` and falls through to an
+interactive sign-in that never completes. `launchctl asuser <uid>` is what fixes
+it. That lives in a small root-owned wrapper at
+`/usr/local/libexec/agy-as-user` (override per account with `launch_wrapper`),
+installed once with a `NOPASSWD` sudoers rule. The wrapper allowlists the one
+binary it will run, so the rule cannot be turned into "run anything as that
+user". The target user must be logged in, so its login Keychain is unlocked.
+
+### Ask for the recipe; do not rebuild it
+
+```console
+$ quotapick launch-plan antigravity_claude_b --json
+{
+  "account": "antigravity_claude_b",
+  "command": "agy",
+  "env": { "AGY_MODEL": "claude" },
+  "argv_prefix": ["sudo", "-n", "/usr/local/libexec/agy-as-user", "tonyagents"],
+  "unset_env": ["HOME"],
+  "identity_email": "second@example.com"
+}
+```
+
+`launch-plan` reads config and nothing else — no Keychain, no network, no usage
+oracle — so it still answers when every oracle is down, and it books no
+reservation. Use it rather than `pick --only <id>`: both Antigravity pools carry
+`confidence=0.0`, so `pick` has nothing to rank them on and declines them.
+
+The recipe has **three** parts, and the same three now appear in `exec` on every
+`pick --json` payload. A consumer that applies only `env` is correct for every
+Claude and Codex account and silently wrong here: an account selected by a macOS
+user has an **empty** `env` and is reached entirely through `argv_prefix`.
+`unset_env` is a deletion, which an overlay cannot express — an inherited `HOME`
+points `agy` at the calling user's profile directory while it runs as somebody
+else. Both mistakes return a perfectly good answer from the wrong account.
+
+Two macOS users signed into one Google account look exactly like two accounts
+from here, so `identity_email` travels with the plan: read the served identity
+out of that call's own log (`agy --log-file <path>`) and assert it. Never infer
+it from the newest file in a shared log directory — mtime records when a file
+was touched, not what is in it, and that named the wrong account once already.
 
 Cursor has no per-account config directory, so a second Cursor account is
 declared with its own key:
@@ -228,6 +295,7 @@ quotapick status --verbose               # per-window slack arithmetic, every wa
 quotapick explain --model fable          # why that account won
 quotapick pick --model fable --json      # decision + full ranking as JSON
 quotapick exec --only claude_b -- claude -p "..."   # pick, then run
+quotapick launch-plan antigravity_claude_b --json  # how to reach ONE named account
 quotapick waste                          # what expired unused, per account, in PSE
 ```
 
@@ -274,10 +342,12 @@ from quota_router import select_account
 decision = select_account(model="fable", only=["claude", "claude_b", "claude_c"])
 
 env = {**os.environ, **decision.exec_env}
-subprocess.run(["claude", "-p", prompt], env=env)
+for key in decision.exec_unset_env:
+    env.pop(key, None)
+subprocess.run([*decision.exec_argv_prefix, "claude", "-p", prompt], env=env)
 ```
 
-Five things that will bite you if missed:
+Six things that will bite you if missed:
 
 - **The winner is not a promise it can serve you — check `fits`.** The objective
   is quota *about to expire*, so an account whose 5-hour window is fully spent
@@ -290,6 +360,14 @@ Five things that will bite you if missed:
   `~/.claude.json`, outside `~/.claude`, so setting the variable makes the CLI
   scaffold a brand-new empty account. Merge the overlay; never require it to be
   non-empty.
+- **The recipe has three parts, not one.** `exec_env` to merge,
+  `exec_argv_prefix` to put before the binary, `exec_unset_env` to delete. The
+  last two are empty for every account reached by an environment variable, and
+  applying only the first is silently wrong for an Antigravity account declaring
+  `macos_user`: that account is selected by *who runs* the binary, so dropping
+  the prefix runs your own account instead, and leaving an inherited `HOME` in
+  place points the binary at the wrong profile directory. Both failures answer
+  normally. See "A second Antigravity account is a second macOS user" above.
 - **Mapping provider to binary is your job.** `exec_env` is an environment
   overlay, not a command. The router says *which account*; it does not know
   whether you meant `claude -p` or `codex exec`, and it will not translate one
@@ -310,7 +388,15 @@ with `warnings`. Pass `record=False` when you are only inspecting, so a decision
 you never act on does not book anyone's quota.
 
 From any other language, shell out to `quotapick pick --json` and honor the
-`exec.env` block — that is the whole integration surface.
+whole `exec` block — `env` to merge, `argv_prefix` to put before the binary, and
+`unset_env` to delete. All three are always present, and two of them are empty
+for every account reached by an environment variable. Honoring only `env` is the
+one integration mistake that produces a good answer from the wrong account; see
+"A second Antigravity account is a second macOS user" above.
+
+When you already know which account you want, `quotapick launch-plan <id> --json`
+returns the same three fields from config alone, with no routing, no measurement
+and no reservation.
 
 `pick` emits valid JSON and exits 0 on every path except a flag/config error,
 including when every account is exhausted (you get the earliest-reset candidate

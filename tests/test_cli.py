@@ -191,7 +191,10 @@ def test_pick_payload_matches_the_golden_schema(env):
             "available_at",
         "sticky",
     }
-    assert set(payload["exec"]) == {"env"}
+    # Three fields, always present, two of them usually empty. They are emitted
+    # unconditionally so a consumer cannot write one code path for the ordinary
+    # account and a second, untested one for an account reached by a macOS user.
+    assert set(payload["exec"]) == {"env", "argv_prefix", "unset_env"}
     assert set(payload["ranked"][0]) == {
         "account",
         "score",
@@ -1822,3 +1825,232 @@ def test_antigravity_is_opt_in_and_absent_from_the_builtin_fleet(env, tmp_path):
         type(a).__name__ for a in providers.build_default_adapters(config=_Policy())
     ]
     assert "AntigravityAdapter" in declared, declared
+
+
+# ======================================================================================
+# Reaching an account that is selected by a macOS user (Antigravity)
+# ======================================================================================
+#
+# `agy` keeps ONE credential per macOS USER (Keychain service "gemini", account
+# "antigravity"), so two HOME directories under one user are one account, and a second
+# account is a second macOS user. Selecting it is therefore not an environment
+# variable at all: it is running the binary as that user, through a root-owned wrapper
+# that puts the call inside that user's login session. `sudo -u` alone lands in the
+# wrong security session and cannot read the target user's Keychain.
+#
+# What these tests defend is the SILENT failure. Every wrong answer here is a real,
+# well-formed response from the wrong account, which is how 567 grades believed to
+# span two accounts turned out to have come from one.
+
+
+def _agy_config(tmp_path: Path, *, wrapper: str | None = None) -> str:
+    """A config with both an ordinary Antigravity account and a macOS-user one."""
+    extra = f'launch_wrapper = "{wrapper}"\n' if wrapper else ""
+    path = tmp_path / "agy.toml"
+    path.write_text(
+        "[accounts.antigravity_gemini]\n"
+        'provider = "antigravity"\n'
+        "\n"
+        "[accounts.antigravity_claude_b]\n"
+        'provider = "antigravity"\n'
+        'macos_user = "tonyagents"\n'
+        'identity_email = "second@example.com"\n'
+        'env = { AGY_MODEL = "claude" }\n' + extra,
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_launch_plan_gives_the_whole_recipe_for_a_macos_user_account(env, tmp_path):
+    code, out, _ = run(
+        ["launch-plan", "antigravity_claude_b", "--config", _agy_config(tmp_path), "--json"],
+        env,
+    )
+    assert code == cli.EXIT_OK
+    plan = json.loads(out)
+
+    # The prefix IS the selection mechanism. `sudo -n` so a missing sudoers rule fails
+    # at once instead of blocking on a password prompt no headless caller can answer.
+    assert plan["argv_prefix"] == [
+        "sudo",
+        "-n",
+        "/usr/local/libexec/agy-as-user",
+        "tonyagents",
+    ]
+    # A deletion, which an environment overlay cannot express -- hence its own field.
+    assert plan["unset_env"] == ["HOME"]
+    assert plan["env"] == {"AGY_MODEL": "claude"}
+    assert plan["command"] == "agy"
+    # Carried so a consumer can assert the identity the call actually served against
+    # the identity the operator declared. Two macOS users signed into ONE Google
+    # account look exactly like two accounts from here.
+    assert plan["identity_email"] == "second@example.com"
+    assert plan["contract_version"] == QUOTA_ROUTER_CONTRACT_VERSION
+
+
+def test_launch_plan_is_empty_but_present_for_an_ordinary_account(env, tmp_path):
+    """The fields are always emitted, so one code path serves both kinds of account.
+
+    A consumer that had to branch on presence would write a second, untested path for
+    the unusual account -- and the unusual one is the one that must not be wrong.
+    """
+    plan = json.loads(
+        run(
+            ["launch-plan", "antigravity_gemini", "--config", _agy_config(tmp_path), "--json"],
+            env,
+        )[1]
+    )
+    assert plan["argv_prefix"] == []
+    assert plan["unset_env"] == []
+    assert plan["env"] == {}
+
+
+def test_launch_plan_answers_with_no_measurement_at_all(env, tmp_path):
+    """It reads config and nothing else.
+
+    Both Antigravity pools publish no quota anywhere -- no API, no cache, no file --
+    so `pick` cannot rank them and declines them. A consumer that already knows which
+    account it wants must still be able to learn how to spawn it, including on a
+    machine where every oracle is down.
+    """
+    deps = cli.Deps(
+        load_snapshots=lambda **kw: (_ for _ in ()).throw(AssertionError("measured!"))
+    )
+    code, out, _ = run(
+        ["launch-plan", "antigravity_claude_b", "--config", _agy_config(tmp_path), "--json"],
+        env,
+        deps=deps,
+    )
+    assert code == cli.EXIT_OK
+    assert json.loads(out)["argv_prefix"][0] == "sudo"
+
+
+def test_launch_plan_refuses_an_account_that_is_not_configured(env, tmp_path):
+    code, out, err = run(
+        ["launch-plan", "antigravity_nope", "--config", _agy_config(tmp_path)], env
+    )
+    assert code == cli.EXIT_ROUTER_FAILURE
+    assert "antigravity_nope" in err
+    # Names what IS configured; a bare "not found" sends the reader to the wrong file.
+    assert "antigravity_claude_b" in err
+
+
+def test_launch_plan_honours_a_custom_wrapper_path(env, tmp_path):
+    plan = json.loads(
+        run(
+            [
+                "launch-plan",
+                "antigravity_claude_b",
+                "--config",
+                _agy_config(tmp_path, wrapper="/opt/bin/agy-as-user"),
+                "--json",
+            ],
+            env,
+        )[1]
+    )
+    assert plan["argv_prefix"] == ["sudo", "-n", "/opt/bin/agy-as-user", "tonyagents"]
+
+
+def _agy_snapshots() -> tuple[AccountSnapshot, ...]:
+    """Measurements for both Antigravity accounts.
+
+    Synthetic on purpose. On a real machine neither pool publishes usage anywhere, so
+    routing declines them both and `exec` never reaches the spawn -- which is exactly
+    why `launch-plan` exists. These tests are about what the spawn DOES once it is
+    reached, so they hand routing something to choose.
+    """
+    return (
+        account("antigravity_gemini", window("five_hour", 0.10, length_s=FIVE_HOURS, resets_in_s=3_600)),
+        account("antigravity_claude_b", window("five_hour", 0.10, length_s=FIVE_HOURS, resets_in_s=3_600)),
+    )
+
+
+def test_exec_wraps_the_binary_and_drops_the_inherited_home(env, tmp_path):
+    """The end that actually spawns: prefix applied, HOME deleted.
+
+    An inherited HOME is the subtle half. The call would run as the right user and
+    read the CALLING user's profile directory, which fails in a way that still
+    produces an answer.
+    """
+    runner = Runner()
+    env = {**env, "HOME": "/Users/tonygwu"}
+    code, _, _ = run(
+        [
+            "exec",
+            "--only",
+            "antigravity_claude_b",
+            "--config",
+            _agy_config(tmp_path),
+            "--",
+            "agy",
+            "-p",
+            "hi",
+        ],
+        env,
+        deps=cli.Deps(load_snapshots=lambda **kw: (list(_agy_snapshots()), []), run=runner),
+    )
+    assert code == cli.EXIT_OK
+    argv, kwargs = runner.calls[0]
+    assert argv == [
+        "sudo",
+        "-n",
+        "/usr/local/libexec/agy-as-user",
+        "tonyagents",
+        "agy",
+        "-p",
+        "hi",
+    ]
+    assert "HOME" not in kwargs["env"]
+    assert kwargs["env"]["AGY_MODEL"] == "claude"
+
+
+def test_exec_leaves_an_ordinary_account_completely_unwrapped(env, tmp_path):
+    """No macos_user means no prefix and no deletion -- byte-identical to before."""
+    runner = Runner()
+    env = {**env, "HOME": "/Users/tonygwu"}
+    run(
+        [
+            "exec",
+            "--only",
+            "antigravity_gemini",
+            "--config",
+            _agy_config(tmp_path),
+            "--",
+            "agy",
+            "-p",
+            "hi",
+        ],
+        env,
+        deps=cli.Deps(load_snapshots=lambda **kw: (list(_agy_snapshots()), []), run=runner),
+    )
+    argv, kwargs = runner.calls[0]
+    assert argv == ["agy", "-p", "hi"]
+    assert kwargs["env"]["HOME"] == "/Users/tonygwu"
+
+
+def test_a_macos_user_on_a_non_antigravity_account_is_rejected_at_load(env, tmp_path):
+    """A claude account is selected by its config_dir, so a macOS user there is a
+    mistake with no valid reading. Caught once at load, not on every call."""
+    path = tmp_path / "bad.toml"
+    path.write_text(
+        '[accounts.claude_b]\nconfig_dir = "~/.claude-b"\nmacos_user = "tonyagents"\n',
+        encoding="utf-8",
+    )
+    code, _, err = run(["pick", "--config", str(path)], env)
+    assert code != cli.EXIT_OK
+    assert "macos_user" in err and "config_dir" in err
+
+
+def test_launch_plan_human_form_is_a_line_you_can_paste(env, tmp_path):
+    """The default (non-JSON) output is a copy-pasteable command.
+
+    `-u HOME` reads as env(1)'s own unset flag, so the line stays literally runnable
+    as `env -u HOME AGY_MODEL=claude sudo -n ... agy` rather than merely descriptive.
+    """
+    code, out, _ = run(
+        ["launch-plan", "antigravity_claude_b", "--config", _agy_config(tmp_path)], env
+    )
+    assert code == cli.EXIT_OK
+    assert out.strip() == (
+        "-u HOME AGY_MODEL=claude sudo -n /usr/local/libexec/agy-as-user tonyagents agy"
+    )

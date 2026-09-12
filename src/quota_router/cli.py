@@ -1273,25 +1273,38 @@ def _decision_for_render(prepared: Prepared) -> Decision:
     )
 
 
-def _exec_env(prepared: Prepared) -> dict[str, str]:
-    """The environment overlay for the winner.
+def _launch_plan(account: Any) -> dict[str, Any]:
+    """The full launch recipe for ONE account, as plain JSON types.
 
-    Never contains a proxy variable: this is a config-directory pointer, which is the
-    whole execution mechanism (spawn the vendor's own CLI, authenticated as that account).
+    Three fields, and a consumer that reads only the first is the bug this exists to
+    stop. ``env`` is an overlay to merge. ``argv_prefix`` goes BEFORE the binary and
+    is how an account selected by a macOS user is reached at all. ``unset_env`` is a
+    deletion, which an overlay cannot express, so it travels separately or not at all.
+
+    Emitted even when it is empty, which is the common case. A consumer that must
+    branch on presence writes a different code path for the ordinary account and the
+    unusual one, and only the ordinary one gets exercised.
     """
-    chosen = prepared.decision.chosen
-    if not chosen:
-        return {}
-    account = prepared.config.account(chosen)
     if account is None:
-        return {}
-    overlay = account.exec_env()
-    return {
+        return {"env": {}, "argv_prefix": [], "unset_env": []}
+    overlay = {
         key: value
-        for key, value in overlay.items()
+        for key, value in account.exec_env().items()
         if key.strip().upper() not in BANNED_EXEC_ENV
     }
+    return {
+        "env": overlay,
+        "argv_prefix": list(account.launch_argv_prefix),
+        "unset_env": list(account.launch_unset_env),
+    }
 
+
+def _exec_block(prepared: Prepared) -> dict[str, Any]:
+    """The ``exec`` object in the wire payload: the winner's launch recipe."""
+    chosen = prepared.decision.chosen
+    if not chosen:
+        return _launch_plan(None)
+    return _launch_plan(prepared.config.account(chosen))
 
 
 def _meets_policy(prepared: Prepared) -> bool:
@@ -1358,7 +1371,7 @@ def _pick_payload(prepared: Prepared) -> dict[str, Any]:
             ),
             "sticky": decision.sticky_applied,
         },
-        "exec": {"env": _exec_env(prepared)},
+        "exec": _exec_block(prepared),
         "ranked": [
             _ranked_entry(row, snapshots, prepared.now_s, prepared.model.model_class)
             for row in decision.ranked
@@ -1393,7 +1406,7 @@ def _degraded_payload(now_s: float, message: str) -> dict[str, Any]:
             "fits": False,
             "sticky": False,
         },
-        "exec": {"env": {}},
+        "exec": {"env": {}, "argv_prefix": [], "unset_env": []},
         "ranked": [],
         "excluded": [],
         "degraded": [{"account": None, "reason": message}],
@@ -1680,12 +1693,23 @@ def _cmd_exec(
     else:
         argv = forwarded
 
+    # An account selected by a macOS user is reached by WHO runs the binary, so the
+    # prefix wraps whatever argv we just built -- including a caller-supplied command.
+    # The wrapper allowlists the binary it will run, so a forwarded command it does
+    # not recognize is refused there rather than run as the wrong user.
+    plan = _launch_plan(account)
+    argv = [*plan["argv_prefix"], *argv]
+
     child_env = {
         key: value
         for key, value in env.items()
         if key.strip().upper() not in BANNED_EXEC_ENV
     }
-    child_env.update(_exec_env(prepared))
+    child_env.update(plan["env"])
+    # Deletions come last: an inherited HOME would otherwise point the binary at the
+    # CALLING user's profile directory while it runs as somebody else.
+    for key in plan["unset_env"]:
+        child_env.pop(key, None)
 
     if getattr(args, "explain", False):
         stderr.write(
@@ -1700,13 +1724,17 @@ def _cmd_exec(
             "contract_version": QUOTA_ROUTER_CONTRACT_VERSION,
             "account": chosen,
             "argv": argv,
-            "env": _exec_env(prepared),
+            "env": plan["env"],
+            "unset_env": plan["unset_env"],
             "generated_at": _iso(now_s),
         }
         if getattr(args, "json", False):
             _dump_json(payload, stdout)
         else:
-            overlay = " ".join(f"{k}={v}" for k, v in payload["env"].items())
+            overlay = " ".join(
+                [f"-u {k}" for k in payload["unset_env"]]
+                + [f"{k}={v}" for k, v in payload["env"].items()]
+            )
             stdout.write(f"{overlay} {' '.join(argv)}\n".lstrip())
         return EXIT_OK
 
@@ -2142,6 +2170,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "(local only: Keychain + process table, no network)"
         ),
     )
+    launch_plan_parser = subparsers.add_parser(
+        "launch-plan",
+        parents=[common],
+        help=(
+            "print how to launch ONE named account (argv prefix, env overlay, env to "
+            "unset); config only, no routing and no measurement"
+        ),
+    )
+    launch_plan_parser.add_argument(
+        "account",
+        metavar="ACCOUNT",
+        help="account id to describe (for example antigravity_gemini_b)",
+    )
     waste_parser = subparsers.add_parser(
         "waste",
         parents=[common],
@@ -2229,6 +2270,68 @@ def _cmd_forensics(
     return EXIT_OK
 
 
+def _cmd_launch_plan(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """How to launch ONE NAMED account. No routing, no measurement, no reservation.
+
+    This is the command a consumer calls when it already knows which account it
+    wants and only needs to be told how to reach it -- which is the whole of the
+    Antigravity case, because both Antigravity pools report confidence 0.0 and there
+    is no headroom to route on. Asking `pick --only <id>` instead would book a
+    reservation and could still answer with a different account, or none.
+
+    It reads the config and nothing else: no Keychain, no network, no history. So it
+    stays answerable on a machine where every oracle is down, which is precisely when
+    a consumer most needs to know how to spawn something.
+    """
+    try:
+        config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    except ConfigError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_ROUTER_FAILURE
+
+    account_id = getattr(args, "account", None)
+    account = config.account(account_id) if account_id else None
+    if account is None:
+        known = ", ".join(sorted(config.accounts)) or "(none configured)"
+        stderr.write(
+            f"{_PROG}: no account {account_id!r} in this config. Configured: {known}\n"
+        )
+        return EXIT_ROUTER_FAILURE
+
+    plan = _launch_plan(account)
+    payload = {
+        "contract_version": QUOTA_ROUTER_CONTRACT_VERSION,
+        "account": account.id,
+        "provider": account.provider,
+        # The account this SHOULD be, so a consumer can assert the identity the call
+        # actually served against the identity the operator declared. Two macOS users
+        # signed into one Google account look exactly like two accounts from here.
+        "identity_email": account.identity_email,
+        "enabled": account.enabled,
+        "command": account.exec_command,
+        **plan,
+        "generated_at": _iso(now_s),
+    }
+    if getattr(args, "json", False):
+        _dump_json(payload, stdout)
+    else:
+        overlay = " ".join(
+            [f"-u {k}" for k in plan["unset_env"]]
+            + [f"{k}={v}" for k, v in plan["env"].items()]
+        )
+        argv = " ".join([*plan["argv_prefix"], account.exec_command])
+        stdout.write(f"{overlay} {argv}\n".lstrip())
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -2237,6 +2340,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "calibrate": _cmd_calibrate,
     "waste": _cmd_waste,
     "forensics": _cmd_forensics,
+    "launch-plan": _cmd_launch_plan,
 }
 
 
