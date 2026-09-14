@@ -26,6 +26,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Final
 
 from .types import (
+    PROVIDERS,
     REGIME_A,
     REGIME_B,
     SOURCE_LIVE,
@@ -456,28 +457,45 @@ def _aligned_table(
     return "\n".join(lines)
 
 
-def format_status_table(
-    snapshots: Iterable[AccountSnapshot],
+def _status_block(
+    measurable: Sequence[AccountSnapshot],
     now_s: float,
-    model_class: str | None = None,
+    model_class: str | None,
 ) -> str:
-    """One line per measurable account: what is left in each window, and its pace.
+    """One table: a line per account, sharing one set of window columns.
 
-    An account with no windows at all is not in this table -- there is nothing to put in
-    the cells, and a row of dashes would read as "measured, and empty". Those accounts
-    are named by :func:`format_unmeasurable` instead.
+    Every account here must speak the same window vocabulary, or the columns fill with
+    dashes. :func:`format_status_table` guarantees that by grouping on provider first.
     """
-    measurable = [snapshot for snapshot in snapshots if snapshot.windows]
-    if not measurable:
-        return ""
-
     per_account: dict[str, dict[str, WindowSlack]] = {}
     for snapshot in measurable:
         per_account[snapshot.id] = {
             window_label(row.key): row for row in snapshot.slacks(now_s, model_class)
         }
     columns = _window_columns(per_account)
-    label_width = max((len(label) for label in columns), default=0)
+
+    # The tightest window is named in the TIGHTEST cell, so the label column there is
+    # only as wide as the labels that actually land in it. Padding to the widest *column*
+    # instead opens a gutter the width of a name that cell never prints.
+    binding_by_account: dict[str, WindowSlack | None] = {
+        snapshot.id: next(
+            (
+                row
+                for row in per_account[snapshot.id].values()
+                if row.binding and row.applicable
+            ),
+            None,
+        )
+        for snapshot in measurable
+    }
+    label_width = max(
+        (
+            len(window_label(binding.key))
+            for binding in binding_by_account.values()
+            if binding is not None
+        ),
+        default=0,
+    )
 
     rows: list[list[str]] = []
     for snapshot in measurable:
@@ -496,10 +514,7 @@ def format_status_table(
                     else format_duration(row.time_to_reset_s)
                 )
                 cells.append(f"{round(row.remaining_fraction * 100.0):>3}% {reset}")
-        binding = next(
-            (row for row in rows_by_label.values() if row.binding and row.applicable),
-            None,
-        )
+        binding = binding_by_account[snapshot.id]
         cells.append(
             ""
             if binding is None
@@ -511,6 +526,55 @@ def format_status_table(
     headers = ["ACCOUNT", "TIER", *columns, "TIGHTEST", "SOURCE"]
     right = [False, False, *(False for _ in columns), False, False]
     return _aligned_table(headers, rows, right)
+
+
+def _provider_sort_key(provider: str) -> tuple[int, str]:
+    """Declared provider order first, then anything unrecognised, alphabetically."""
+    try:
+        return (PROVIDERS.index(provider), provider)
+    except ValueError:
+        return (len(PROVIDERS), provider)
+
+
+def format_status_table(
+    snapshots: Iterable[AccountSnapshot],
+    now_s: float,
+    model_class: str | None = None,
+) -> str:
+    """One table per provider: what is left in each window, and its pace.
+
+    Providers do not share a window vocabulary. Claude publishes ``5h``, ``7d`` and the
+    model-scoped ``fable``; Codex publishes ``7d`` plus per-model buckets named by the
+    raw ``limit_id`` its API sends, such as ``codex_bengalfox``. One shared column set
+    spends a dash in every cell where the two do not overlap, and an unexplained column
+    of dashes reads as a fault rather than as "this window is not a thing here".
+
+    Grouping is on provider, not on the window keys an account happens to publish. A
+    provider is a stable property of an account, so the tables do not reshuffle when one
+    account temporarily loses a window. Two providers that publish identical windows are
+    still two tables, which is the price of that stability.
+
+    An account with no windows at all is in no table -- there is nothing to put in the
+    cells, and a row of dashes would read as "measured, and empty". Those accounts are
+    named by :func:`format_unmeasurable` instead.
+    """
+    measurable = [snapshot for snapshot in snapshots if snapshot.windows]
+    if not measurable:
+        return ""
+
+    groups: dict[str, list[AccountSnapshot]] = {}
+    for snapshot in measurable:
+        groups.setdefault(snapshot.provider, []).append(snapshot)
+    ordered = sorted(groups.items(), key=lambda item: _provider_sort_key(item[0]))
+
+    # With one provider there is nothing to tell apart, and the caption would cost a
+    # line to repeat what the ACCOUNT column already says.
+    name_them = len(ordered) > 1
+    blocks: list[str] = []
+    for provider, members in ordered:
+        block = _status_block(members, now_s, model_class)
+        blocks.append(f"provider: {provider}\n{block}" if name_them else block)
+    return "\n\n".join(blocks)
 
 
 def format_unmeasurable(snapshots: Iterable[AccountSnapshot]) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,12 @@ import pytest
 from quota_router.types import WINDOW_KEY_5H
 from quota_router import cli
 from quota_router.config import BANNED_EXEC_ENV
-from quota_router.explain import explain_decision, format_pace, format_status_table
+from quota_router.explain import (
+    _ABSENT,
+    explain_decision,
+    format_pace,
+    format_status_table,
+)
 from quota_router.model_classes import classify, demand_multiplier, resolve
 from quota_router.types import (
     QUOTA_ROUTER_CONTRACT_VERSION,
@@ -2054,3 +2060,79 @@ def test_launch_plan_human_form_is_a_line_you_can_paste(env, tmp_path):
     assert out.strip() == (
         "-u HOME AGY_MODEL=claude sudo -n /usr/local/libexec/agy-as-user tonyagents agy"
     )
+
+
+def test_status_gives_each_provider_its_own_table(env):
+    """A Codex-only bucket must not push a column of dashes across every Claude row.
+
+    The window vocabularies do not overlap: Claude publishes ``5h``/``7d``, Codex adds a
+    per-model bucket named by the raw ``limit_id`` OpenAI sends. Sharing one column set
+    spends five cells of every Claude row saying "not applicable to me".
+    """
+    claude_side = (
+        account(
+            "claude",
+            window("five_hour", 0.12, length_s=FIVE_HOURS),
+            window("seven_day", 0.60),
+        ),
+        account(
+            "claude_b",
+            window("five_hour", 0.68, length_s=FIVE_HOURS),
+            window("seven_day", 0.57),
+        ),
+    )
+    codex_side = account(
+        "codex",
+        window("seven_day", 0.31),
+        window("codex_bengalfox", 0.01, length_s=FIVE_HOURS, applies_to={"bengalfox"}),
+        tier="pro",
+    )
+
+    table = format_status_table((*claude_side, codex_side), NOW)
+
+    headers = [line for line in table.splitlines() if line.startswith("ACCOUNT")]
+    assert len(headers) == 2, table
+    assert "codex_bengalfox" in headers[1], table
+    assert "codex_bengalfox" not in headers[0], table
+
+    claude_rows = [line for line in table.splitlines() if line.startswith("claude")]
+    assert len(claude_rows) == 2, table
+    assert all(_ABSENT not in row for row in claude_rows), table
+
+
+def test_status_names_the_provider_only_when_more_than_one_is_measurable(env):
+    """One provider keeps today's caption-free table; a mixed fleet says which is which."""
+    one = account("claude", window("seven_day", 0.60))
+    assert "provider:" not in format_status_table((one,), NOW)
+
+    two = account("codex", window("seven_day", 0.31), tier="pro")
+    both = format_status_table((one, two), NOW)
+    assert "provider: claude" in both, both
+    assert "provider: codex" in both, both
+    assert both.index("provider: claude") < both.index("provider: codex"), both
+
+
+def test_status_pace_cell_ignores_the_width_of_columns_it_never_names(env):
+    """TIGHTEST pads to the labels that can appear in it, not to the widest column.
+
+    ``codex_bengalfox#secondary`` is 25 characters wide and is never the tightest window
+    here, so padding TIGHTEST to it opens a 25-character gutter in a one-row table.
+    """
+    seven = window("seven_day", 0.74, expected_used=0.27)
+    narrow = account("codex", seven, tier="pro")
+    wide = account(
+        "codex",
+        seven,
+        window("codex_bengalfox#secondary", 0.01, applies_to={"bengalfox"}),
+        tier="pro",
+    )
+
+    pattern = re.compile(r"7d\s+\d+% (?:over pace|to spare)")
+
+    def tightest(snapshot) -> str:
+        table = format_status_table((snapshot,), NOW)
+        found = pattern.search(table.splitlines()[1])
+        assert found is not None, table
+        return found.group(0)
+
+    assert tightest(wide) == tightest(narrow) == "7d  47% over pace"
