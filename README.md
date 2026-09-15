@@ -605,6 +605,59 @@ a `NOT ROUTED` banner that says why — and the binary is invoked by absolute pa
 (`CDX_CODEX_BIN`, default `/opt/homebrew/bin/codex`). `CDX_ONLY`, `CDX_QUIET` and
 `CDX_DEBUG` mirror their `CL_` counterparts.
 
+### Holding quota back for manual use
+
+Some accounts serve a person as well as the router: a desktop app that can only sign in
+to one account, or the Claude account you use interactively. Routing can spend such an
+account to zero and leave that person with nothing until the weekly reset. A spent pool
+wastes nothing, so the waste objective never objects.
+
+`manual_rate_per_day` holds some of the weekly pool back:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.codex]
+manual_rate_per_day = 0.05   # fraction of the weekly pool you use by hand, per day
+```
+
+```
+reserve   = manual_rate_per_day x days_to_weekly_reset
+spendable = max(0, remaining - reserve)
+```
+
+The reserve shrinks as the reset approaches and is zero at the reset, so it can never be
+the reason quota expires unused. Routing still spends the surplus above it: an account
+with 72% left, 6.6 days to reset and a rate of 0.05 holds back 33% and stays eligible for
+the other 39%. Once spendable falls below the eligibility floor, work moves to the next
+account.
+
+- **Per account, no default.** Any account can set it; an account without it routes as
+  before. A single-account setup that sets it gets a floor on its own automated spend.
+- **Refused, not guessed:** a negative, non-finite or non-numeric value, and a value on an
+  account id no adapter reads (usually a typo, which would otherwise protect nothing).
+- **Applied once, to the 7-day window,** before eligibility, scoring and `status` read the
+  snapshot. The `7d` column shows the spendable figure, and a line beside the table and
+  under `pick --explain` shows the arithmetic:
+
+  ```
+  reserve codex: 72% left - 33% held for manual use (0.05/day x 6.6d to reset) = 39% spendable
+  ```
+
+  `status --json` carries the same numbers per account under `manual_reserve`.
+- **History is never reserved.** It records the reading as the vendor reported it, because
+  calibration and the waste series treat recorded values as usage.
+- **A launcher still launches.** `cl` and `cdx` never refuse to start: if every candidate is
+  below the floor, they land on the first configured account under a `NOT ROUTED` banner,
+  and that launch can spend into a reserve. A batch caller that must respect the reserve
+  should read `decision.meets_policy` from `quotapick pick --json` and wait.
+
+**Choosing a value.** Measure it rather than guess. For Codex, each session transcript's
+first line names its client in `payload.source` (`vscode` for the desktop app, `exec` for
+headless runs), and every usage row carries the account-wide weekly `used_percent`.
+Attribute each day's rise in `used_percent` to clients in proportion to each session's own
+token growth, then take the mean daily share of the app. Share-by-tokens assumes a token
+costs the same on every model, so treat the result as an estimate.
+
 ## The poller
 
 The router reads usage live on every invocation, so nothing needs to run on a

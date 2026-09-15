@@ -322,6 +322,11 @@ class AccountConfig:
             the router obtained no usage measurement for any candidate at all; a
             measurement, including one that says the account is empty, always wins.
             See :mod:`quota_router.weekly_reset`.
+        manual_rate_per_day: Fraction of this account's weekly pool held back per day for
+            a person using the account by hand, such as a desktop app that can only sign
+            in to one account. Routing sees ``remaining - rate x days_to_weekly_reset``,
+            floored at zero, so the reserve shrinks to nothing at the reset. No default;
+            unset means no reserve. See :mod:`quota_router.reserve`.
     """
 
     id: str
@@ -338,6 +343,7 @@ class AccountConfig:
     env_var: str | None = None
     command: str | None = None
     weekly_reset: WeeklyReset | None = None
+    manual_rate_per_day: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -434,6 +440,7 @@ class AccountConfig:
             "calls_per_window": self.calls_per_window,
             "env": dict(self.env),
             "macos_user": self.macos_user,
+            "manual_rate_per_day": self.manual_rate_per_day,
             "weekly_reset": (
                 self.weekly_reset.to_text() if self.weekly_reset is not None else None
             ),
@@ -629,6 +636,14 @@ class Config:
     def enabled_accounts(self) -> tuple[AccountConfig, ...]:
         """Accounts that have not been disabled with ``enabled = false``."""
         return tuple(account for account in self.accounts.values() if account.enabled)
+
+    def manual_rates(self) -> dict[str, float]:
+        """``manual_rate_per_day`` for every enabled account that sets one."""
+        return {
+            account.id: account.manual_rate_per_day
+            for account in self.enabled_accounts()
+            if account.manual_rate_per_day is not None
+        }
 
     def capacity_for_tier(self, tier: Any) -> float:
         """Capacity ratio for ``tier``, honoring the ``[tiers]`` overrides."""
@@ -1004,6 +1019,16 @@ def _build_accounts(
                 if body.get("weekly_reset") is not None
                 else None
             ),
+            # A fraction of the weekly pool per day, held back for a person using the
+            # account by hand. No default: a guessed rate is either a reserve nobody
+            # asked for or no protection at all. See quota_router.reserve.
+            manual_rate_per_day=(
+                _as_number(
+                    body["manual_rate_per_day"], section, "manual_rate_per_day", minimum=0.0
+                )
+                if body.get("manual_rate_per_day") is not None
+                else None
+            ),
         )
 
         # An account whose provider resolves to nothing has no adapter behind it, so it
@@ -1032,6 +1057,20 @@ def _build_accounts(
             warnings.append(
                 f"[{section}] sets launch_wrapper without macos_user; the wrapper is "
                 f"only used to run as another macOS user, so it will be ignored"
+            )
+
+        # A reserve on an account nothing reads protects nothing. The likely cause is a
+        # mistyped id, which would otherwise create a phantom account here and leave the
+        # real one with no reserve at all -- the failure the key exists to prevent.
+        if (
+            accounts[str(account_id)].manual_rate_per_day is not None
+            and resolved_provider not in PROVIDERS
+        ):
+            raise ConfigError(
+                f"[{section}] sets manual_rate_per_day, but no adapter reads an account "
+                f"named {str(account_id)!r}, so the reserve would protect nothing. Check "
+                f"the account id against `quotapick status`, or set provider = one of "
+                f"{', '.join(PROVIDERS)}."
             )
 
         if resolved_provider not in PROVIDERS:

@@ -58,6 +58,7 @@ from typing import Any, Callable, Final, TextIO
 from . import explain as explain_mod
 from . import forensics as forensics_mod
 from . import history as history_mod
+from . import reserve as reserve_mod
 from . import model_classes as mc
 from . import pse
 from . import waste as waste_mod
@@ -397,6 +398,9 @@ class Prepared:
     state: StateSnapshot = field(default_factory=StateSnapshot)
     selection_state: dict[str, Any] = field(default_factory=dict)
     reserved: Mapping[str, float] = field(default_factory=dict)
+    #: Every manual-use reserve applied to :attr:`snapshots`, for rendering. The reserve
+    #: is already inside the snapshots; this is the arithmetic behind it.
+    manual_reserves: tuple[reserve_mod.ManualReserve, ...] = ()
     warnings: tuple[str, ...] = ()
     degraded: tuple[dict[str, Any], ...] = ()
 
@@ -1054,6 +1058,17 @@ def _prepare(
                 }
             )
 
+    # The manual-use reserve, applied once, here, so eligibility, scoring and `status`
+    # all read the same spendable figure. `raw_snapshots` stays exactly as read: history
+    # records it, and a reserve written into history would read as usage.
+    rates = config.manual_rates()
+    held_snapshots, manual_reserves = reserve_mod.apply_manual_reserve(snapshots, rates, now_s)
+    for account_id in reserve_mod.accounts_without_weekly_window(snapshots, rates):
+        warnings.append(
+            f"{account_id}: manual_rate_per_day is set but the account reports no 7-day "
+            f"window, so no reserve is held"
+        )
+
     # State is always *read* (a dry run still reports what stickiness and pileup would
     # have done); only the write below is suppressed by --dry-run.
     store = StateStore(env=env)
@@ -1106,7 +1121,9 @@ def _prepare(
     # separate fault worth fixing, but it cannot bite at all when there is only one
     # candidate.
     spreadable = len([a for a in config.enabled_accounts()]) > 1
-    adjusted = _apply_pileup(snapshots, reserved) if spreadable else tuple(snapshots)
+    adjusted = (
+        _apply_pileup(held_snapshots, reserved) if spreadable else tuple(held_snapshots)
+    )
     if not spreadable and reserved:
         warnings.append(
             "single candidate: pileup reservations not applied (nothing to spread to)"
@@ -1129,6 +1146,7 @@ def _prepare(
         fallback_pool=partition.fallback_pool,
         state=state,
         reserved=reserved,
+        manual_reserves=manual_reserves,
         warnings=tuple(warnings),
         degraded=tuple(degraded),
     )
@@ -1461,6 +1479,7 @@ def _cmd_pick(
                 _decision_for_render(prepared), margin=_effective_margin(prepared)
             )
             + "\n"
+            + _reserve_block(prepared)
         )
     return EXIT_OK
 
@@ -1484,7 +1503,9 @@ def _cmd_explain(
         return EXIT_OK
 
     stdout.write(
-        explain_mod.explain_verbose(decision, margin=_effective_margin(prepared)) + "\n"
+        explain_mod.explain_verbose(decision, margin=_effective_margin(prepared))
+        + "\n"
+        + _reserve_block(prepared)
     )
     return EXIT_OK
 
@@ -1566,6 +1587,7 @@ def _cmd_status(
                     "min_slack": snapshot.min_slack(now_s, model_class),
                     "min_remaining": snapshot.min_remaining_fraction(model_class),
                     "binding_window": snapshot.binding_window_key(now_s, model_class),
+                    "manual_reserve": _reserve_dict(prepared, snapshot.id),
                 }
                 for snapshot in prepared.snapshots
             ],
@@ -1596,6 +1618,18 @@ def _cmd_status(
             f"history; {_PROG} status --verbose prints them\n"
         )
     return EXIT_OK
+
+
+def _reserve_dict(prepared: Prepared, account_id: str) -> dict[str, Any] | None:
+    """The manual-use reserve behind one account's figures, or ``None`` when it sets none."""
+    held = next((r for r in prepared.manual_reserves if r.account_id == account_id), None)
+    return None if held is None else held.to_dict()
+
+
+def _reserve_block(prepared: Prepared) -> str:
+    """One line per manual-use reserve, newline-terminated; empty when there are none."""
+    lines = [explain_mod.format_manual_reserve(held) for held in prepared.manual_reserves]
+    return "".join(line + "\n" for line in lines)
 
 
 def _flush(stream: TextIO) -> None:
@@ -1640,6 +1674,7 @@ def _write_status_verbose(
             )
         if snapshot.note:
             stdout.write(f"    note: {snapshot.note}\n")
+    stdout.write(_reserve_block(prepared))
 
 
 def _write_status_compact(
@@ -1657,6 +1692,9 @@ def _write_status_compact(
     table = explain_mod.format_status_table(prepared.snapshots, now_s, model_class)
     if table:
         stdout.write(table + "\n")
+    held = _reserve_block(prepared)
+    if held:
+        stdout.write(("\n" if table else "") + held)
     unmeasurable = explain_mod.format_unmeasurable(prepared.snapshots)
     if unmeasurable:
         stdout.write(("\n" if table else "") + unmeasurable + "\n")

@@ -70,6 +70,19 @@ the counterfactual says.
   (a static bound gives <= 0.551) but not pinned by it. Recorded honestly in `pse.py`;
   noted here so it is not mistaken for a measurement.
 
+- **Reported waste double-counts the operator's working time across accounts.**
+  `pse.wasted_pse` credits every account with the whole working rate over its own
+  horizon, so N accounts claim N times the hours that exist. Two accounts can each read
+  "0.000 PSE nothing wasted" while one shared rate cannot absorb both pools, and
+  `status` and `explain` under-report waste more as a fleet grows. **This is a reporting
+  bug, not a routing bug.** Under one shared rate, earliest-deadline-first already
+  minimises total waste, so the ranking the router produces today is the right order.
+  A fleet-aware *score* that ranks the account showing unavoidable waste first spends in
+  the wrong order: it lets the earlier pool expire too. A first attempt did exactly that
+  and broke `test_ranking_across_realistic_accounts_prefers_the_soonest_deadline_with_quota_at_risk`.
+  Closes when the *reported* waste figure is computed over the whole field with one shared
+  rate, the ranking still orders by earliest deadline, and a test pins both.
+
 ---
 
 ## Closed

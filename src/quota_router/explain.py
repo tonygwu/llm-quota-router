@@ -22,6 +22,8 @@ the selection layer.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Final
 
@@ -35,6 +37,9 @@ from .types import (
     ScoreBreakdown,
     WindowSlack,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; avoids an import cycle
+    from .reserve import ManualReserve
 
 __all__ = [
     "WINDOW_LABELS",
@@ -395,6 +400,24 @@ def format_pace(slack: float) -> str:
     if rounded > 0:
         return f"{rounded}% to spare"
     return f"{-rounded}% over pace"
+
+
+def format_manual_reserve(held: "ManualReserve") -> str:
+    """``reserve codex: 72% left - 33% held for manual use (0.05/day x 6.6d to reset) = 39% spendable``.
+
+    Printed beside the status table and the explanation, because the table's weekly
+    column already shows the spendable figure and nothing else says why it is lower
+    than the account's own bar.
+    """
+    def pct(value: float) -> str:
+        return f"{round(value * 100.0)}%"
+
+    return (
+        f"reserve {held.account_id}: {pct(held.remaining)} left - {pct(held.reserve)} held "
+        f"for manual use ({held.rate_per_day:g}/day x "
+        f"{format_duration(held.days_to_reset * 86400.0)} to reset) = "
+        f"{pct(held.spendable)} spendable"
+    )
 
 
 def _pace_cell(slack: float, label: str, label_width: int) -> str:
