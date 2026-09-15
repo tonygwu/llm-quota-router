@@ -209,10 +209,13 @@ def _configure_adapters(
     environment, ``--timeout-ms``, and the operator's own ``[accounts.*] config_dir``
     entries so a non-standard directory is actually discovered.
 
-    The timeout is applied **only** to the live-usage adapter. It reads the
-    Keychain and calls the vendor usage endpoint, so it is the one adapter with a
-    latency budget worth configuring; the others read local files. An adapter that
-    cannot be rebuilt is kept exactly as the providers layer constructed it.
+    The timeout is applied **only** to the two live readers. The Claude one reads the
+    Keychain and calls the vendor usage endpoint; the Codex one spawns ``codex
+    app-server``. The others read local files. For the Codex reader the timeout can
+    only shorten its own cap (``default_timeout_s``), never stretch it: the oracle
+    default is 5s and ``cl``/``cdx`` give the whole pick 3s, and a slow live read has a
+    transcript fallback to lose to. An adapter that cannot be rebuilt is kept exactly
+    as the providers layer constructed it.
 
     The account list is passed as ``configs``, which is what both Claude adapters
     declare. An earlier version built a ``config_dirs`` mapping instead; no adapter
@@ -223,6 +226,7 @@ def _configure_adapters(
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
     cursor_cls = getattr(providers, "CursorAdapter", None)
     codex_cls = getattr(providers, "CodexSessionsAdapter", None)
+    codex_live_cls = getattr(providers, "CodexAppServerAdapter", None)
     antigravity_cls = getattr(providers, "AntigravityAdapter", None)
     from_policy = getattr(providers, "claude_configs_from_policy", None)
     codex_from_policy = getattr(providers, "codex_accounts_from_policy", None)
@@ -262,6 +266,11 @@ def _configure_adapters(
             settings["account_ids"] = antigravity_accounts
         elif codex_cls is not None and cls is codex_cls:
             settings["codex_accounts"] = codex_accounts
+        elif codex_live_cls is not None and cls is codex_live_cls:
+            settings["codex_accounts"] = codex_accounts
+            cap = getattr(cls, "default_timeout_s", None)
+            if timeout_s is not None and isinstance(cap, (int, float)):
+                settings["timeout_s"] = min(float(timeout_s), float(cap))
 
         wanted = {key: value for key, value in settings.items() if value is not None}
         try:

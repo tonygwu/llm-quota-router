@@ -10,6 +10,7 @@ runner is injectable), never invent data.
 +===============================+===================================================+
 | :class:`ClaudeOAuthAdapter`   | vendor usage endpoint (primary, live)             |
 | :class:`ClaudeStatuslineAdapter` | ``~/Library/Caches/.../claude*-rate-limits.json`` |
+| :class:`CodexAppServerAdapter` | ``codex app-server`` rate-limit read (live)      |
 | :class:`CodexSessionsAdapter` | ``$CODEX_HOME/sessions/**/*.jsonl`` tails         |
 | :class:`CursorAdapter`        | ``~/.cursor/cli-config.json`` identity only        |
 | :class:`AntigravityAdapter`   | nothing observable; failure-learned deadline only |
@@ -61,6 +62,7 @@ from .claude_cli_config import (
 )
 from .claude_oauth import ClaudeOAuthAdapter
 from .claude_statusline import ClaudeStatuslineAdapter
+from .codex_app_server import CodexAppServerAdapter
 from .codex_sessions import (
     CODEX_HOME_ENV,
     DEFAULT_CODEX_HOME,
@@ -80,6 +82,7 @@ __all__ = [
     "ClaudeAccountConfig",
     "discover_claude_configs",
     "CodexAccountConfig",
+    "CodexAppServerAdapter",
     "CodexSessionsAdapter",
     "CursorAdapter",
     "account_ids_for_provider",
@@ -287,6 +290,9 @@ def build_default_adapters(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
         ),
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
+        # Live first, transcripts as the fallback. The merge would prefer the live
+        # snapshot in either order; the order states the intent.
+        CodexAppServerAdapter(env=env, codex_accounts=codex_accounts),
         CodexSessionsAdapter(env=env, codex_accounts=codex_accounts),
         CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
     ]

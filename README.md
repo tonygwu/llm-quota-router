@@ -77,7 +77,7 @@ each one differs, and it never pretends otherwise:
 | Provider | Accounts | Usage readable? | Read from |
 |---|---|---|---|
 | `claude` | many, one config directory each | **yes**, real windows | vendor usage endpoint, statusline cache |
-| `codex` | one | partial | `$CODEX_HOME/sessions` transcript tails |
+| `codex` | many, one `CODEX_HOME` each | **yes**, real windows | `codex app-server` rate-limit read; session transcript tails as fallback |
 | `cursor` | many, one API key each | **no** | `~/.cursor/cli-config.json`, identity only |
 | `antigravity` | two pools behind one binary, **opt-in** | **no** | nothing; failure-learned deadlines only |
 
@@ -587,11 +587,24 @@ Three things are Codex facts rather than preferences, and `cdx` follows them:
   interactive picker mean "the most recent session", which is a different session
   in each home; with more than one Codex account that is refused (exit 2) rather
   than guessed, and `CDX_ONLY=<account>` names the home.
-- **A cold home cannot be scored.** Codex publishes no usage endpoint; the router
-  reads quota out of session transcripts, so a freshly logged-in home has no reading
-  until it has run once, and an unread account is left out of routing rather than
+- **Usage is read live, with transcripts as the fallback.** For each home the router
+  starts `codex app-server` with that `CODEX_HOME` and asks it
+  `account/rateLimits/read`. The answer comes from the backend, so it includes runs
+  that wrote no transcript, such as `codex exec --ephemeral`. The router never
+  touches the login itself; the binary manages its own credentials. Accounts are read
+  at the same time, each within a 2s budget, and the child and anything it started
+  are stopped afterwards. If the read fails for any reason (missing binary, error
+  response, malformed payload, timeout), that account gets no live reading, a warning
+  names the account and the cause, and the session transcript tails serve instead.
+  The binary is `/opt/homebrew/bin/codex` unless `QUOTA_ROUTER_CODEX_BIN` names
+  another; PATH is never searched, because the usage poller runs under launchd, whose
+  PATH has neither Homebrew nor `~/.local/bin`. The binary's own directory is put first
+  on the child's PATH, because the Homebrew `codex` is a node script and `node` sits
+  beside it.
+- **A home with neither reading cannot be scored.** If the live read fails and the
+  home has no session transcript yet, the account is left out of routing rather than
   scored as wide open. `cdx` names each such account on every launch, with the one
-  command that seeds it:
+  command that seeds a transcript:
 
   ```
   cdx: codex_b has no usage reading yet (no session transcript under

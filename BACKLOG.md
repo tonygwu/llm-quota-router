@@ -156,11 +156,14 @@ builtin ones, which are still dropped quietly when their directory is absent. Pa
 narrowed: the two Antigravity pools that used to be the whole of that first answer are
 no longer builtin, so a clean home now shows an empty fleet rather than a fake one.
 
-**Only one Codex account is representable.** `CodexSessionsAdapter` already accepts
-`codex_home` and `account_id`, so the adapter can do more than one; `build_default_adapters`
-constructs exactly one and passes no config. The capability exists and is unreachable.
-Closing it: give Codex the same treatment Cursor just got — ids and homes derived from
-the operator config, via `account_ids_for_provider`.
+**Codex usage from `--ephemeral` runs was invisible.** Closed. Every declared Codex home
+is read (`codex_accounts_from_policy`), and each is now read live through `codex
+app-server` (`account/rateLimits/read`), with the session transcripts as the fallback.
+Before this, a caller running `codex exec --ephemeral` wrote no transcript, and one
+account's reading was fifteen hours old at 0% while it had spent 1%. Still open: the
+transcript adapter keeps warning "no session transcripts" for a home the live read has
+already measured, and the live read spawns one process per account on every pick,
+which the poller also pays every 120s.
 
 **Antigravity's two entries are pools, not accounts.** The pools now come from the
 operator config through `account_ids_for_provider`, and the adapter runs only when the
