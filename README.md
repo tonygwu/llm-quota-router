@@ -544,6 +544,67 @@ prompt), `CL_ONLY` (default: every Claude-provider account in your config, so a
 subscription you add there is launchable without a second edit), `CL_QUIET`,
 `CL_DEBUG`.
 
+### `cdx` — `cl` for Codex
+
+`cdx` runs `codex` on whichever Codex account has the most quota about to
+expire, by setting `CODEX_HOME`. `codex` stays the raw binary; `cdx` adds account
+selection and nothing else.
+
+```sh
+cdx exec "prompt"                  # pick an account, run there
+cdx exec resume <uuid> "more"      # runs in the home that HOLDS that session
+cdx                                # same, for the interactive TUI
+```
+
+A second Codex subscription is a second `CODEX_HOME`, the way a second Claude
+subscription is a second `CLAUDE_CONFIG_DIR`:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.codex_b]
+config_dir = "~/.codex-b"
+provider = "codex"
+tier = "pro"
+```
+
+Log the new home in once (`CODEX_HOME=~/.codex-b codex login`) and the router reads
+it like any other: `quotapick status` lists it with its own email, and `cdx`
+routes to it.
+
+Three things are Codex facts rather than preferences, and `cdx` follows them:
+
+- **Nothing is injected.** `cl` adds `--dangerously-skip-permissions` because Claude
+  Code has one obvious headless mode. Codex has three, and real callers use all of
+  them — `--sandbox read-only` for judges and miners, `--approve-for-me` for evals,
+  `--dangerously-bypass-approvals-and-sandbox` for agents inside an OS sandbox. In
+  `clap` the last flag wins, so a bypass appended here would silently widen every
+  read-only caller to full access. `cdx` passes argv through byte for byte; a caller
+  swaps `codex` for `cdx` and changes nothing else.
+- **A session lives in exactly one home.** `codex` can only resume a transcript
+  under its own `CODEX_HOME`, so `resume` and `fork` are routed by *ownership*: the
+  home whose `sessions/` or `archived_sessions/` holds `rollout-*-<uuid>.jsonl`
+  wins, whatever the router would have scored. `--last`, a thread name, or the
+  interactive picker mean "the most recent session", which is a different session
+  in each home; with more than one Codex account that is refused (exit 2) rather
+  than guessed, and `CDX_ONLY=<account>` names the home.
+- **A cold home cannot be scored.** Codex publishes no usage endpoint; the router
+  reads quota out of session transcripts, so a freshly logged-in home has no reading
+  until it has run once, and an unread account is left out of routing rather than
+  scored as wide open. `cdx` names each such account on every launch, with the one
+  command that seeds it:
+
+  ```
+  cdx: codex_b has no usage reading yet (no session transcript under
+  /Users/you/.codex-b); seed it once with: CODEX_HOME=/Users/you/.codex-b codex exec
+  --skip-git-repo-check 'reply with ok'
+  ```
+
+Everything else follows `cl`: the pick is capped (`CDX_PICK_TIMEOUT_S`, default
+3s), every failure still runs the command — on the first configured account, under
+a `NOT ROUTED` banner that says why — and the binary is invoked by absolute path
+(`CDX_CODEX_BIN`, default `/opt/homebrew/bin/codex`). `CDX_ONLY`, `CDX_QUIET` and
+`CDX_DEBUG` mirror their `CL_` counterparts.
+
 ## The poller
 
 The router reads usage live on every invocation, so nothing needs to run on a
