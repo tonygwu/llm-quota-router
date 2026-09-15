@@ -621,10 +621,41 @@ def select(
         ranked, {snap.id: snap.confidence for snap in eligible}
     )
 
+    # Deprioritization is applied here, after scoring and before hysteresis, and nowhere
+    # else: every caller (pick, exec, the library, both launchers) reaches this function,
+    # and doing it before hysteresis is what stops a deprioritized incumbent from holding
+    # the seat through the dwell or the switch margin.
+    deprioritized = _deprioritized_ids(scoring_cfg, warnings)
+    base_reasons = {row.account_id: row.reason for row in ranked}
+    natural_leader = ranked[0].account_id
+    natural_ranked = ranked
+    ranked = _apply_deprioritize(ranked, deprioritized)
+
     key = sticky_key((snap.id for snap in eligible), model_class)
     incumbent = resolved_state.incumbent(key) or _sticky_hint(
         sticky, now_s, min_dwell_calls
     )
+    released_incumbent: str | None = None
+    if (
+        incumbent is not None
+        and incumbent.account_id in deprioritized
+        and ranked[0].account_id not in deprioritized
+    ):
+        # The seat is always released. The reason credits the preference only when
+        # hysteresis on the unmodified ranking would have kept this incumbent; otherwise
+        # the scores alone made the pick and saying otherwise would misreport it.
+        _, would_have_kept, _ = _apply_hysteresis(
+            natural_ranked,
+            incumbent,
+            now_s,
+            min_dwell_calls=min_dwell_calls,
+            max_dwell_s=max_dwell_s,
+            margin_ratio=margin_ratio,
+            margin_abs=margin_abs,
+        )
+        if would_have_kept:
+            released_incumbent = incumbent.account_id
+        incumbent = None
     chosen_row, sticky_applied, sticky_note = _apply_hysteresis(
         ranked,
         incumbent,
@@ -645,7 +676,13 @@ def select(
         resolved_state.record(key, chosen_row.account_id, now_s)
     _writeback(writeback, resolved_state, record)
 
-    reason = sticky_note or (
+    reason = sticky_note or _deprioritize_reason(
+        chosen_row.account_id,
+        base_reasons[chosen_row.account_id],
+        deprioritized,
+        natural_leader=natural_leader,
+        released_incumbent=released_incumbent,
+    ) or (
         f"{chosen_row.account_id} wins: {chosen_row.reason}"
     )
     return Decision(
@@ -658,6 +695,71 @@ def select(
         degraded=bool(warnings),
         warnings=tuple(warnings),
     )
+
+
+#: Appended to the reason of every ranked row the operator deprioritized.
+DEPRIORITIZED_ROW_NOTE: Final[str] = (
+    "deprioritized: ranks below every eligible account without deprioritize"
+)
+
+
+def _deprioritized_ids(cfg: Any, warnings: list[str]) -> frozenset[str]:
+    """The ``deprioritized_accounts`` policy key as a set of ids; empty when unset.
+
+    An unusable value is reported and ignored, like every other knob this layer reads:
+    the config layer has already refused a bad file, so this only guards a direct caller.
+    """
+    raw = cfg_get(cfg, "deprioritized_accounts")
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Iterable):
+        warnings.append(
+            f"unusable config value for deprioritized_accounts: {raw!r}; ignoring it"
+        )
+        return frozenset()
+    return frozenset(str(item) for item in raw)
+
+
+def _apply_deprioritize(
+    ranked: list[ScoreBreakdown], deprioritized: frozenset[str]
+) -> list[ScoreBreakdown]:
+    """Move every deprioritized row below every other row, keeping order within each group."""
+    if not deprioritized or not any(row.account_id in deprioritized for row in ranked):
+        return ranked
+    preferred = [row for row in ranked if row.account_id not in deprioritized]
+    demoted = [
+        replace(row, reason=f"{row.reason}; {DEPRIORITIZED_ROW_NOTE}")
+        for row in ranked
+        if row.account_id in deprioritized
+    ]
+    return preferred + demoted
+
+
+def _deprioritize_reason(
+    chosen: str,
+    base_reason: str,
+    deprioritized: frozenset[str],
+    *,
+    natural_leader: str,
+    released_incumbent: str | None,
+) -> str:
+    """The decision reason when deprioritization decided the pick; empty when it did not."""
+    if chosen in deprioritized:
+        return (
+            f"{chosen} wins: it is deprioritized, but no account without deprioritize "
+            f"is eligible; {base_reason}"
+        )
+    if natural_leader in deprioritized and natural_leader != chosen:
+        return (
+            f"{chosen} wins: {natural_leader} scored higher but is deprioritized, so it "
+            f"ranks below every eligible account without deprioritize; {base_reason}"
+        )
+    if released_incumbent is not None:
+        return (
+            f"{chosen} wins: sticky incumbent {released_incumbent} is deprioritized, so "
+            f"it does not keep the seat; {base_reason}"
+        )
+    return ""
 
 
 def _apply_hysteresis(

@@ -327,6 +327,10 @@ class AccountConfig:
             in to one account. Routing sees ``remaining - rate x days_to_weekly_reset``,
             floored at zero, so the reserve shrinks to nothing at the reset. No default;
             unset means no reserve. See :mod:`quota_router.reserve`.
+        deprioritize: A temporary routing preference, not a quota measure. When true,
+            this account ranks below every eligible account that does not set it,
+            whatever its score, the sticky incumbent or the switch margin. It stays
+            eligible, so it is still chosen when no other account is. Default false.
     """
 
     id: str
@@ -344,6 +348,7 @@ class AccountConfig:
     command: str | None = None
     weekly_reset: WeeklyReset | None = None
     manual_rate_per_day: float | None = None
+    deprioritize: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -441,6 +446,7 @@ class AccountConfig:
             "env": dict(self.env),
             "macos_user": self.macos_user,
             "manual_rate_per_day": self.manual_rate_per_day,
+            "deprioritize": self.deprioritize,
             "weekly_reset": (
                 self.weekly_reset.to_text() if self.weekly_reset is not None else None
             ),
@@ -645,6 +651,12 @@ class Config:
             if account.manual_rate_per_day is not None
         }
 
+    def deprioritized_accounts(self) -> tuple[str, ...]:
+        """Ids of every enabled account that sets ``deprioritize = true``, in config order."""
+        return tuple(
+            account.id for account in self.enabled_accounts() if account.deprioritize
+        )
+
     def capacity_for_tier(self, tier: Any) -> float:
         """Capacity ratio for ``tier``, honoring the ``[tiers]`` overrides."""
         return self.tiers.get(normalize_tier(tier), UNKNOWN_TIER_CAPACITY)
@@ -681,6 +693,9 @@ class Config:
             "switch_margin_ratio": self.hysteresis.switch_margin_ratio if sticky else 1.0,
             "switch_margin_abs": self.hysteresis.switch_margin_abs if sticky else 0.0,
             "max_staleness_s": self.staleness.max_staleness_s,
+            # Read by the selection layer, the single place the preference is applied,
+            # so pick, exec, the library and both launchers all rank the same way.
+            "deprioritized_accounts": list(self.deprioritized_accounts()),
         }
 
     def tier_override_warnings(self) -> tuple[str, ...]:
@@ -1029,6 +1044,13 @@ def _build_accounts(
                 if body.get("manual_rate_per_day") is not None
                 else None
             ),
+            # A temporary preference between accounts, not a quota measure. Strictly a
+            # boolean: `deprioritize = "false"` must not read as true.
+            deprioritize=(
+                _as_bool(body["deprioritize"], section, "deprioritize")
+                if body.get("deprioritize") is not None
+                else False
+            ),
         )
 
         # An account whose provider resolves to nothing has no adapter behind it, so it
@@ -1070,6 +1092,16 @@ def _build_accounts(
                 f"[{section}] sets manual_rate_per_day, but no adapter reads an account "
                 f"named {str(account_id)!r}, so the reserve would protect nothing. Check "
                 f"the account id against `quotapick status`, or set provider = one of "
+                f"{', '.join(PROVIDERS)}."
+            )
+
+        # Same rule for the preference: on an account nothing reads it changes nothing,
+        # and the likely cause is a mistyped id that leaves the real account preferred.
+        if accounts[str(account_id)].deprioritize and resolved_provider not in PROVIDERS:
+            raise ConfigError(
+                f"[{section}] sets deprioritize, but no adapter reads an account named "
+                f"{str(account_id)!r}, so the preference would change nothing. Check the "
+                f"account id against `quotapick status`, or set provider = one of "
                 f"{', '.join(PROVIDERS)}."
             )
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Final
 
 from .types import (
@@ -190,6 +190,7 @@ def explain_decision(
     *,
     margin: float | None = None,
     include_warnings: bool = False,
+    deprioritized: Collection[str] = (),
 ) -> str:
     """One line saying who won, which window bound it, and by how much.
 
@@ -199,6 +200,8 @@ def explain_decision(
             was actually made. It is a margin on the **unscaled** objective; rendering it
             against ``score`` would misreport the test that ran.
         include_warnings: Append degradation notes.
+        deprioritized: Account ids the operator deprioritized. When one of them is the
+            runner-up, the line says the preference, not the score, ordered the two.
     """
     winner = decision.chosen_breakdown
     if winner is None:
@@ -225,11 +228,28 @@ def explain_decision(
         parts.append("no account will waste quota at the assumed rate; earliest deadline first")
     if not winner.fits:
         parts.append("WARNING: no candidate fits; this is the earliest to reset")
+    if winner.account_id in deprioritized:
+        parts.append(
+            "deprioritized, but no account without deprioritize is eligible"
+        )
 
     runner = _runner_up(decision, winner)
     if runner is not None:
         delta = _objective(winner, regime) - _objective(runner, regime)
-        if decision.sticky_applied:
+        if (
+            not decision.sticky_applied
+            and runner.account_id in deprioritized
+            and winner.account_id not in deprioritized
+            # Only when the preference reversed the order. A winner that also leads on
+            # score won on score, and the ordinary comparison below says so.
+            and runner.score > winner.score
+        ):
+            parts.append(
+                f"ranked above {runner.account_id} because {runner.account_id} is "
+                f"deprioritized, not on score ({winner.score:.3f} vs {runner.score:.3f} "
+                f"PSE at risk)"
+            )
+        elif decision.sticky_applied:
             # The incumbent won *despite* trailing: report the challenger's lead and why
             # it was not enough.
             comparison = f"{runner.account_id} led by {format_percent(-delta)}"
@@ -331,9 +351,12 @@ def explain_verbose(
     *,
     margin: float | None = None,
     show_windows: bool = True,
+    deprioritized: Collection[str] = (),
 ) -> str:
     """Full rendering: headline, ranked table, per-window arithmetic, exclusions."""
-    blocks: list[str] = [explain_decision(decision, margin=margin)]
+    blocks: list[str] = [
+        explain_decision(decision, margin=margin, deprioritized=deprioritized)
+    ]
 
     blocks.append("objective: PSE at risk of expiring before reset (tier-normalized)")
 
@@ -417,6 +440,20 @@ def format_manual_reserve(held: "ManualReserve") -> str:
         f"for manual use ({held.rate_per_day:g}/day x "
         f"{format_duration(held.days_to_reset * 86400.0)} to reset) = "
         f"{pct(held.spendable)} spendable"
+    )
+
+
+def format_deprioritized(account_ids: Iterable[str]) -> str:
+    """``deprioritized: codex (deprioritize = true; ranks below every eligible account without it)``.
+
+    Empty when no account sets the key, so a fleet without it prints nothing new.
+    """
+    ids = list(account_ids)
+    if not ids:
+        return ""
+    return (
+        f"deprioritized: {', '.join(ids)} (deprioritize = true; ranks below every "
+        f"eligible account without it)"
     )
 
 

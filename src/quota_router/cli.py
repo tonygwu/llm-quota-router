@@ -1379,7 +1379,9 @@ def _pick_payload(prepared: Prepared) -> dict[str, Any]:
             ),
             "reason": decision.reason
             or explain_mod.explain_decision(
-                decision, margin=_effective_margin(prepared)
+                decision,
+                margin=_effective_margin(prepared),
+                deprioritized=prepared.config.deprioritized_accounts(),
             ),
             "score": winner.score if winner is not None else 0.0,
             "binding_window": winner.binding_window if winner is not None else None,
@@ -1476,10 +1478,13 @@ def _cmd_pick(
     if getattr(args, "explain", False):
         stderr.write(
             explain_mod.explain_verbose(
-                _decision_for_render(prepared), margin=_effective_margin(prepared)
+                _decision_for_render(prepared),
+                margin=_effective_margin(prepared),
+                deprioritized=prepared.config.deprioritized_accounts(),
             )
             + "\n"
             + _reserve_block(prepared)
+            + _deprioritized_block(prepared)
         )
     return EXIT_OK
 
@@ -1503,9 +1508,14 @@ def _cmd_explain(
         return EXIT_OK
 
     stdout.write(
-        explain_mod.explain_verbose(decision, margin=_effective_margin(prepared))
+        explain_mod.explain_verbose(
+            decision,
+            margin=_effective_margin(prepared),
+            deprioritized=prepared.config.deprioritized_accounts(),
+        )
         + "\n"
         + _reserve_block(prepared)
+        + _deprioritized_block(prepared)
     )
     return EXIT_OK
 
@@ -1588,6 +1598,8 @@ def _cmd_status(
                     "min_remaining": snapshot.min_remaining_fraction(model_class),
                     "binding_window": snapshot.binding_window_key(now_s, model_class),
                     "manual_reserve": _reserve_dict(prepared, snapshot.id),
+                    "deprioritized": snapshot.id
+                    in prepared.config.deprioritized_accounts(),
                 }
                 for snapshot in prepared.snapshots
             ],
@@ -1630,6 +1642,12 @@ def _reserve_block(prepared: Prepared) -> str:
     """One line per manual-use reserve, newline-terminated; empty when there are none."""
     lines = [explain_mod.format_manual_reserve(held) for held in prepared.manual_reserves]
     return "".join(line + "\n" for line in lines)
+
+
+def _deprioritized_block(prepared: Prepared) -> str:
+    """One line naming every deprioritized account, newline-terminated; empty when none."""
+    line = explain_mod.format_deprioritized(prepared.config.deprioritized_accounts())
+    return line + "\n" if line else ""
 
 
 def _flush(stream: TextIO) -> None:
@@ -1675,6 +1693,7 @@ def _write_status_verbose(
         if snapshot.note:
             stdout.write(f"    note: {snapshot.note}\n")
     stdout.write(_reserve_block(prepared))
+    stdout.write(_deprioritized_block(prepared))
 
 
 def _write_status_compact(
@@ -1692,7 +1711,7 @@ def _write_status_compact(
     table = explain_mod.format_status_table(prepared.snapshots, now_s, model_class)
     if table:
         stdout.write(table + "\n")
-    held = _reserve_block(prepared)
+    held = _reserve_block(prepared) + _deprioritized_block(prepared)
     if held:
         stdout.write(("\n" if table else "") + held)
     unmeasurable = explain_mod.format_unmeasurable(prepared.snapshots)

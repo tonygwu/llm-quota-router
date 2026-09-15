@@ -658,6 +658,40 @@ Attribute each day's rise in `used_percent` to clients in proportion to each ses
 token growth, then take the mean daily share of the app. Share-by-tokens assumes a token
 costs the same on every model, so treat the result as an estimate.
 
+### Preferring one account over another for a while
+
+Sometimes you want routing to use one account before another for a reason the quota
+numbers cannot see. `deprioritize` says so without naming an account anywhere in code:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.codex]
+deprioritize = true
+```
+
+A deprioritized account ranks below every eligible account that does not set the key. Its
+score, the sticky incumbent and the switch margin do not change that. The account stays
+eligible, so the router still chooses it when no other account is eligible.
+
+- **A temporary preference, not a quota measure.** It changes no figure: `remaining`, the
+  reserve and the eligibility floor are read exactly as before. Delete the line and normal
+  ranking returns on the next pick.
+- **Per account, default false.** A non-boolean value is refused, and so is the key on an
+  account id no adapter reads (usually a typo, which would otherwise change nothing).
+- **Applied once, in the selection layer,** after scoring and before hysteresis. `pick`,
+  `exec`, `select_account`, `cl` and `cdx` all rank through it, so they agree.
+- **Visible.** `status`, `explain` and `pick --explain` print a line naming the accounts,
+  and a deprioritized row in the ranked table carries a note:
+
+  ```
+  deprioritized: codex (deprioritize = true; ranks below every eligible account without it)
+  ```
+
+  When the preference decided the pick, `decision.reason` says so. `status --json` carries
+  `deprioritized` per account.
+- **The fallback is unchanged.** If no candidate is eligible, the router names whoever
+  frees up first, as before, whether or not that account is deprioritized.
+
 ## The poller
 
 The router reads usage live on every invocation, so nothing needs to run on a
