@@ -411,9 +411,10 @@ def _unclaimed_account_warnings(
     """Name every enabled account that no adapter reported on.
 
     The config layer accepts any account id under any known provider, but the adapters
-    decide what they actually read. A Claude account is discovered from its config
-    directory, so declaring one works; the codex and antigravity adapters each report a
-    fixed set, so declaring a second account under them produces nothing at all.
+    decide what they actually read. A Claude or Codex account is read from its config
+    directory, so declaring one works once the directory holds something to read; the
+    antigravity adapter reports a fixed set, so declaring a second account under it
+    produces nothing at all.
 
     Without this the operator gets the worst possible answer to "I added an account":
     the file parses, no error appears, and the account is simply missing from `status`.
@@ -429,8 +430,9 @@ def _unclaimed_account_warnings(
             continue
         out.append(
             f"account {account.id!r} is configured under provider {account.provider!r} "
-            f"but no adapter reported it, so it cannot be routed to. The {account.provider} "
-            f"adapter may support only its default account"
+            f"but no adapter reported it, so it cannot be routed to. Look for a warning "
+            f"above that names it; if there is none, the {account.provider} adapter does "
+            f"not read declared accounts"
         )
     return out
 

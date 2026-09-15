@@ -1713,6 +1713,11 @@ def test_an_account_no_adapter_reports_is_named(tmp_path) -> None:
     out = _unclaimed_account_warnings(cfg, [served])
 
     assert any("codex_b" in w for w in out), f"the extra codex account vanished: {out}"
+    # Since 2026-09-14 the Codex adapter reads every declared home, so the usual cause
+    # is a home with no transcript yet, and the adapter's own warning names it. The
+    # message must send the operator there, not claim the adapter is single-account.
+    assert all("only its default account" not in w for w in out), out
+    assert any("warning above" in w for w in out if "codex_b" in w), out
     # The unsupported provider belongs to the config layer's warning. Saying it twice,
     # in two different wordings, invites a hunt for two separate problems.
     assert not [w for w in out if "windsurf" in w], out
