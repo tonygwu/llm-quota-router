@@ -2281,3 +2281,135 @@ def test_offline_mode_refuses_a_reading_older_than_the_stale_bound(tmp_path: Pat
     assert not snapshot.available
     note = (snapshot.note or "").lower()
     assert "offline" in note and "old" in note, snapshot.note
+
+
+# --------------------------------------------------------------------------------------
+# Codex: one snapshot per configured account
+# --------------------------------------------------------------------------------------
+
+
+def _codex_home(root: Path, account_id: str, *, email: str, used_percent: float | None) -> Path:
+    """A Codex home with one transcript (or none when ``used_percent`` is None)."""
+    from quota_router.providers.codex_sessions import CodexAccountConfig  # noqa: F401
+
+    home = root / account_id
+    home.mkdir(parents=True, exist_ok=True)
+    if used_percent is not None:
+        write_session(
+            home / "sessions" / "2026" / "08" / "14",
+            "rollout.jsonl",
+            [token_count_line(timestamp="2026-08-14T19:00:00Z", used_percent=used_percent)],
+        )
+    token = fake_id_token(email, f"acct-{account_id}", "pro")
+    (home / "auth.json").write_text(
+        json.dumps({"tokens": {"id_token": token, "access_token": "secret"}}), encoding="utf-8"
+    )
+    return home
+
+
+def test_codex_reads_every_configured_account_independently(tmp_path: Path) -> None:
+    """A second Codex subscription is a second ``CODEX_HOME``; each is read on its own.
+
+    Until 2026-09-14 the adapter read exactly one home, so an operator who declared
+    ``[accounts.codex_b]`` saw it listed by the config layer and never measured -- the
+    same silent divergence the Claude adapters fixed on 2026-09-07.
+    """
+    from quota_router.providers.codex_sessions import CodexAccountConfig
+
+    homes = {
+        "codex": _codex_home(tmp_path, "codex", email="a@example.com", used_percent=55.0),
+        "codex_b": _codex_home(tmp_path, "codex_b", email="b@example.com", used_percent=10.0),
+    }
+    adapter = CodexSessionsAdapter(
+        codex_accounts=[
+            CodexAccountConfig(account_id=account_id, codex_home=home)
+            for account_id, home in homes.items()
+        ]
+    )
+    snapshots = adapter.snapshot(NOW)
+
+    assert [snapshot.id for snapshot in snapshots] == ["codex", "codex_b"]
+    by_id = {snapshot.id: snapshot for snapshot in snapshots}
+    assert by_id["codex"].identity is not None
+    assert by_id["codex"].identity.email == "a@example.com"
+    assert by_id["codex_b"].identity is not None
+    assert by_id["codex_b"].identity.email == "b@example.com"
+    assert by_id["codex"].windows[0].used_fraction == pytest.approx(0.55)
+    assert by_id["codex_b"].windows[0].used_fraction == pytest.approx(0.10)
+
+
+def test_codex_a_cold_home_is_named_in_a_warning_not_silently_dropped(tmp_path: Path) -> None:
+    """A freshly logged-in home has no transcript yet, so it cannot be scored.
+
+    The right outcome is one snapshot for the account that CAN be read and a warning
+    that names the one that cannot, so the operator knows which account is dark and
+    why, rather than a fleet listing that quietly shrinks by one.
+    """
+    from quota_router.providers.codex_sessions import CodexAccountConfig
+
+    warm = _codex_home(tmp_path, "codex", email="a@example.com", used_percent=55.0)
+    cold = _codex_home(tmp_path, "codex_b", email="b@example.com", used_percent=None)
+    adapter = CodexSessionsAdapter(
+        codex_accounts=[
+            CodexAccountConfig(account_id="codex", codex_home=warm),
+            CodexAccountConfig(account_id="codex_b", codex_home=cold),
+        ]
+    )
+    snapshots = adapter.snapshot(NOW)
+
+    assert [snapshot.id for snapshot in snapshots] == ["codex"]
+    assert any(
+        "codex_b" in warning and "no session transcripts" in warning
+        for warning in adapter.warnings
+    ), adapter.warnings
+
+
+def test_build_default_adapters_reads_a_second_codex_account_from_policy(tmp_path: Path) -> None:
+    """The operator's ``[accounts.codex_b] config_dir`` reaches the adapter."""
+    from quota_router.config import AccountConfig, Config
+    from quota_router.providers import build_default_adapters
+
+    a = _codex_home(tmp_path, "codex", email="a@example.com", used_percent=55.0)
+    b = _codex_home(tmp_path, "codex_b", email="b@example.com", used_percent=10.0)
+    config = Config(
+        accounts={
+            "codex": AccountConfig(id="codex", config_dir=str(a)),
+            "codex_b": AccountConfig(id="codex_b", config_dir=str(b), provider="codex"),
+        }
+    )
+    adapters = build_default_adapters(config=config, env={}, home=tmp_path)
+    codex = next(adapter for adapter in adapters if isinstance(adapter, CodexSessionsAdapter))
+
+    assert [snapshot.id for snapshot in codex.snapshot(NOW)] == ["codex", "codex_b"]
+
+
+def test_the_cli_rebuild_keeps_the_second_codex_account(tmp_path: Path) -> None:
+    """``quotapick`` rebuilds every adapter with its own settings; codex must keep its
+    account list through that rebuild, the way the Claude adapters keep ``configs``.
+    """
+    from quota_router import cli
+    from quota_router.config import AccountConfig, Config
+
+    a = _codex_home(tmp_path, "codex", email="a@example.com", used_percent=55.0)
+    b = _codex_home(tmp_path, "codex_b", email="b@example.com", used_percent=10.0)
+    config = Config(
+        accounts={
+            "codex": AccountConfig(id="codex", config_dir=str(a)),
+            "codex_b": AccountConfig(id="codex_b", config_dir=str(b), provider="codex"),
+        }
+    )
+    # The rebuild step alone, so no adapter runs: the live Claude adapter would
+    # otherwise read this machine's real Keychain on the way to a network call.
+    from quota_router import providers
+
+    rebuilt = cli._configure_adapters(
+        providers,
+        providers.build_default_adapters(),
+        config=config,
+        env={"HOME": str(tmp_path)},
+        run=None,
+        timeout_s=None,
+    )
+    codex = next(adapter for adapter in rebuilt if isinstance(adapter, CodexSessionsAdapter))
+    assert [account.account_id for account in codex.accounts()] == ["codex", "codex_b"]
+    assert [account.codex_home for account in codex.accounts()] == [a, b]

@@ -27,7 +27,7 @@ import base64
 import binascii
 import json
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -58,6 +58,7 @@ __all__ = [
     "DEFAULT_MAX_FILES",
     "DEFAULT_TAIL_BYTES",
     "DEFAULT_LIMIT_IDS",
+    "CodexAccountConfig",
     "CodexSessionsAdapter",
     "window_key_for_minutes",
 ]
@@ -341,12 +342,28 @@ def _identity_from_auth(auth_path: Path) -> tuple[Identity | None, str | None]:
         return None, plan
 
 
+@dataclass(frozen=True, slots=True)
+class CodexAccountConfig:
+    """One Codex home, under the account id the operator's policy gave it.
+
+    A second Codex subscription is a second ``CODEX_HOME`` directory, exactly as a
+    second Claude subscription is a second ``CLAUDE_CONFIG_DIR``: the directory holds
+    the login (``auth.json``), the transcripts this adapter reads, and nothing shared.
+    """
+
+    account_id: str
+    codex_home: Path
+
+
 class CodexSessionsAdapter(ProviderAdapter):
-    """Derive the Codex account's windows from recent session transcripts.
+    """Derive each Codex account's windows from its recent session transcripts.
 
     Args:
+        codex_accounts: every Codex account to read, each with its own home. When
+            given, ``codex_home`` and ``account_id`` are ignored. When absent the
+            adapter reads exactly one account, the historical behaviour.
         codex_home: ``$CODEX_HOME`` override. Defaults to the env var, then ``~/.codex``.
-        max_files / tail_bytes / max_rows_per_file: the speed guardrails.
+        max_files / tail_bytes / max_rows_per_file: the speed guardrails, per home.
         read_identity: read ``auth.json`` for the account email (local file only).
         env: environment mapping, injected for tests.
     """
@@ -356,6 +373,7 @@ class CodexSessionsAdapter(ProviderAdapter):
     def __init__(
         self,
         *,
+        codex_accounts: Sequence[CodexAccountConfig] | None = None,
         codex_home: Path | str | None = None,
         max_files: int = DEFAULT_MAX_FILES,
         tail_bytes: int = DEFAULT_TAIL_BYTES,
@@ -364,6 +382,7 @@ class CodexSessionsAdapter(ProviderAdapter):
         account_id: str = ACCOUNT_CODEX,
         env: Mapping[str, str] | None = None,
     ) -> None:
+        self._codex_accounts = tuple(codex_accounts) if codex_accounts else None
         self._codex_home = codex_home
         self._max_files = max_files
         self._tail_bytes = tail_bytes
@@ -381,25 +400,47 @@ class CodexSessionsAdapter(ProviderAdapter):
         raw = env.get(CODEX_HOME_ENV) or DEFAULT_CODEX_HOME
         return Path(os.path.expanduser(raw))
 
+    def accounts(self) -> tuple[CodexAccountConfig, ...]:
+        """Every account this adapter reads, in policy order."""
+        if self._codex_accounts is not None:
+            return self._codex_accounts
+        return (CodexAccountConfig(account_id=self._account_id, codex_home=self.codex_home()),)
+
     def snapshot(self, now_s: float) -> list[AccountSnapshot]:
-        """Read the newest transcript tails and build one Codex snapshot. Never raises."""
+        """One snapshot per readable account. Never raises.
+
+        An account whose home holds no transcript yet -- a fresh login that has not
+        run anything -- yields no snapshot and a warning that names it. It is then
+        absent from routing rather than scored as wide open, which is the safe
+        direction; ``cdx`` tells the operator how to seed it.
+        """
         warnings: list[str] = []
-        home = self.codex_home()
+        out: list[AccountSnapshot] = []
+        for account in self.accounts():
+            built = self._snapshot_one(account, now_s, warnings)
+            if built is not None:
+                out.append(built)
+        self.warnings = tuple(warnings)
+        return out
+
+    def _snapshot_one(
+        self, account: CodexAccountConfig, now_s: float, warnings: list[str]
+    ) -> AccountSnapshot | None:
+        """Read one home's newest transcript tails and build its snapshot."""
+        home = account.codex_home
         sessions_dir = home / "sessions"
 
         files = _session_files(sessions_dir, limit=max(1, self._max_files))
         if not files:
-            warnings.append(f"codex: no session transcripts under {sessions_dir}")
-            self.warnings = tuple(warnings)
-            return []
+            warnings.append(f"{account.account_id}: no session transcripts under {sessions_dir}")
+            return None
 
         observations = _collect_observations(
             files, tail_bytes=self._tail_bytes, max_rows_per_file=self._max_rows_per_file
         )
         if not observations:
-            warnings.append("codex: no rate_limits rows in the newest session tails")
-            self.warnings = tuple(warnings)
-            return []
+            warnings.append(f"{account.account_id}: no rate_limits rows in the newest session tails")
+            return None
 
         windows: list[Window] = []
         taken: set[str] = set()
@@ -412,13 +453,12 @@ class CodexSessionsAdapter(ProviderAdapter):
             built = _windows_from_observation(observation, taken=taken)
             if not built and observation.primary is None:
                 # e.g. limit_id "premium", which reports no window at all.
-                warnings.append(f"codex: limit {observation.limit_id!r} reported no window")
+                warnings.append(f"{account.account_id}: limit {observation.limit_id!r} reported no window")
             windows.extend(built)
 
         if not windows:
-            warnings.append("codex: no parseable window in any rate_limits row")
-            self.warnings = tuple(warnings)
-            return []
+            warnings.append(f"{account.account_id}: no parseable window in any rate_limits row")
+            return None
 
         identity: Identity | None = None
         plan_from_auth: str | None = None
@@ -435,11 +475,11 @@ class CodexSessionsAdapter(ProviderAdapter):
             max(0.0, now_s - observed_at_s), fresh_s=_FRESH_S, stale_s=_STALE_S
         )
         if tier == TIER_UNKNOWN:
-            warnings.append(f"codex: unrecognized plan_type {plan!r}; capacity stays neutral")
+            warnings.append(f"{account.account_id}: unrecognized plan_type {plan!r}; capacity stays neutral")
 
         try:
             snapshot = AccountSnapshot(
-                id=self._account_id,
+                id=account.account_id,
                 windows=tuple(windows),
                 tier=tier,
                 source=SOURCE_CACHE,
@@ -449,9 +489,7 @@ class CodexSessionsAdapter(ProviderAdapter):
                 identity=identity,
             )
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
-            warnings.append(f"codex: snapshot rejected ({type(exc).__name__}: {exc})")
-            self.warnings = tuple(warnings)
-            return []
+            warnings.append(f"{account.account_id}: snapshot rejected ({type(exc).__name__}: {exc})")
+            return None
 
-        self.warnings = tuple(warnings)
-        return [snapshot]
+        return snapshot

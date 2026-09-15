@@ -221,13 +221,22 @@ def _configure_adapters(
     """
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
     cursor_cls = getattr(providers, "CursorAdapter", None)
+    codex_cls = getattr(providers, "CodexSessionsAdapter", None)
     antigravity_cls = getattr(providers, "AntigravityAdapter", None)
     from_policy = getattr(providers, "claude_configs_from_policy", None)
+    codex_from_policy = getattr(providers, "codex_accounts_from_policy", None)
     ids_for_provider = getattr(providers, "account_ids_for_provider", None)
 
     claude_configs: tuple[Any, ...] | None = None
     if config is not None and callable(from_policy):
         claude_configs = tuple(from_policy(config, env=env)) or None
+
+    # Same shape, same reason: a Codex account is a directory to be read, and the
+    # adapter reads only the directories it is handed. Until 2026-09-14 nothing was
+    # handed, so a second Codex account was listed by the config and never measured.
+    codex_accounts: tuple[Any, ...] | None = None
+    if config is not None and callable(codex_from_policy):
+        codex_accounts = tuple(codex_from_policy(config, env=env)) or None
 
     cursor_accounts: tuple[str, ...] | None = None
     antigravity_accounts: tuple[str, ...] | None = None
@@ -250,6 +259,8 @@ def _configure_adapters(
             settings["account_ids"] = cursor_accounts
         elif antigravity_cls is not None and cls is antigravity_cls:
             settings["account_ids"] = antigravity_accounts
+        elif codex_cls is not None and cls is codex_cls:
+            settings["codex_accounts"] = codex_accounts
 
         wanted = {key: value for key, value in settings.items() if value is not None}
         try:

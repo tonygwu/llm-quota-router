@@ -29,9 +29,11 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..types import (
+    ACCOUNT_CODEX,
     ACCOUNT_CURSOR,
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
+    PROVIDER_CODEX,
     PROVIDER_CURSOR,
     SOURCE_ASSUMED,
     SOURCE_CACHE,
@@ -59,7 +61,12 @@ from .claude_cli_config import (
 )
 from .claude_oauth import ClaudeOAuthAdapter
 from .claude_statusline import ClaudeStatuslineAdapter
-from .codex_sessions import CodexSessionsAdapter
+from .codex_sessions import (
+    CODEX_HOME_ENV,
+    DEFAULT_CODEX_HOME,
+    CodexAccountConfig,
+    CodexSessionsAdapter,
+)
 from .cursor import CursorAdapter
 
 __all__ = [
@@ -72,6 +79,7 @@ __all__ = [
     "ClaudeStatuslineAdapter",
     "ClaudeAccountConfig",
     "discover_claude_configs",
+    "CodexAccountConfig",
     "CodexSessionsAdapter",
     "CursorAdapter",
     "account_ids_for_provider",
@@ -79,6 +87,7 @@ __all__ = [
     "SOURCE_RANK",
     "build_default_adapters",
     "claude_configs_from_policy",
+    "codex_accounts_from_policy",
     "collect_snapshots",
     "load_snapshots",
 ]
@@ -203,6 +212,57 @@ def account_ids_for_provider(config: Any, provider: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def codex_accounts_from_policy(
+    config: Any,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: Path | str | None = None,
+) -> tuple[CodexAccountConfig, ...]:
+    """Every Codex account the policy declares, each resolved to its own home.
+
+    The Codex adapter reads transcripts out of a directory, so like the Claude
+    adapters it needs the directory, not merely the id. ``config_dir`` is that
+    directory. The default account may omit it and is then read from
+    ``$CODEX_HOME`` or ``~/.codex``; any other Codex account without one is skipped
+    here, and the CLI's unreported-account warning names it, because a directory
+    nobody declared is not something to guess.
+
+    ``config`` is duck-typed like :func:`claude_configs_from_policy`.
+    """
+    accounts_fn = getattr(config, "enabled_accounts", None)
+    if not callable(accounts_fn):
+        return ()
+    try:
+        accounts = list(accounts_fn())
+    except Exception:  # pragma: no cover - a broken policy object is not our failure mode
+        return ()
+
+    base = Path(home) if home is not None else Path(os.path.expanduser("~"))
+    environment = env if env is not None else os.environ
+    out: list[CodexAccountConfig] = []
+    for account in accounts:
+        account_id = getattr(account, "id", None)
+        if not isinstance(account_id, str) or not account_id:
+            continue
+        provider = getattr(account, "provider", "") or provider_for_account_id(account_id)
+        if provider != PROVIDER_CODEX:
+            continue
+        raw_dir = getattr(account, "config_dir", None)
+        if raw_dir:
+            codex_home = Path(os.path.expanduser(str(raw_dir)))
+        elif account_id == ACCOUNT_CODEX:
+            declared = environment.get(CODEX_HOME_ENV)
+            codex_home = (
+                Path(os.path.expanduser(declared))
+                if declared
+                else base / DEFAULT_CODEX_HOME.removeprefix("~/")
+            )
+        else:
+            continue
+        out.append(CodexAccountConfig(account_id=account_id, codex_home=codex_home))
+    return tuple(out)
+
+
 def build_default_adapters(
     *,
     config: Any = None,
@@ -213,6 +273,7 @@ def build_default_adapters(
 ) -> tuple[ProviderAdapter, ...]:
     """The standard adapter set, in preference order (live read first, guesses last)."""
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
+    codex_accounts = codex_accounts_from_policy(config, env=env, home=home) or None
     cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
     # Antigravity is opt-in, unlike every other adapter here. The others read something
     # real -- a usage endpoint, a statusline cache, session transcripts, a signed-in
@@ -226,7 +287,7 @@ def build_default_adapters(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
         ),
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
-        CodexSessionsAdapter(env=env),
+        CodexSessionsAdapter(env=env, codex_accounts=codex_accounts),
         CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
     ]
     if antigravity_accounts:
