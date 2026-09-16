@@ -333,3 +333,13 @@ def test_history_records_the_reading_not_the_reserve(env) -> None:
     recorded = history_mod.record_to_snapshots(record, source=SOURCE_LIVE, confidence=1.0)
     window = next(s for s in recorded if s.id == "codex").window("7d")
     assert window.used_fraction == pytest.approx(0.28)
+    # The assertion above stopped carrying this test on its own once the hold moved out
+    # of ``used_fraction``: the vendor reading is now 0.28 on both sides of the reserve,
+    # so it passes whether or not the hold leaks in. This is the guard now. A reserve
+    # recorded here would shrink toward the reset and read as usage running backwards.
+    assert window.held_fraction == 0.0, "the reserve leaked into history"
+    # And the routed snapshot really did hold something, so the check above is not
+    # passing merely because no reserve was in force.
+    assert next(
+        s for s in recorded if s.id == "codex"
+    ).window("7d").remaining_fraction == pytest.approx(0.72)
