@@ -51,6 +51,17 @@ from quota_router.types import (
 #: ``tests/fixtures/cswap_real.json``), so window offsets below mean what they meant
 #: on the operator's machine.
 NOW = 1_786_733_212.0  # 2026-08-14T18:46:52Z
+
+#: A config search root that cannot exist, so ``load_config`` reads the builtin defaults
+#: and nothing at all off the operator's machine.
+#:
+#: ``load_config(env={})`` does NOT mean "no config": ``config_search_paths`` falls back
+#: to ``Path.home()`` for an absent HOME and to ``Path.cwd()`` for an absent cwd, so it
+#: reads ``~/.config/quota-router/config.toml`` and whatever project file the suite is
+#: run from. ``test_launcher.py`` learned this on 2026-08-24; the tests below learned it
+#: on 2026-09-16, when an operator declared two Antigravity pools and the one test that
+#: asserted an *undeclared* pool stays absent began reading them off the real machine.
+_NO_CONFIG_FILES: str = "/nonexistent/quota-router-test-root"
 FIVE_HOURS = 18_000.0
 SEVEN_DAYS = 604_800.0
 
@@ -1684,7 +1695,9 @@ def test_an_account_under_an_unsupported_provider_says_so(tmp_path) -> None:
 
     path = tmp_path / "config.toml"
     path.write_text('[accounts.windsurf]\nprovider = "windsurf"\n', encoding="utf-8")
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
 
     hits = [w for w in cfg.warnings if "accounts.windsurf" in w]
     assert hits, f"an unsupported provider passed in silence: {cfg.warnings}"
@@ -1707,7 +1720,9 @@ def test_an_account_no_adapter_reports_is_named(tmp_path) -> None:
         '[accounts.windsurf]\nprovider = "windsurf"\n',
         encoding="utf-8",
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
     served = AccountSnapshot(id="codex", provider="codex", windows=(), source=SOURCE_LIVE)
 
     out = _unclaimed_account_warnings(cfg, [served])
@@ -1730,7 +1745,9 @@ def test_an_account_that_was_reported_draws_no_warning(tmp_path) -> None:
 
     path = tmp_path / "config.toml"
     path.write_text('[accounts.claude_e]\nprovider = "claude"\n', encoding="utf-8")
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
     served = [
         AccountSnapshot(id=a.id, provider=a.provider, windows=(), source=SOURCE_LIVE)
         for a in cfg.enabled_accounts()
@@ -1754,7 +1771,9 @@ def test_the_cli_hands_cursor_its_configured_accounts(tmp_path) -> None:
     path.write_text(
         '[accounts.cursor_work]\nprovider = "cursor"\n', encoding="utf-8"
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
 
     rebuilt = _configure_adapters(
         providers,
@@ -1794,7 +1813,9 @@ def test_antigravity_pools_come_from_the_operator_config(tmp_path: Path) -> None
     path.write_text(
         '[accounts.antigravity_gemini]\nprovider = "antigravity"\n', encoding="utf-8"
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
 
     rebuilt = _configure_adapters(
         providers,
@@ -1836,6 +1857,40 @@ def test_antigravity_is_opt_in_and_absent_from_the_builtin_fleet(env, tmp_path):
         type(a).__name__ for a in providers.build_default_adapters(config=_Policy())
     ]
     assert "AntigravityAdapter" in declared, declared
+
+
+def test_an_opt_in_adapter_is_built_when_the_operator_declares_it(env, tmp_path):
+    """The config must reach the adapter *set*, not just the adapters already in it.
+
+    Every other adapter is unconditional, so handing the config to `_configure_adapters`
+    alone is enough to configure it. Antigravity is opt-in: `build_default_adapters`
+    constructs it only when the config names its pools, and `_configure_adapters` can
+    only rebuild adapters that already exist. A loader that builds the set with no
+    config therefore drops the one adapter the operator explicitly asked for, and the
+    two tests above both miss it -- one hands `_configure_adapters` an adapter it
+    constructed itself, the other checks `build_default_adapters` directly. This one
+    goes through the loader the CLI actually runs.
+    """
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.antigravity_gemini]\nprovider = "antigravity"\n', encoding="utf-8"
+    )
+    env = {**env, "QUOTA_ROUTER_CONFIG": str(path)}
+    config = load_config(env=env)
+
+    loader, error = cli._load_oracle()
+    assert error is None, error
+    snapshots, _ = loader(now_s=NOW, config=config, env=env, run=None, timeout_s=None)
+    assert "antigravity_gemini" in {s.id for s in snapshots}, [s.id for s in snapshots]
+
+    # And the operator-facing symptom, named for this account alone: the builtin
+    # Claude/Codex accounts legitimately go unreported under a temp HOME, so a bare
+    # search for the warning text would pass on their noise and prove nothing.
+    code, _, err = run(["status"], env, deps=cli.Deps())
+    assert code == cli.EXIT_OK
+    assert "account 'antigravity_gemini' is configured" not in err, err
 
 
 # ======================================================================================

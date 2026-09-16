@@ -174,9 +174,18 @@ def _load_oracle() -> tuple[Callable[..., Any] | None, str | None]:
     if callable(build) and callable(collect):
 
         def load_snapshots(**kwargs: Any) -> Any:
+            # The config decides *which* adapters exist, not only how they are
+            # configured: an opt-in adapter is constructed only when the operator's
+            # config names it, and `_configure_adapters` below can only rebuild
+            # adapters that are already in the set. Building the set with no config
+            # dropped every opt-in adapter -- Antigravity's declared pools reached
+            # `status` as "no adapter reported it" and could not be routed to.
+            # Passed positionally by name rather than through `_supported_kwargs`:
+            # a providers layer that cannot take the config must fail loudly here,
+            # because silently dropping it is exactly this bug.
             adapters = _configure_adapters(
                 providers,
-                build(),
+                build(config=kwargs.get("config"), env=kwargs.get("env")),
                 config=kwargs.get("config"),
                 env=kwargs.get("env"),
                 run=kwargs.get("run"),
