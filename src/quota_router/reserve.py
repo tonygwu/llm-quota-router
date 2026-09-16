@@ -129,9 +129,14 @@ def apply_manual_reserve(
             rate_per_day=rate,
         )
         reserves.append(held)
-        spent_or_held = min(1.0, max(0.0, 1.0 - held.spendable))
+        # The hold goes in its own field rather than on top of ``used_fraction``. Both
+        # are netted off by ``remaining_fraction``, so routing is unchanged, but the
+        # vendor's reading survives for anyone reading the window. Capped at what is
+        # actually left: a rate may hold back more than the account has, and a window
+        # cannot be more than fully accounted for.
+        holdable = min(held.reserve, weekly.remaining_fraction)
         windows = tuple(
-            replace(window, used_fraction=spent_or_held) if window is weekly else window
+            replace(window, held_fraction=holdable) if window is weekly else window
             for window in snapshot.windows
         )
         note = (snapshot.note + "; " if snapshot.note else "") + (

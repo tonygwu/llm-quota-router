@@ -594,6 +594,7 @@ class Window:
     observed_at_s: float
     applies_to: frozenset[str] | None = None
     expected_used_fraction: float | None = None
+    held_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _as_text(self.key, "Window.key"))
@@ -631,12 +632,27 @@ class Window:
                 _as_fraction(self.expected_used_fraction, "Window.expected_used_fraction"),
             )
 
+        object.__setattr__(
+            self, "held_fraction", _as_fraction(self.held_fraction, "Window.held_fraction")
+        )
+
     # -- geometry ----------------------------------------------------------------------
 
     @property
     def remaining_fraction(self) -> float:
-        """Fraction of this window's budget still available."""
-        return _clamp01(1.0 - self.used_fraction)
+        """Fraction of this window's budget still available to route against.
+
+        Two different facts are netted off here, and keeping them apart matters. The
+        vendor's own reading is :attr:`used_fraction`; anything this router holds back on
+        the operator's behalf is :attr:`held_fraction`. Both are unavailable to routing,
+        so both are subtracted, but only the first is a statement about the vendor.
+
+        The reserve used to be applied by overwriting ``used_fraction``. It routed
+        correctly and forged the vendor's number: an account holding half its weekly pool
+        for manual use published ``used_fraction = 1.0``, indistinguishable from one the
+        vendor had actually cut off.
+        """
+        return _clamp01(1.0 - self.used_fraction - self.held_fraction)
 
     @property
     def is_exhausted(self) -> bool:
@@ -721,6 +737,9 @@ class Window:
             "observed_at_s": self.observed_at_s,
             "applies_to": None if self.applies_to is None else sorted(self.applies_to),
             "expected_used_fraction": self.expected_used_fraction,
+            # Always emitted, and 0.0 when nothing is held, so a consumer can subtract it
+            # unconditionally rather than testing for the key's presence.
+            "held_fraction": self.held_fraction,
         }
 
 

@@ -218,6 +218,62 @@ def test_the_reserve_is_generic_and_holds_on_a_claude_account_too(env) -> None:
 # ======================================================================================
 
 
+def test_the_reserve_does_not_forge_the_vendor_reading(env) -> None:
+    """``used_fraction`` stays what the vendor said; the hold is its own field.
+
+    The reserve used to be applied by overwriting ``used_fraction`` with ``1 -
+    spendable``, because that is the field scoring divides by. It routed correctly and
+    published a number the vendor never said: on 2026-09-16 the operator's codex account
+    read ``used_fraction = 1.0`` in ``status --json`` while OpenAI reported 0.87, and a
+    consumer could not tell "the vendor cut me off" from "my own router held this back".
+    Two separate agents reached the wrong conclusion from it in one day.
+
+    So the two facts are separated. ``used_fraction`` is the vendor's reading and
+    ``held_fraction`` is the router's own policy. Routing is unchanged: what scoring
+    consumes is ``remaining_fraction``, which now nets off both.
+    """
+    from quota_router.reserve import apply_manual_reserve
+
+    adjusted, _ = apply_manual_reserve([codex()], {"codex": 0.05}, NOW)
+    window = adjusted[0].window("7d")
+
+    assert window.used_fraction == pytest.approx(0.28), "the vendor's reading was forged"
+    assert window.held_fraction == pytest.approx(0.33), "the hold is not carried"
+    # Unchanged from before the split: this is the number routing divides by.
+    assert window.remaining_fraction == pytest.approx(0.39)
+
+
+def test_status_json_reports_the_vendor_reading_and_the_hold_apart(env) -> None:
+    """The operator-facing contract, which is where the wrong diagnosis was formed."""
+    write_config(env, SECOND_CODEX + RATE_ON_CODEX)
+    code, out, _ = run(["status", "--json"], env, snapshots=[codex(), codex_b()])
+    assert code == 0
+    accounts = {a["id"]: a for a in json.loads(out)["accounts"]}
+    weekly_window = next(w for w in accounts["codex"]["windows"] if w["key"] == "7d")
+
+    assert weekly_window["used_fraction"] == pytest.approx(0.28)
+    assert weekly_window["held_fraction"] == pytest.approx(0.33)
+    # An account with no rate carries a zero hold rather than a missing key, so a
+    # consumer can subtract it unconditionally.
+    b_weekly = next(w for w in accounts["codex_b"]["windows"] if w["key"] == "7d")
+    assert b_weekly["held_fraction"] == 0.0
+
+
+def test_a_held_window_is_not_scored_as_vendor_exhausted(env) -> None:
+    """Routing is byte-identical to the overwrite it replaces.
+
+    ``Stocks`` is fed ``weekly_used``, which before the split was the inflated figure.
+    It still is: a held fraction is unavailable to routing in exactly the way spent
+    quota is, so the objective must not suddenly see 0.33 of headroom reappear.
+    """
+    write_config(env, SECOND_CODEX + RATE_ON_CODEX)
+    payload = pick(
+        ["pick", "--only", "codex,codex_b", "--dry-run"], env, snapshots=[codex(), codex_b()]
+    )
+    ranked = {r["account"]: r for r in payload["ranked"]}
+    assert ranked["codex"]["remaining"] == pytest.approx(0.39)
+
+
 def test_status_shows_the_reserve_and_the_spendable_amount(env) -> None:
     write_config(env, SECOND_CODEX + RATE_ON_CODEX)
     code, out, _ = run(["status"], env, snapshots=[codex(), codex_b()])

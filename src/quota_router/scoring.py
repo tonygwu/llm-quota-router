@@ -414,7 +414,11 @@ def stocks_from_snapshot(
     )
     return Stocks.from_fractions(
         session_used=session.used_fraction if session else 0.0,
-        weekly_used=weekly.used_fraction,
+        # Spent plus held. A fraction held for the operator's manual use is unavailable
+        # to routing in exactly the way spent quota is, so the objective must not see it
+        # as headroom. This is the one place that reads the weekly window's raw usage
+        # rather than ``remaining_fraction``, which already nets both off.
+        weekly_used=_clamp01(weekly.used_fraction + weekly.held_fraction),
         fable_used=fable.used_fraction if fable else 0.0,
         tier_scale=capacity,
         session_reset_s=(session.resets_at_s if session else now_s) or now_s,
