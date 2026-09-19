@@ -435,8 +435,9 @@ def _unclaimed_account_warnings(
     The config layer accepts any account id under any known provider, but the adapters
     decide what they actually read. A Claude or Codex account is read from its config
     directory, so declaring one works once the directory holds something to read; the
-    antigravity adapter reports a fixed set, so declaring a second account under it
-    produces nothing at all.
+    antigravity adapter reports on exactly the pools the config declares, so a second
+    pool is reported too, and reaching a second Google account needs `macos_user` to
+    name the macOS user whose Keychain holds that account's credential.
 
     Without this the operator gets the worst possible answer to "I added an account":
     the file parses, no error appears, and the account is simply missing from `status`.

@@ -17,6 +17,17 @@ it passes, the account is routable again -- still unobservable, still confidence
 Two Antigravity pools sit behind the one CLI (``antigravity_gemini`` and
 ``antigravity_claude``, selected by ``AGY_MODEL``), and they exhaust independently, so
 each gets its own snapshot and its own deadline.
+
+Those two are the DEFAULT pair, not a fixed set: this adapter reports on whatever pools
+the operator's config declares, and the CLI has handed it that list since 0.1.4. A second
+Google account is therefore reported here too, but it is NOT reached by a second ``HOME``.
+``agy`` keeps one Keychain item per macOS USER, so every ``HOME`` under one user serves
+the SAME Google account -- measured 2026-09-10, where 567 grades believed to span two
+accounts had all come from one. A second account is a second macOS user, named by
+``macos_user``. Read the README section "A second Antigravity account is a second macOS
+user", and ask ``quotapick launch-plan <id> --json`` for the recipe rather than
+rebuilding it: the recipe has three parts (``env``, ``argv_prefix``, ``unset_env``) and
+applying only ``env`` returns a good answer from the wrong account.
 """
 
 from __future__ import annotations

@@ -1829,13 +1829,64 @@ def test_antigravity_pools_come_from_the_operator_config(tmp_path: Path) -> None
     assert [s.id for s in adapter.snapshot(0.0)] == ["antigravity_gemini"]
 
 
+def test_a_second_antigravity_account_reaches_the_adapter(tmp_path: Path) -> None:
+    """Four declared pools, spanning two Google accounts, all reach the adapter.
+
+    A tripwire, not a bug fix: this has worked since 0.1.4. Two docstrings went on
+    claiming the adapter reported a fixed pair long after it stopped doing so, and on
+    2026-09-16 a consumer read one of them and told the operator that a second
+    Antigravity account was unsupported. Prose that nothing executes drifts; this pins
+    the claim so the next drift fails here instead of reaching a consumer.
+
+    `macos_user` is what makes the second pair a second GOOGLE account rather than a
+    second profile directory: `agy` keeps one Keychain item per macOS user, so every
+    HOME under one user serves the same account.
+    """
+    from quota_router import providers
+    from quota_router.cli import _configure_adapters
+    from quota_router.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[accounts.antigravity_gemini]\nprovider = "antigravity"\n'
+        '[accounts.antigravity_claude]\nprovider = "antigravity"\n'
+        'env = { AGY_MODEL = "claude" }\n'
+        '[accounts.antigravity_gemini_b]\nprovider = "antigravity"\n'
+        'macos_user = "second"\n'
+        '[accounts.antigravity_claude_b]\nprovider = "antigravity"\n'
+        'macos_user = "second"\n'
+        'env = { AGY_MODEL = "claude" }\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}, cwd=_NO_CONFIG_FILES, explicit_path=path
+    )
+
+    rebuilt = _configure_adapters(
+        providers,
+        [providers.AntigravityAdapter()],
+        config=cfg,
+        env={},
+        run=None,
+        timeout_s=None,
+    )
+    adapter = next(a for a in rebuilt if isinstance(a, providers.AntigravityAdapter))
+    assert [s.id for s in adapter.snapshot(0.0)] == [
+        "antigravity_gemini",
+        "antigravity_claude",
+        "antigravity_gemini_b",
+        "antigravity_claude_b",
+    ], "a declared Antigravity pool was dropped"
+
+
 def test_antigravity_is_opt_in_and_absent_from_the_builtin_fleet(env, tmp_path):
     """Nothing ships an Antigravity pool: not the config defaults, not the adapter set.
 
-    The two pools publish no quota at all -- no API, no cache, no file on disk -- and
-    `agy` has no account seam either, so a second Antigravity subscription is invisible
-    to this router and to itself. Shipping them on put two rows in `status` that could
-    never carry a number, and two candidates `pick` could only ever choose blind.
+    The two pools publish no quota at all -- no API, no cache, no file on disk -- so
+    shipping them on put two rows in `status` that could never carry a number, and two
+    candidates `pick` could only ever choose blind. Opt-in is about that missing quota
+    signal, NOT about a missing account seam: a second Antigravity account is reachable,
+    through `macos_user`, and is reported as soon as the config declares it.
     """
     from types import SimpleNamespace
 
