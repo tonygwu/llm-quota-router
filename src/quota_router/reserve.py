@@ -27,7 +27,9 @@ An account without the key routes exactly as it did before.
 WHERE IT APPLIES
 ----------------
 Once, to the account's 7-day window, before eligibility, scoring and ``status`` read the
-snapshot, so all three see the same spendable figure. History records the snapshot as
+snapshot, so all three see the same spendable figure. ``status`` then *renders* the two
+apart: its weekly column adds the hold back to show the vendor's capacity, and the hold
+and the spendable remainder get columns of their own. History records the snapshot as
 read, never as reserved: calibration and the waste series treat recorded values as usage,
 and a reserve that shrinks over time would read as usage running backwards.
 """

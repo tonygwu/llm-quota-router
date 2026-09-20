@@ -32,6 +32,7 @@ from .types import (
     REGIME_A,
     REGIME_B,
     SOURCE_LIVE,
+    WINDOW_KEY_7D,
     AccountSnapshot,
     Decision,
     ScoreBreakdown,
@@ -409,6 +410,14 @@ _WINDOW_COLUMN_ORDER: Final[Mapping[str, int]] = {"5h": 0, "7d": 1}
 #: means the window exists and does not constrain the model class being asked about.
 _ABSENT: Final[str] = "-"
 
+#: The two columns a manual-use reserve adds, next to the weekly window it comes out of.
+#: ``manual_reserve`` is the budget ``manual_rate_per_day x days_to_reset``, reported
+#: uncapped, and ``spendable`` is what routing may actually use. They exist because one
+#: number cannot carry both meanings: before them the weekly cell showed the spendable
+#: figure, so a hold was indistinguishable from an account the vendor had exhausted.
+_RESERVE_COLUMN: Final[str] = "manual_reserve"
+_SPENDABLE_COLUMN: Final[str] = "spendable"
+
 
 def format_pace(slack: float) -> str:
     """One window's slack as pace: ``24% to spare``, ``35% over pace``, ``on pace``.
@@ -426,18 +435,18 @@ def format_pace(slack: float) -> str:
 
 
 def format_manual_reserve(held: "ManualReserve") -> str:
-    """``reserve codex: 72% left - 33% held for manual use (0.05/day x 6.6d to reset) = 39% spendable``.
+    """``reserve codex: 72% left - 33% budgeted hold (0.05/day x 6.6d to reset) = 39% spendable``.
 
-    Printed beside the status table and the explanation, because the table's weekly
-    column already shows the spendable figure and nothing else says why it is lower
-    than the account's own bar.
+    Printed beside the status table and the explanation. The table now carries the same
+    three figures as columns, and this line is what says where the middle one came from:
+    a rate per day times the time still to run before the weekly reset.
     """
     def pct(value: float) -> str:
         return f"{round(value * 100.0)}%"
 
     return (
-        f"reserve {held.account_id}: {pct(held.remaining)} left - {pct(held.reserve)} held "
-        f"for manual use ({held.rate_per_day:g}/day x "
+        f"reserve {held.account_id}: {pct(held.remaining)} left - "
+        f"{pct(held.reserve)} budgeted hold ({held.rate_per_day:g}/day x "
         f"{format_duration(held.days_to_reset * 86400.0)} to reset) = "
         f"{pct(held.spendable)} spendable"
     )
@@ -517,22 +526,52 @@ def _aligned_table(
     return "\n".join(lines)
 
 
+def _reserve_columns(columns: Sequence[str]) -> list[str]:
+    """``columns`` with the two reserve columns beside the weekly window they come from.
+
+    Beside it rather than at the end, because the three numbers are one subtraction and
+    a reader should not have to cross the table to do it.
+    """
+    out = list(columns)
+    weekly = window_label(WINDOW_KEY_7D)
+    at = out.index(weekly) + 1 if weekly in out else len(out)
+    out[at:at] = [_RESERVE_COLUMN, _SPENDABLE_COLUMN]
+    return out
+
+
 def _status_block(
     measurable: Sequence[AccountSnapshot],
     now_s: float,
     model_class: str | None,
+    reserves: Mapping[str, "ManualReserve"] | None = None,
 ) -> str:
     """One table: a line per account, sharing one set of window columns.
 
     Every account here must speak the same window vocabulary, or the columns fill with
     dashes. :func:`format_status_table` guarantees that by grouping on provider first.
+
+    A window cell reports the **capacity** the vendor says is left, which is
+    ``remaining_fraction`` with any manual-use hold added back. Routing sees the figure
+    with the hold taken out, and that figure is the ``spendable`` column. Showing only
+    the routable number here made a held account indistinguishable from an exhausted
+    one: ``codex`` read ``0%`` on 2026-09-20 while OpenAI reported 14% left.
     """
     per_account: dict[str, dict[str, WindowSlack]] = {}
+    held_by_account: dict[str, dict[str, float]] = {}
     for snapshot in measurable:
         per_account[snapshot.id] = {
             window_label(row.key): row for row in snapshot.slacks(now_s, model_class)
         }
+        held_by_account[snapshot.id] = {
+            window_label(window.key): window.held_fraction for window in snapshot.windows
+        }
     columns = _window_columns(per_account)
+    # Only where some account in THIS table holds something. A provider that holds
+    # nothing keeps exactly the table it had, rather than gaining two columns of dashes.
+    held = reserves or {}
+    mine = {snap.id: held[snap.id] for snap in measurable if snap.id in held}
+    if mine:
+        columns = _reserve_columns(columns)
 
     # The tightest window is named in the TIGHTEST cell, so the label column there is
     # only as wide as the labels that actually land in it. Padding to the widest *column*
@@ -560,8 +599,24 @@ def _status_block(
     rows: list[list[str]] = []
     for snapshot in measurable:
         rows_by_label = per_account[snapshot.id]
+        held_by_label = held_by_account[snapshot.id]
+        reserve = mine.get(snapshot.id)
         cells = [snapshot.id, snapshot.tier]
         for label in columns:
+            if label == _RESERVE_COLUMN:
+                cells.append(
+                    f"{_ABSENT:>3}"
+                    if reserve is None
+                    else f"{round(reserve.reserve * 100.0):>3}% budget"
+                )
+                continue
+            if label == _SPENDABLE_COLUMN:
+                cells.append(
+                    f"{_ABSENT:>3}"
+                    if reserve is None
+                    else f"{round(reserve.spendable * 100.0):>3}%"
+                )
+                continue
             row = rows_by_label.get(label)
             if row is None:
                 cells.append(f"{_ABSENT:>3}")
@@ -573,7 +628,8 @@ def _status_block(
                     if row.time_to_reset_s <= 0.0
                     else format_duration(row.time_to_reset_s)
                 )
-                cells.append(f"{round(row.remaining_fraction * 100.0):>3}% {reset}")
+                capacity = row.remaining_fraction + held_by_label.get(label, 0.0)
+                cells.append(f"{round(capacity * 100.0):>3}% {reset}")
         binding = binding_by_account[snapshot.id]
         cells.append(
             ""
@@ -600,6 +656,7 @@ def format_status_table(
     snapshots: Iterable[AccountSnapshot],
     now_s: float,
     model_class: str | None = None,
+    reserves: Mapping[str, "ManualReserve"] | None = None,
 ) -> str:
     """One table per provider: what is left in each window, and its pace.
 
@@ -617,6 +674,12 @@ def format_status_table(
     An account with no windows at all is in no table -- there is nothing to put in the
     cells, and a row of dashes would read as "measured, and empty". Those accounts are
     named by :func:`format_unmeasurable` instead.
+
+    Args:
+        reserves: Manual-use reserves by account id. A provider table with at least one
+            gains a ``manual_reserve`` column (the budget, uncapped) and a ``spendable``
+            column (what routing may use) beside its weekly window. Omitting them leaves
+            every table exactly as it was.
     """
     measurable = [snapshot for snapshot in snapshots if snapshot.windows]
     if not measurable:
@@ -632,7 +695,7 @@ def format_status_table(
     name_them = len(ordered) > 1
     blocks: list[str] = []
     for provider, members in ordered:
-        block = _status_block(members, now_s, model_class)
+        block = _status_block(members, now_s, model_class, reserves)
         blocks.append(f"provider: {provider}\n{block}" if name_them else block)
     return "\n\n".join(blocks)
 

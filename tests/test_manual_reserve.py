@@ -33,7 +33,7 @@ HOUR = 3600.0
 SECOND_CODEX = '[accounts.codex_b]\nprovider = "codex"\nconfig_dir = "~/.codex-b"\n'
 RATE_ON_CODEX = "\n[accounts.codex]\nmanual_rate_per_day = 0.05\n"
 RESERVE_LINE = (
-    "reserve codex: 72% left - 33% held for manual use (0.05/day x 6.6d to reset) "
+    "reserve codex: 72% left - 33% budgeted hold (0.05/day x 6.6d to reset) "
     "= 39% spendable"
 )
 
@@ -275,10 +275,16 @@ def test_a_held_window_is_not_scored_as_vendor_exhausted(env) -> None:
 
 
 def test_status_shows_the_reserve_and_the_spendable_amount(env) -> None:
+    """The footnote states the arithmetic the three columns show.
+
+    The weekly cell deliberately does NOT show the spendable 39% any more; it shows the
+    72% the vendor reports. ``spendable`` is its own column, asserted alongside it by
+    :func:`test_weekly_column_shows_capacity_and_the_hold_gets_its_own_columns`.
+    """
     write_config(env, SECOND_CODEX + RATE_ON_CODEX)
     code, out, _ = run(["status"], env, snapshots=[codex(), codex_b()])
     assert code == 0
-    assert re.search(r"codex\s+pro\s+39% 6\.6d", out), out
+    assert re.search(r"codex\s+pro\s+72% 6\.6d", out), out
     assert RESERVE_LINE in out, out
 
 
@@ -343,3 +349,64 @@ def test_history_records_the_reading_not_the_reserve(env) -> None:
     assert next(
         s for s in recorded if s.id == "codex"
     ).window("7d").remaining_fraction == pytest.approx(0.72)
+
+
+# ======================================================================================
+# The status table: capacity, budgeted hold and spendable are three separate columns
+# ======================================================================================
+
+
+def test_weekly_column_shows_capacity_and_the_hold_gets_its_own_columns(env) -> None:
+    """The ``7d`` cell is what the vendor says is left, not what routing may spend.
+
+    Before this, one number carried both meanings: the weekly cell showed the spendable
+    figure, so an account the vendor reported as 14% left read as ``0%`` with no hint
+    that a hold, rather than the vendor, had taken it. The operator read that as an
+    exhausted account. The hold now has its own ``manual_reserve`` column and the
+    routable figure its own ``spendable`` column, so all three are on the row.
+    """
+    write_config(env, SECOND_CODEX + RATE_ON_CODEX)
+    code, out, _ = run(["status"], env, snapshots=[codex(), codex_b()])
+    assert code == 0
+    header = next(line for line in out.splitlines() if line.startswith("ACCOUNT"))
+    assert "manual_reserve" in header and "spendable" in header, out
+    assert re.search(r"codex\s+pro\s+72% 6\.6d\s+33% budget\s+39%", out), out
+
+
+def test_an_account_without_a_rate_holds_nothing_in_either_column(env) -> None:
+    """``-`` rather than a repeat of the weekly cell: no rate means no hold to show."""
+    write_config(env, SECOND_CODEX + RATE_ON_CODEX)
+    code, out, _ = run(["status"], env, snapshots=[codex(), codex_b()])
+    assert code == 0
+    assert re.search(r"codex_b\s+pro\s+100% 7\.0d\s+-\s+-", out), out
+
+
+def test_the_columns_are_absent_when_no_account_in_the_table_holds_anything(env) -> None:
+    """A fleet with no rate configured keeps exactly the table it had."""
+    write_config(env, SECOND_CODEX)
+    code, out, _ = run(["status"], env, snapshots=[codex(), codex_b()])
+    assert code == 0
+    assert "manual_reserve" not in out and "spendable" not in out, out
+
+
+def test_a_budget_larger_than_the_pool_still_reads_as_arithmetic(env) -> None:
+    """The operator's live case on 2026-09-20: 14% left, a 30% budget, 0% spendable.
+
+    The budget is reported uncapped. Capping it at what is left would hide that the
+    account is short of what the person is expected to need before the reset.
+    """
+    write_config(env, SECOND_CODEX + "\n[accounts.codex]\nmanual_rate_per_day = 0.09\n")
+    code, out, _ = run(["status"], env, snapshots=[codex(used=0.86, days=3.4), codex_b()])
+    assert code == 0
+    assert re.search(r"codex\s+pro\s+14% 3\.4d\s+31% budget\s+0%", out), out
+    assert "reserve codex: 14% left - 31% budgeted hold" in out, out
+
+
+def test_tightest_still_reports_the_pace_routing_ranks_on(env) -> None:
+    """The new columns are display only; the hold is still unavailable to routing."""
+    write_config(env, SECOND_CODEX + RATE_ON_CODEX)
+    payload = pick(
+        ["pick", "--only", "codex,codex_b", "--dry-run"], env, snapshots=[codex(), codex_b()]
+    )
+    ranked = {r["account"]: r for r in payload["ranked"]}
+    assert ranked["codex"]["remaining"] == pytest.approx(0.39)

@@ -1727,7 +1727,10 @@ def _write_status_compact(
         f'quota LEFT + time to reset ("-" = no such window); '
         f"TIGHTEST = pace vs an even burn{scope}\n\n"
     )
-    table = explain_mod.format_status_table(prepared.snapshots, now_s, model_class)
+    reserves = {held.account_id: held for held in prepared.manual_reserves}
+    table = explain_mod.format_status_table(
+        prepared.snapshots, now_s, model_class, reserves
+    )
     if table:
         stdout.write(table + "\n")
     held = _reserve_block(prepared) + _deprioritized_block(prepared)

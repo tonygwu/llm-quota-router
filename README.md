@@ -649,14 +649,23 @@ account.
 - **Refused, not guessed:** a negative, non-finite or non-numeric value, and a value on an
   account id no adapter reads (usually a typo, which would otherwise protect nothing).
 - **Applied once, to the 7-day window,** before eligibility, scoring and `status` read the
-  snapshot. The `7d` column shows the spendable figure, and a line beside the table and
-  under `pick --explain` shows the arithmetic:
+  snapshot. In `status`, the weekly column keeps its ordinary meaning -- the capacity the
+  vendor says is left -- and the hold gets two columns of its own:
 
   ```
-  reserve codex: 72% left - 33% held for manual use (0.05/day x 6.6d to reset) = 39% spendable
+  ACCOUNT  TIER  7d          manual_reserve  spendable  TIGHTEST                  SOURCE
+  codex    pro    72% 6.6d    33% budget      39%       7d  55% over pace         live
+  codex_b  pro   100% 7.0d     -               -        7d      on pace           live
+
+  reserve codex: 72% left - 33% budgeted hold (0.05/day x 6.6d to reset) = 39% spendable
   ```
 
-  `status --json` carries the same numbers per account under `manual_reserve`.
+  `manual_reserve` is the budget, reported uncapped: a rate can hold back more than the
+  account has left, and capping it would hide that the account is short. `spendable` is
+  what routing may use, and it is what `TIGHTEST` paces against. The columns appear only
+  in a provider table where some account sets a rate. The same line prints under
+  `pick --explain`, and `status --json` carries the numbers per account under
+  `manual_reserve`, with the per-window split as `used_fraction` and `held_fraction`.
 - **History is never reserved.** It records the reading as the vendor reported it, because
   calibration and the waste series treat recorded values as usage.
 - **A launcher still launches.** `cl` and `cdx` never refuse to start: if every candidate is
