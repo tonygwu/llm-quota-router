@@ -694,6 +694,47 @@ Attribute each day's rise in `used_percent` to clients in proportion to each ses
 token growth, then take the mean daily share of the app. Share-by-tokens assumes a token
 costs the same on every model, so treat the result as an estimate.
 
+### `quotapick doctor` — is the policy actually in force?
+
+A reserve you configured and a reserve routing obeys are different claims. The rate lives
+in one file; the code that reads it does not. Every consumer carries its own copy of this
+package, pinned or vendored in its own environment, and **a copy older than the feature
+does not reject `manual_rate_per_day` — it ignores it**, returns a well-formed pick, and
+names the account you reserved.
+
+```
+$ quotapick doctor --scan ~/Code
+ok    config                                   10 enabled account(s), 1 with a manual reserve
+ok    reserve[codex]                           14% left - 30% budgeted hold = 0% spendable
+FAIL  consumer[~/Code/self-improve/repo-prod/.venv/bin/python]
+                                               version 0.1.0 is missing quota_router.reserve
+ok    consumer[~/Code/misc/verbatim-index/repo-3/.venv/bin/python]
+                                               version 0.1.5, all required features present
+
+  consumer[…/self-improve/repo-prod/…]: bump this consumer's llm-quota-router pin and
+  re-sync its environment; the key is not rejected by an old copy, it is ignored
+```
+
+Three checks, each for a failure that is otherwise silent:
+
+- **config** — it loads, and how many accounts declare a reserve.
+- **reserve[&lt;id&gt;]** — the hold reached the *decision*, not just the printout. A rate in
+  the config that produced no reserve is a failure, and so is an account with nothing
+  spendable that routing still chose.
+- **consumer[&lt;python&gt;]** — what another environment actually has. It asks for the
+  submodule rather than the version string, because the version is static across many
+  commits and cannot answer the question. An environment with no `quota_router` at all is
+  not a finding; most virtualenvs have no business carrying it.
+
+Exit codes are `0` clear, `1` something warned, `3` something failed, so it wires into a
+pre-flight without parsing the text.
+
+Probing another environment runs its interpreter, so it never happens implicitly. With no
+flags, `doctor` checks only the copy running right now and says so. Name one with
+`--consumer <python>`, or a tree to search with `--scan <dir>` (bounded three directories
+deep, and deliberately **not** symlink-resolved: a venv's `bin/python` points at the base
+interpreter, and resolving it would check the wrong environment every time).
+
 ### Preferring one account over another for a while
 
 Sometimes you want routing to use one account before another for a reason the quota

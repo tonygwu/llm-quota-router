@@ -58,6 +58,9 @@ from typing import Any, Callable, Final, TextIO
 from . import explain as explain_mod
 from . import forensics as forensics_mod
 from . import history as history_mod
+from types import SimpleNamespace
+
+from . import doctor as doctor_mod
 from . import reserve as reserve_mod
 from . import model_classes as mc
 from . import pse
@@ -2284,6 +2287,42 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="ACCOUNT",
         help="account id to describe (for example antigravity_gemini_b)",
     )
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        parents=[common],
+        help=(
+            "check that this machine's routing is in force: that a configured "
+            "reserve reaches the decision, and that other environments carry a "
+            "copy new enough to obey it"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--consumer",
+        action="append",
+        default=None,
+        metavar="PYTHON",
+        help=(
+            "a python interpreter to probe for its quota_router (repeatable). "
+            "Probing runs that interpreter, so it is never implied"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--scan",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help=(
+            "search DIR for .venv interpreters and probe each one (repeatable; "
+            "bounded to 3 directories deep)"
+        ),
+    )
+    doctor_parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=20.0,
+        metavar="SECONDS",
+        help="per-consumer probe timeout (default: 20)",
+    )
     waste_parser = subparsers.add_parser(
         "waste",
         parents=[common],
@@ -2433,6 +2472,113 @@ def _cmd_launch_plan(
     return EXIT_OK
 
 
+def _cmd_doctor(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Check that the operator's routing policy is actually being obeyed.
+
+    Not "is quotapick installed". Every failure this looks for produces a
+    well-formed decision that names the wrong account, so nothing downstream can
+    see it: an old copy of this package in a consumer's environment IGNORES
+    manual_rate_per_day rather than rejecting it.
+
+    With no flags it touches only this process and the operator's own config.
+    Probing another environment executes that interpreter, so it is opt-in
+    through --consumer and --scan.
+    """
+    checks: list[doctor_mod.Check] = []
+
+    try:
+        config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    except ConfigError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_ROUTER_FAILURE
+    rates = config.manual_rates()
+    checks.append(
+        doctor_mod.Check(
+            "config",
+            "ok",
+            f"{len(config.enabled_accounts())} enabled account(s), "
+            f"{len(rates)} with a manual reserve",
+        )
+    )
+
+    # A real pick, not a recomputation. The question is whether the reserve
+    # reaches the DECISION, so the decision is what has to be asked.
+    pick_args = SimpleNamespace(
+        model=None, only=None, exclude=None, min_remaining=None, no_sticky=True,
+        timeout_ms=None, config=getattr(args, "config", None), dry_run=True,
+        json=True, explain=False, now=None,
+    )
+    try:
+        prepared = _prepare(
+            pick_args, env, now_s, deps, cwd, event="pick", write_state=False
+        )
+    except ConfigError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_ROUTER_FAILURE
+    checks.extend(
+        doctor_mod.check_reserve_is_enforced(
+            reserves=prepared.manual_reserves,
+            winner=prepared.decision.chosen,
+        )
+    )
+    # A rate in the config that produced no reserve never reached routing. That
+    # is the skew failure seen from this side, and it is silent.
+    unapplied = sorted(set(rates) - {held.account_id for held in prepared.manual_reserves})
+    for account_id in unapplied:
+        checks.append(
+            doctor_mod.Check(
+                f"reserve[{account_id}]",
+                "fail",
+                f"config sets manual_rate_per_day={rates[account_id]:g} but the "
+                f"decision applied no reserve for it",
+                remedy=(
+                    "the account has no 7-day window to hold back from, or it was "
+                    "excluded before the reserve ran; see `quotapick status`"
+                ),
+            )
+        )
+
+    targets = list(getattr(args, "consumer", None) or [])
+    for root in getattr(args, "scan", None) or []:
+        targets.extend(doctor_mod.discover_consumer_pythons([root]))
+    seen: set[str] = set()
+    ordered = [t for t in targets if not (t in seen or seen.add(t))]
+    if ordered:
+        reports = [
+            doctor_mod.inspect_consumer(
+                target, timeout_s=float(getattr(args, "probe_timeout", 20.0))
+            )
+            for target in ordered
+        ]
+        checks.extend(
+            doctor_mod.check_consumers(reports, own_version=doctor_mod.own_version())
+        )
+    else:
+        checks.append(
+            doctor_mod.Check(
+                "consumers",
+                "warn",
+                "none probed; this only checked the copy running right now",
+                remedy=(
+                    "pass --consumer <python> or --scan <dir>. The reserve lives in "
+                    "one config file, but every consumer carries its own copy of the "
+                    "code that reads it"
+                ),
+            )
+        )
+
+    stdout.write(doctor_mod.format_report(checks))
+    return doctor_mod.worst_exit_code(checks)
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -2442,6 +2588,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "waste": _cmd_waste,
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
+    "doctor": _cmd_doctor,
 }
 
 
