@@ -587,15 +587,20 @@ def _status_block(
         for snap in measurable
     }
     in_flight = {account_id: cost for account_id, cost in in_flight.items() if cost > 0.0}
+    # The weekly window, because that is what both deductions come out of: the row has
+    # to subtract. Reading the *binding* window instead broke that, because binding is
+    # decided by slack rather than by what is left -- ``codex_b`` binds on an untouched
+    # reserve bucket and read "44% capacity, 1% in flight, 99% spendable".
+    #
     # Only for an account something was actually deducted from. Without a deduction the
     # cell would repeat the window beside it, which is width spent to say nothing.
+    weekly_label = window_label(WINDOW_KEY_7D)
     spendable_by_account = {
-        snap.id: next(
-            (row.remaining_fraction for row in per_account[snap.id].values() if row.binding),
-            None,
-        )
+        snap.id: weekly.remaining_fraction
         for snap in measurable
-        if snap.id in mine or snap.id in in_flight
+        if (snap.id in mine or snap.id in in_flight)
+        and (weekly := per_account[snap.id].get(weekly_label)) is not None
+        and weekly.applicable
     }
     extra = [name for name, wanted in (
         (_RESERVE_COLUMN, mine),

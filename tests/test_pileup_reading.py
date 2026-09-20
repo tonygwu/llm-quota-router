@@ -174,3 +174,41 @@ def test_the_pse_objective_sees_the_reservation_on_every_window() -> None:
         assert getattr(reserved, name) == pytest.approx(getattr(spent, name)), (
             f"{name} lost the reservation"
         )
+
+
+def test_spendable_is_the_weekly_arithmetic_even_when_another_window_binds() -> None:
+    """The row must subtract: weekly capacity minus the deductions beside it.
+
+    ``spendable`` first read the *binding* window, which is chosen by slack rather than
+    by what is left. On the live fleet ``codex_b`` binds on its untouched Luna Reserve
+    bucket, so the row read ``44% ... 1% in flight ... 99% spendable`` and the three
+    numbers did not subtract. The deductions come out of the weekly pool, so the
+    remainder shown beside them has to be the weekly pool's.
+    """
+    from quota_router.explain import format_status_table
+
+    from tests.test_cli import SEVEN_DAYS
+
+    # The live shape: a reserve bucket nothing has touched, so it has a whole window to
+    # burn and zero slack, which makes it bind ahead of the weekly pool.
+    snap = _apply_pileup(
+        (
+            account(
+                "codex_b",
+                window("7d", 0.56, resets_in_s=37.0 * 3600.0),
+                window(
+                    "base_model_inference",
+                    0.0,
+                    resets_in_s=SEVEN_DAYS,
+                    applies_to={"base_model_inference"},
+                ),
+                tier="pro",
+            ),
+        ),
+        {"codex_b": 0.01},
+    )
+    table = format_status_table(snap, NOW)
+    binding = table.splitlines()[1]
+    # Guard the premise: the reserve bucket really is what TIGHTEST names.
+    assert re.search(r"base_model_inference\s+\d+% over pace", binding), binding
+    assert re.search(r"codex_b\s+pro\s+44% 37\.0h\s+1%\s+43%", table), table
