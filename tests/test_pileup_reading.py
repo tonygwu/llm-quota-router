@@ -212,3 +212,17 @@ def test_spendable_is_the_weekly_arithmetic_even_when_another_window_binds() -> 
     # Guard the premise: the reserve bucket really is what TIGHTEST names.
     assert re.search(r"base_model_inference\s+\d+% over pace", binding), binding
     assert re.search(r"codex_b\s+pro\s+44% 37\.0h\s+1%\s+43%", table), table
+
+
+def test_a_deduction_too_small_to_round_to_a_percent_is_not_shown_as_zero() -> None:
+    """``0%`` in a deduction column must mean nothing was deducted.
+
+    The live default reserves 0.5% per call, which rounds to ``0%`` while still moving
+    ``spendable``. The row then read ``44% ... 0% ... 43%``, which does not subtract and
+    invites the reader to distrust the column that is right.
+    """
+    from quota_router.explain import format_status_table
+
+    snap = _apply_pileup((account("claude", window("7d", 0.56)),), {"claude": 0.005})
+    table = format_status_table(snap, NOW)
+    assert re.search(r"claude\s+max_20x\s+44% 60m\s+<1%\s+43%", table), table

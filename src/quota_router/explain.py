@@ -533,6 +533,22 @@ def _aligned_table(
     return "\n".join(lines)
 
 
+def _deduction_cell(value: float | None, *, suffix: str = "") -> str:
+    """A deduction as a percentage, or ``-`` when there is none.
+
+    A non-zero deduction never renders as ``0%``. The live per-call reservation is 0.5%
+    of a window, which rounds to zero while still moving what routing may spend, so the
+    row stopped subtracting: ``44% capacity, 0% in flight, 43% spendable``. ``<1%`` keeps
+    ``0%`` meaning exactly one thing, which is that nothing was taken out.
+    """
+    if value is None:
+        return f"{_ABSENT:>3}"
+    rounded = round(value * 100.0)
+    if rounded == 0 and value > 0.0:
+        return f"{'<1%':>4}{suffix}"
+    return f"{rounded:>3}%{suffix}"
+
+
 def _reserve_columns(columns: Sequence[str], extra: Sequence[str]) -> list[str]:
     """``columns`` with the hold columns beside the weekly window they come out of.
 
@@ -643,20 +659,14 @@ def _status_block(
         cells = [snapshot.id, snapshot.tier]
         for label in columns:
             if label == _RESERVE_COLUMN:
-                cells.append(
-                    f"{_ABSENT:>3}"
-                    if reserve is None
-                    else f"{round(reserve.reserve * 100.0):>3}% budget"
-                )
+                budget = None if reserve is None else reserve.reserve
+                cells.append(_deduction_cell(budget, suffix=" budget"))
                 continue
             if label == _IN_FLIGHT_COLUMN:
-                cells.append(
-                    f"{_ABSENT:>3}"
-                    if dispatched is None
-                    else f"{round(dispatched * 100.0):>3}%"
-                )
+                cells.append(_deduction_cell(dispatched))
                 continue
             if label == _SPENDABLE_COLUMN:
+                # Not a deduction: 0% spendable is a true and important statement.
                 cells.append(
                     f"{_ABSENT:>3}" if routable is None else f"{round(routable * 100.0):>3}%"
                 )
