@@ -595,6 +595,7 @@ class Window:
     applies_to: frozenset[str] | None = None
     expected_used_fraction: float | None = None
     held_fraction: float = 0.0
+    reserved_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "key", _as_text(self.key, "Window.key"))
@@ -635,6 +636,11 @@ class Window:
         object.__setattr__(
             self, "held_fraction", _as_fraction(self.held_fraction, "Window.held_fraction")
         )
+        object.__setattr__(
+            self,
+            "reserved_fraction",
+            _as_fraction(self.reserved_fraction, "Window.reserved_fraction"),
+        )
 
     # -- geometry ----------------------------------------------------------------------
 
@@ -642,17 +648,26 @@ class Window:
     def remaining_fraction(self) -> float:
         """Fraction of this window's budget still available to route against.
 
-        Two different facts are netted off here, and keeping them apart matters. The
-        vendor's own reading is :attr:`used_fraction`; anything this router holds back on
-        the operator's behalf is :attr:`held_fraction`. Both are unavailable to routing,
-        so both are subtracted, but only the first is a statement about the vendor.
+        Three different facts are netted off here, and keeping them apart matters:
 
-        The reserve used to be applied by overwriting ``used_fraction``. It routed
+        * :attr:`used_fraction` is the vendor's own reading, and only this one is a
+          statement about the vendor.
+        * :attr:`held_fraction` is what this router holds back for the operator to spend
+          by hand, from ``manual_rate_per_day``.
+        * :attr:`reserved_fraction` is what calls this router has already dispatched are
+          expected to spend, which the vendor's endpoint has not caught up with yet.
+
+        All three are unavailable to routing, so all three are subtracted.
+
+        Both holds used to be applied by overwriting ``used_fraction``. That routed
         correctly and forged the vendor's number: an account holding half its weekly pool
         for manual use published ``used_fraction = 1.0``, indistinguishable from one the
-        vendor had actually cut off.
+        vendor had actually cut off, and a one-percent in-flight reservation made a
+        56%-used account publish 57%.
         """
-        return _clamp01(1.0 - self.used_fraction - self.held_fraction)
+        return _clamp01(
+            1.0 - self.used_fraction - self.held_fraction - self.reserved_fraction
+        )
 
     @property
     def is_exhausted(self) -> bool:
@@ -740,6 +755,7 @@ class Window:
             # Always emitted, and 0.0 when nothing is held, so a consumer can subtract it
             # unconditionally rather than testing for the key's presence.
             "held_fraction": self.held_fraction,
+            "reserved_fraction": self.reserved_fraction,
         }
 
 

@@ -435,6 +435,7 @@ def _window_from_dict(data: Mapping[str, Any]) -> Window | None:
             # Defaulted, so records written before the vendor/hold split still load. A
             # missing key means no reserve was in force when the record was written.
             held_fraction=data.get("held_fraction") or 0.0,
+            reserved_fraction=data.get("reserved_fraction") or 0.0,
         )
     except (KeyError, TypeError, ValueError):
         return None

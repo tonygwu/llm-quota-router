@@ -418,19 +418,31 @@ def test_reservations_cannot_subtract_more_than_a_quarter_of_a_window(tmp_path) 
     days of routed traffic. A ceiling needs neither: pileup still spreads work
     across accounts, which is its actual purpose, but it can no longer talk itself
     into believing an account with most of its window left is exhausted.
+
+    Measured on ``reserved_fraction``, which is where the deduction lives. It used to
+    be written onto ``used_fraction``, and that forged the vendor's reading; see
+    ``tests/test_pileup_reading.py``. The ceiling itself is unchanged.
     """
     from quota_router.cli import MAX_PILEUP_FRACTION, _apply_pileup
 
     assert 0.0 < MAX_PILEUP_FRACTION < 1.0
 
     snaps = [s for s in real_capture() if s.id == "claude"]
-    before = snaps[0].windows[0].used_fraction
+    weekly_before = next(w for w in snaps[0].windows if w.key == "seven_day")
     # A wildly oversized reservation, as produced by a sustained concurrent batch.
     adjusted = _apply_pileup(snaps, {"claude": 5.0})[0]
-    after = adjusted.windows[0].used_fraction
+    weekly_after = next(w for w in adjusted.windows if w.key == "seven_day")
 
-    assert after - before <= MAX_PILEUP_FRACTION + 1e-9, (
-        f"reservations added {after - before:.3f} to the used fraction, above the "
-        f"{MAX_PILEUP_FRACTION} ceiling"
+    assert weekly_after.reserved_fraction <= MAX_PILEUP_FRACTION + 1e-9, (
+        f"reservations withheld {weekly_after.reserved_fraction:.3f} of the window, "
+        f"above the {MAX_PILEUP_FRACTION} ceiling"
     )
-    assert after > before, "the ceiling must cap the subtraction, not remove it"
+    assert weekly_after.reserved_fraction > 0.0, (
+        "the ceiling must cap the subtraction, not remove it"
+    )
+    assert weekly_after.used_fraction == weekly_before.used_fraction, (
+        "the vendor's reading was forged"
+    )
+    assert weekly_after.remaining_fraction < weekly_before.remaining_fraction, (
+        "the reservation must still come off what routing may spend"
+    )

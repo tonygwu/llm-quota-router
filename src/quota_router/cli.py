@@ -584,6 +584,13 @@ def _apply_pileup(
     Implemented as a *snapshot* transformation rather than a scoring rule: the decision
     layer stays pure and keeps ranking exactly what it is given, and "what is left" simply
     accounts for calls this router has already dispatched but the oracle has not seen yet.
+
+    The cost goes in :attr:`Window.reserved_fraction`, never on top of ``used_fraction``.
+    Both are netted off by ``remaining_fraction``, so routing is unchanged, but the
+    vendor's reading survives for anyone reading the window. Writing it onto
+    ``used_fraction`` forged that reading: on 2026-09-20 ``status`` published 57% used
+    for an account the vendor reported at 56%, and 1% used for a bucket nothing had ever
+    touched, with the reservation named only in a note the columns did not carry.
     """
     if not reserved:
         return tuple(snapshots)
@@ -595,8 +602,10 @@ def _apply_pileup(
             out.append(snapshot)
             continue
         cost = min(raw_cost, MAX_PILEUP_FRACTION)
+        # Capped at what the window still has after any manual-use hold: a window cannot
+        # be more than fully accounted for, and the same cap already guards the hold.
         windows = tuple(
-            replace(window, used_fraction=min(1.0, window.used_fraction + cost))
+            replace(window, reserved_fraction=min(cost, window.remaining_fraction))
             for window in snapshot.windows
         )
         capped = "" if cost == raw_cost else f" (capped from {raw_cost:.4f})"

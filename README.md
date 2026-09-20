@@ -666,6 +666,20 @@ account.
   in a provider table where some account sets a rate. The same line prints under
   `pick --explain`, and `status --json` carries the numbers per account under
   `manual_reserve`, with the per-window split as `used_fraction` and `held_fraction`.
+
+  An **in-flight reservation** follows the same rule. Pileup withholds what calls this
+  router has already dispatched are expected to spend, because the vendor's endpoint
+  will not show them for a minute or more. That lands in `Window.reserved_fraction` and
+  gets an `in_flight` column, again only while something is actually dispatched:
+
+  ```
+  ACCOUNT   TIER     7d        in_flight  spendable  TIGHTEST           SOURCE
+  claude    max_20x   44% 60m    1%        43%       7d   7% over pace  live
+  claude_b  max_20x   40% 60m    -          -        7d  10% over pace  live
+  ```
+
+  So a window cell is always the vendor's capacity, `spendable` is always what routing
+  may use, and every deduction between them has a column of its own.
 - **History is never reserved.** It records the reading as the vendor reported it, because
   calibration and the waste series treat recorded values as usage.
 - **A launcher still launches.** `cl` and `cdx` never refuse to start: if every candidate is

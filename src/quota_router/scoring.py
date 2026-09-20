@@ -395,6 +395,15 @@ def plan_for(cfg: Any, account_id: str) -> Plan | None:
     return Plan(weekly_to_session=value)
 
 
+def _unavailable(window: Window | None) -> float:
+    """Everything routing cannot spend in ``window``: spent, held and reserved."""
+    if window is None:
+        return 0.0
+    return _clamp01(
+        window.used_fraction + window.held_fraction + window.reserved_fraction
+    )
+
+
 def stocks_from_snapshot(
     snap: AccountSnapshot, now_s: float, capacity: float, plan: Plan | None = None
 ) -> Stocks | None:
@@ -413,13 +422,16 @@ def stocks_from_snapshot(
         (w for w in snap.windows if w.applies_to and MODEL_CLASS_FABLE in w.applies_to), None
     )
     return Stocks.from_fractions(
-        session_used=session.used_fraction if session else 0.0,
-        # Spent plus held. A fraction held for the operator's manual use is unavailable
-        # to routing in exactly the way spent quota is, so the objective must not see it
-        # as headroom. This is the one place that reads the weekly window's raw usage
-        # rather than ``remaining_fraction``, which already nets both off.
-        weekly_used=_clamp01(weekly.used_fraction + weekly.held_fraction),
-        fable_used=fable.used_fraction if fable else 0.0,
+        # Spent plus every hold. A fraction held for the operator's manual use, or
+        # reserved by a call already dispatched, is unavailable to routing in exactly
+        # the way spent quota is, so the objective must not see it as headroom. These
+        # are the places that read a window's raw usage rather than
+        # ``remaining_fraction``, which already nets all three off -- so each has to
+        # add the holds back by hand. A reservation covers every window of an account,
+        # not only the weekly one.
+        session_used=_unavailable(session),
+        weekly_used=_unavailable(weekly),
+        fable_used=_unavailable(fable),
         tier_scale=capacity,
         session_reset_s=(session.resets_at_s if session else now_s) or now_s,
         weekly_reset_s=weekly.resets_at_s or now_s,

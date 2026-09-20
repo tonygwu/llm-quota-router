@@ -410,12 +410,19 @@ _WINDOW_COLUMN_ORDER: Final[Mapping[str, int]] = {"5h": 0, "7d": 1}
 #: means the window exists and does not constrain the model class being asked about.
 _ABSENT: Final[str] = "-"
 
-#: The two columns a manual-use reserve adds, next to the weekly window it comes out of.
-#: ``manual_reserve`` is the budget ``manual_rate_per_day x days_to_reset``, reported
-#: uncapped, and ``spendable`` is what routing may actually use. They exist because one
-#: number cannot carry both meanings: before them the weekly cell showed the spendable
-#: figure, so a hold was indistinguishable from an account the vendor had exhausted.
+#: The columns a hold adds, next to the weekly window it comes out of. A window cell
+#: reports the vendor's capacity; these report what is taken out of it and what survives.
+#:
+#: * ``manual_reserve`` -- ``manual_rate_per_day x days_to_reset``, reported uncapped.
+#: * ``in_flight`` -- what calls this router already dispatched are expected to spend.
+#: * ``spendable`` -- what routing may actually use, the two deductions netted off.
+#:
+#: They exist because one number cannot carry every meaning. Before them the weekly cell
+#: showed the spendable figure, so a held or reserved account was indistinguishable from
+#: one the vendor had exhausted. Each appears only where something in that provider table
+#: is non-zero, so a fleet that holds nothing keeps exactly the table it had.
 _RESERVE_COLUMN: Final[str] = "manual_reserve"
+_IN_FLIGHT_COLUMN: Final[str] = "in_flight"
 _SPENDABLE_COLUMN: Final[str] = "spendable"
 
 
@@ -526,16 +533,16 @@ def _aligned_table(
     return "\n".join(lines)
 
 
-def _reserve_columns(columns: Sequence[str]) -> list[str]:
-    """``columns`` with the two reserve columns beside the weekly window they come from.
+def _reserve_columns(columns: Sequence[str], extra: Sequence[str]) -> list[str]:
+    """``columns`` with the hold columns beside the weekly window they come out of.
 
-    Beside it rather than at the end, because the three numbers are one subtraction and
-    a reader should not have to cross the table to do it.
+    Beside it rather than at the end, because capacity minus the deductions is one
+    subtraction and a reader should not have to cross the table to do it.
     """
     out = list(columns)
     weekly = window_label(WINDOW_KEY_7D)
     at = out.index(weekly) + 1 if weekly in out else len(out)
-    out[at:at] = [_RESERVE_COLUMN, _SPENDABLE_COLUMN]
+    out[at:at] = list(extra)
     return out
 
 
@@ -551,10 +558,11 @@ def _status_block(
     dashes. :func:`format_status_table` guarantees that by grouping on provider first.
 
     A window cell reports the **capacity** the vendor says is left, which is
-    ``remaining_fraction`` with any manual-use hold added back. Routing sees the figure
-    with the hold taken out, and that figure is the ``spendable`` column. Showing only
-    the routable number here made a held account indistinguishable from an exhausted
-    one: ``codex`` read ``0%`` on 2026-09-20 while OpenAI reported 14% left.
+    ``remaining_fraction`` with every hold added back. Routing sees the figure with the
+    holds taken out, and that figure is the ``spendable`` column. Showing only the
+    routable number here made a held account indistinguishable from an exhausted one:
+    on 2026-09-20 ``codex`` read ``0%`` while OpenAI reported 14% left, and ``codex_b``
+    read ``43%`` and ``99%`` against a vendor reading of 44% and 100%.
     """
     per_account: dict[str, dict[str, WindowSlack]] = {}
     held_by_account: dict[str, dict[str, float]] = {}
@@ -563,15 +571,39 @@ def _status_block(
             window_label(row.key): row for row in snapshot.slacks(now_s, model_class)
         }
         held_by_account[snapshot.id] = {
-            window_label(window.key): window.held_fraction for window in snapshot.windows
+            window_label(window.key): window.held_fraction + window.reserved_fraction
+            for window in snapshot.windows
         }
     columns = _window_columns(per_account)
+
     # Only where some account in THIS table holds something. A provider that holds
-    # nothing keeps exactly the table it had, rather than gaining two columns of dashes.
+    # nothing keeps exactly the table it had, rather than gaining columns of dashes.
     held = reserves or {}
     mine = {snap.id: held[snap.id] for snap in measurable if snap.id in held}
-    if mine:
-        columns = _reserve_columns(columns)
+    # One reservation covers the whole account, and ``_apply_pileup`` writes the same
+    # cost onto every window, so the largest is that one cost whichever window carries it.
+    in_flight = {
+        snap.id: max((w.reserved_fraction for w in snap.windows), default=0.0)
+        for snap in measurable
+    }
+    in_flight = {account_id: cost for account_id, cost in in_flight.items() if cost > 0.0}
+    # Only for an account something was actually deducted from. Without a deduction the
+    # cell would repeat the window beside it, which is width spent to say nothing.
+    spendable_by_account = {
+        snap.id: next(
+            (row.remaining_fraction for row in per_account[snap.id].values() if row.binding),
+            None,
+        )
+        for snap in measurable
+        if snap.id in mine or snap.id in in_flight
+    }
+    extra = [name for name, wanted in (
+        (_RESERVE_COLUMN, mine),
+        (_IN_FLIGHT_COLUMN, in_flight),
+        (_SPENDABLE_COLUMN, mine or in_flight),
+    ) if wanted]
+    if extra:
+        columns = _reserve_columns(columns, extra)
 
     # The tightest window is named in the TIGHTEST cell, so the label column there is
     # only as wide as the labels that actually land in it. Padding to the widest *column*
@@ -601,6 +633,8 @@ def _status_block(
         rows_by_label = per_account[snapshot.id]
         held_by_label = held_by_account[snapshot.id]
         reserve = mine.get(snapshot.id)
+        dispatched = in_flight.get(snapshot.id)
+        routable = spendable_by_account.get(snapshot.id)
         cells = [snapshot.id, snapshot.tier]
         for label in columns:
             if label == _RESERVE_COLUMN:
@@ -610,11 +644,16 @@ def _status_block(
                     else f"{round(reserve.reserve * 100.0):>3}% budget"
                 )
                 continue
-            if label == _SPENDABLE_COLUMN:
+            if label == _IN_FLIGHT_COLUMN:
                 cells.append(
                     f"{_ABSENT:>3}"
-                    if reserve is None
-                    else f"{round(reserve.spendable * 100.0):>3}%"
+                    if dispatched is None
+                    else f"{round(dispatched * 100.0):>3}%"
+                )
+                continue
+            if label == _SPENDABLE_COLUMN:
+                cells.append(
+                    f"{_ABSENT:>3}" if routable is None else f"{round(routable * 100.0):>3}%"
                 )
                 continue
             row = rows_by_label.get(label)
