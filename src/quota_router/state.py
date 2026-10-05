@@ -560,6 +560,40 @@ class StateStore:
             blob = current.selection if selection is None else selection
             return self._write_unlocked(sticky, reservations, now_s, blob)
 
+    def record_cooldown(self, account: str, *, until_s: float, now_s: float) -> StateWrite:
+        """Put ``account`` in cooldown until ``until_s`` (the later deadline wins).
+
+        Writes the selection layer's ``exhausted_until`` map, which ``select`` already
+        honours, under the same exclusive lock as :meth:`record_pick`. Unlike a pick,
+        a lost cooldown is a real loss, so a busy lock is reported as a failure.
+        """
+        if not self.enabled:
+            return StateWrite(ok=False, stateless=True, path=self.path)
+        with self._lock(exclusive=True) as acquired:
+            if not acquired:
+                return StateWrite(
+                    ok=False,
+                    stateless=True,
+                    path=self.path,
+                    warnings=(
+                        f"state file busy for {self.lock_timeout_s:g}s ({self.path}); "
+                        f"cooldown NOT recorded",
+                    ),
+                )
+            current = self._read_unlocked()
+            blob = dict(current.selection)
+            cooldowns = dict(blob.get("exhausted_until") or {})
+            previous = cooldowns.get(account)
+            try:
+                previous_s = float(previous) if previous is not None else None
+            except (TypeError, ValueError):
+                previous_s = None
+            cooldowns[account] = (
+                float(until_s) if previous_s is None else max(previous_s, float(until_s))
+            )
+            blob["exhausted_until"] = cooldowns
+            return self._write_unlocked(current.sticky, current.reservations, now_s, blob)
+
     def _write_unlocked(
         self,
         sticky: Mapping[str, StickyEntry],

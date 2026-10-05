@@ -56,7 +56,7 @@ from __future__ import annotations
 #: and must not have to import the package to build it.
 __version__ = "0.1.6"
 
-from .api import Selection, select_account
+from .api import Selection, report_failure, select_account
 from .types import (
     ACCOUNT_ANTIGRAVITY_CLAUDE,
     ACCOUNT_ANTIGRAVITY_GEMINI,
@@ -107,6 +107,7 @@ from .types import (
 __all__ = [
     "Selection",
     "select_account",
+    "report_failure",
     "__version__",
     "QUOTA_ROUTER_CONTRACT_VERSION",
     # value types

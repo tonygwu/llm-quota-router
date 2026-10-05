@@ -350,6 +350,10 @@ class AccountConfig:
     weekly_reset: WeeklyReset | None = None
     manual_rate_per_day: float | None = None
     deprioritize: bool = False
+    #: ``"fallback"`` marks an account whose quota no source can measure (Antigravity)
+    #: as usable by a capability request only when no measured account can serve it.
+    #: Unset (the default) keeps today's behaviour: a window-less account never wins.
+    unmetered: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -1061,6 +1065,7 @@ def _build_accounts(
                 if body.get("deprioritize") is not None
                 else False
             ),
+            unmetered=_as_unmetered(body.get("unmetered"), section),
         )
 
         # An account whose provider resolves to nothing has no adapter behind it, so it
@@ -1265,6 +1270,17 @@ def _build(
         sources=tuple(sources),
         warnings=tuple(warnings),
     )
+
+
+def _as_unmetered(value: Any, section: str) -> str | None:
+    if value is None:
+        return None
+    text = _as_str(value, section, "unmetered")
+    if text != "fallback":
+        raise ConfigError(
+            f"{_where(section, 'unmetered')}: must be \"fallback\" (got {text!r})"
+        )
+    return text
 
 
 def _build_capabilities(raw: Any) -> dict[str, dict[str, str]]:

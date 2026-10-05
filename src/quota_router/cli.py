@@ -1192,6 +1192,96 @@ def _apply_capability(
     return tuple(views), ctx
 
 
+#: Cooldown for an exhaustion message that names no reset time. Long enough that a
+#: batch does not hammer a spent pool; short enough that a wrong guess costs one hour.
+UNKNOWN_DEADLINE_COOLDOWN_S: Final[float] = 3600.0
+
+
+def _fallback_only(prepared: Prepared, ctx: CapabilityContext, warnings: list[str]) -> Decision:
+    """Let an ``unmetered = "fallback"`` account serve, only when nothing measured can.
+
+    Its quota is invisible, so it never competes with a measured account. It is
+    eligible only when no measured account fits and ``report-failure`` has not put it
+    in cooldown.
+    """
+    config = prepared.config
+    decision = prepared.decision
+    now_s = prepared.now_s
+    snapshots = prepared.snapshot_map
+    # Only accounts that survived the policy checks: a caller floor (an unmeasured
+    # figure can never satisfy one), --exclude, an account its source marks
+    # unavailable. _partition_candidates has already said why the others are out.
+    candidates = {snapshot.id for snapshot in prepared.candidates}
+    ids = [
+        account.id
+        for account in config.enabled_accounts()
+        if account.unmetered == "fallback"
+        and account.id in ctx.choices
+        and account.id in candidates
+        and not snapshots[account.id].windows
+    ]
+    if not ids:
+        return decision
+
+    winner = decision.chosen_breakdown
+    measured_fits = (
+        bool(decision.chosen)
+        and not prepared.from_fallback
+        and winner is not None
+        and winner.fits
+        and decision.chosen not in ids
+    )
+    cooldowns = (prepared.state.selection or {}).get("exhausted_until") or {}
+    usable: list[str] = []
+    blocked: dict[str, str] = {}
+    for account_id in ids:
+        try:
+            deadline = float(cooldowns.get(account_id))
+        except (TypeError, ValueError):
+            deadline = None
+        if deadline is not None and deadline > now_s:
+            blocked[account_id] = (
+                f"fallback-only, cooling off until {_iso(deadline)} (from report-failure)"
+            )
+        elif measured_fits:
+            blocked[account_id] = (
+                f"fallback-only: used only when no measured account can serve {ctx.name}"
+            )
+        else:
+            usable.append(account_id)
+
+    excluded = tuple(
+        replace(row, reason=blocked[row.account_id]) if row.account_id in blocked else row
+        for row in decision.excluded
+        if row.account_id not in usable
+    )
+    if not usable:
+        return replace(decision, excluded=excluded)
+
+    reason = (
+        f"fallback-only: no measured account can serve {ctx.name}; quota unmeasured"
+    )
+    rows = tuple(
+        ScoreBreakdown(account_id=account_id, score=0.0, min_slack=0.0, fits=True,
+                       eligible=True, reason=reason, min_remaining=None)
+        for account_id in usable
+    )
+    rest = tuple(row for row in decision.ranked if row.account_id not in usable)
+    warnings.append(
+        f"{usable[0]} chosen as fallback-only for {ctx.name}: no measured account can "
+        f"serve it, and its own quota is unmeasured"
+    )
+    prepared.from_fallback = False
+    return replace(
+        decision,
+        chosen=usable[0],
+        ranked=rows + rest,
+        excluded=excluded,
+        reason=f"{usable[0]} wins as {reason}",
+        sticky_applied=False,
+    )
+
+
 def _prepare(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1370,6 +1460,9 @@ def _prepare(
     )
     prepared.decision = decision
     prepared.from_fallback = bool(fallback_flag)
+    if capability_ctx is not None:
+        decision = _fallback_only(prepared, capability_ctx, warnings)
+        prepared.decision = decision
     prepared.cli_excluded = partition.excluded + (
         tuple(capability_ctx.excluded) if capability_ctx is not None else ()
     )
@@ -2551,6 +2644,20 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="per-consumer probe timeout (default: 20)",
     )
+    report_parser = subparsers.add_parser(
+        "report-failure",
+        parents=[common],
+        help=(
+            "classify a vendor CLI's failure text for an `unmetered = \"fallback\"` "
+            "account and, if it says the pool is spent, keep pick off it until it resets"
+        ),
+    )
+    report_parser.add_argument("account", metavar="ACCOUNT", help="the account that failed")
+    source = report_parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--text", metavar="TEXT", help="the failure text itself")
+    source.add_argument(
+        "--text-file", metavar="PATH", help="a file holding the failure text, or - for stdin"
+    )
     capabilities_parser = subparsers.add_parser(
         "capabilities",
         parents=[common],
@@ -2718,6 +2825,95 @@ def _cmd_launch_plan(
         )
         argv = " ".join([*plan["argv_prefix"], account.exec_command])
         stdout.write(f"{overlay} {argv}\n".lstrip())
+    return EXIT_OK
+
+
+def report_failure(
+    config: Config,
+    account_id: str,
+    text: str,
+    *,
+    env: Mapping[str, str],
+    now_s: float,
+) -> dict[str, Any]:
+    """Classify one failure and record a cooldown when it means exhaustion.
+
+    Raises:
+        ValueError: the account is unknown, disabled, or measured. A measured account
+            already has live readings; a second, failure-learned source could
+            disagree with them, so it is refused until there is evidence to want it.
+    """
+    from .failure_text import classify_failure_text
+
+    account = config.account(account_id)
+    if account is None or not account.enabled:
+        raise ValueError(f"{account_id} is not an enabled account")
+    if account.unmetered != "fallback":
+        raise ValueError(
+            f"{account_id} has live usage windows; report-failure accepts only "
+            f'accounts with unmetered = "fallback"'
+        )
+    verdict = classify_failure_text(text, now_s)
+    until_s = None
+    written = False
+    problems: list[str] = []
+    if verdict.is_exhaustion and not verdict.blocks_account:
+        # A limit on one model class ("Fable 5 limit") leaves the account's other
+        # models routable; benching the whole account would over-react.
+        problems.append(
+            f"exhaustion is scoped to model class {verdict.model_class!r}, not the "
+            f"account; no cooldown recorded"
+        )
+    elif verdict.is_exhaustion:
+        until_s = verdict.exhausted_until_s or now_s + UNKNOWN_DEADLINE_COOLDOWN_S
+        result = StateStore(env=env).record_cooldown(account_id, until_s=until_s, now_s=now_s)
+        written = result.ok
+        problems.extend(result.warnings)
+    return {
+        "account": account_id,
+        "kind": verdict.kind,
+        "reason": verdict.reason,
+        "matched": verdict.matched,
+        "deadline_known": verdict.exhausted_until_s is not None,
+        "cooldown_until": _iso(until_s) if until_s is not None else None,
+        "written": written,
+        "warnings": problems,
+    }
+
+
+def _cmd_report_failure(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Exit 0 when classified (written or not), 2 when refused, 127 on a write failure."""
+    try:
+        config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    except ConfigError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_ROUTER_FAILURE
+    if args.text is not None:
+        text = args.text
+    elif args.text_file == "-":
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(args.text_file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            stderr.write(f"{_PROG}: cannot read {args.text_file}: {exc}\n")
+            return EXIT_USAGE
+    try:
+        outcome = report_failure(config, args.account, text, env=env, now_s=now_s)
+    except ValueError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_USAGE
+    stdout.write(json.dumps(outcome, indent=2) + "\n")
+    if outcome["cooldown_until"] and not outcome["written"]:
+        return EXIT_ROUTER_FAILURE
     return EXIT_OK
 
 
@@ -3005,6 +3201,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,
     "capabilities": _cmd_capabilities,
+    "report-failure": _cmd_report_failure,
 }
 
 

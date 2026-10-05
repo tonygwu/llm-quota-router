@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
-__all__ = ["Selection", "select_account"]
+__all__ = ["Selection", "report_failure", "select_account"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,3 +197,35 @@ def select_account(
         write_state=record,
     )
     return Selection.from_payload(_cli._pick_payload(prepared))
+
+
+def report_failure(
+    account: str,
+    text: str,
+    *,
+    config: str | None = None,
+    env: Mapping[str, str] | None = None,
+    now_s: float | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Tell the router an ``unmetered = "fallback"`` account just failed.
+
+    Classifies ``text`` (whatever the vendor CLI printed). If it means the pool is
+    spent, the account is kept out of capability picks until the reset the message
+    names, or for an hour when it names none. Returns what was decided, the same
+    object ``quotapick report-failure`` prints.
+
+    Raises:
+        ValueError: the account is unknown, disabled, or measured.
+    """
+    from . import cli as _cli
+    from .config import load_config
+
+    # The same default select_account uses, so a cooldown lands in the state file the
+    # library's own picks read.
+    environ = env if env is not None else {}
+    loaded = load_config(env=environ, cwd=cwd, explicit_path=config)
+    return _cli.report_failure(
+        loaded, account, text, env=environ,
+        now_s=float(now_s) if now_s is not None else time.time(),
+    )
