@@ -555,6 +555,7 @@ def test_capabilities_command_exits_1_without_a_table_and_0_after_refresh(
         cwd=_NO_CONFIG_FILES,
     )
     assert code == 0, err
+    assert out.count("\n") == 1  # one line per run: the poller's log is read with tail -1
     payload = json.loads(out)
     assert payload["refresh"]["failed"] == 0
     rows = {row["account"]: row for row in payload["accounts"]}
@@ -600,3 +601,56 @@ def test_the_poller_logs_the_refresh_separately_and_keeps_status_exit_code(tmp_p
     assert done.returncode == 3
     assert status_log.read_text() == '{"status": true}\n'
     assert refresh_log.read_text() == "refresh ran capabilities --refresh --json\noops\n"
+
+
+# ======================================================================================
+# doctor
+# ======================================================================================
+
+
+def _doctor(env, now_s):
+    from quota_router import doctor
+
+    table, error = cap.read_table(cap.table_path(env))
+    accounts = [("claude", "claude"), ("claude_b", "claude"), ("codex", "codex"),
+                ("codex_b", "codex"), ("antigravity_gemini", "antigravity")]
+    checks = doctor.check_capabilities(
+        table=table, table_error=error, path=str(cap.table_path(env)),
+        accounts=accounts, now_s=now_s,
+    )
+    return {check.name: check for check in checks}
+
+
+def test_doctor_says_not_set_up_without_a_table(env):
+    checks = _doctor(env, NOW)
+    assert list(checks) == ["capabilities"]
+    assert checks["capabilities"].status == "ok"
+    assert "not set up" in checks["capabilities"].detail
+
+
+def test_doctor_reports_each_capability_and_flags_codex_disagreement(env, tmp_path, agy_on_path):
+    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    checks = _doctor(env, NOW + MIN)
+
+    assert checks["capability[fast]"].status == "ok"
+    premium = checks["capability[premium]"]
+    assert premium.status == "warn"
+    assert "codex accounts disagree (gpt-6-sol, gpt-6.1-sol)" in premium.detail
+    assert "claude: claude-opus-5-5 (claude, claude_b)" in premium.detail
+
+
+def test_doctor_fails_once_the_table_is_past_its_ttl(env, tmp_path, agy_on_path):
+    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    checks = _doctor(env, NOW + 61 * MIN)
+    assert {c.status for c in checks.values()} == {"fail"}
+    assert "ops/install-launchd.sh" in checks["capability[premium]"].remedy
+
+
+def test_doctor_warns_about_a_recent_move(env, tmp_path, agy_on_path):
+    io = FakeIO()
+    _refresh(env, tmp_path, io, now_s=NOW)
+    io.codex["codex_b"] = [*CODEX_LIST, ("gpt-6.1-sol", False)]
+    for minute in (15, 30, 45):
+        _refresh(env, tmp_path, io, now_s=NOW + minute * MIN)
+    premium = _doctor(env, NOW + 46 * MIN)["capability[premium]"]
+    assert "codex_b moved gpt-6-sol -> gpt-6.1-sol" in premium.detail

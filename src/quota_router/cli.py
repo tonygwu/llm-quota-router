@@ -2961,7 +2961,9 @@ def _cmd_capabilities(
             "refresh": report.to_dict() if report else None,
             "accounts": rows,
         }
-        stdout.write(json.dumps(payload, indent=2) + "\n")
+        # One line per run: the poller appends this to capability-refresh.log, and a
+        # log is read with `tail -1`.
+        stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
     else:
         stdout.write(_format_capability_rows(rows, path, report, error))
     failed = bool(report and (report.failed or report.locked))
@@ -3156,6 +3158,28 @@ def _cmd_doctor(
                 ),
             )
         )
+
+    from . import capability as cap_mod
+
+    cap_path = cap_mod.table_path(env)
+    cap_table, cap_error = cap_mod.read_table(cap_path)
+    checks.extend(
+        doctor_mod.check_capabilities(
+            table=cap_table,
+            table_error=cap_error,
+            path=str(cap_path),
+            accounts=[
+                (account.id, account.provider)
+                for account in config.enabled_accounts()
+                if account.provider in cap_mod.CAPABILITY_PROVIDERS
+                and not (
+                    account.provider == "antigravity"
+                    and cap_mod.antigravity_flavour(account) == "claude"
+                )
+            ],
+            now_s=now_s,
+        )
+    )
 
     targets = list(getattr(args, "consumer", None) or [])
     for root in getattr(args, "scan", None) or []:

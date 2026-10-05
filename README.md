@@ -297,6 +297,8 @@ quotapick pick --model fable --json      # decision + full ranking as JSON
 quotapick exec --only claude_b -- claude -p "..."   # pick, then run
 quotapick launch-plan antigravity_claude_b --json  # how to reach ONE named account
 quotapick waste                          # what expired unused, per account, in PSE
+quotapick pick --capability premium      # provider + account + the model to request
+quotapick capabilities                   # which model each account resolves, per capability
 ```
 
 ### Reading `quotapick status`
@@ -726,6 +728,12 @@ Three checks, each for a failure that is otherwise silent:
   commits and cannot answer the question. An environment with no `quota_router` at all is
   not a finding; most virtualenvs have no business carrying it.
 
+`doctor` also prints one **capability[&lt;name&gt;]** row per capability (see
+[Capability routing](#capability-routing--pick---capability)): which model each provider's
+accounts resolve to, a warning when accounts of one provider disagree or a capability moved
+in the last 7 days, and a failure when the table has gone past its one-hour TTL or a
+capability resolves on no account. With no table at all it says "not set up".
+
 Exit codes are `0` clear, `1` something warned, `3` something failed, so it wires into a
 pre-flight without parsing the text.
 
@@ -734,6 +742,131 @@ flags, `doctor` checks only the copy running right now and says so. Name one wit
 `--consumer <python>`, or a tree to search with `--scan <dir>` (bounded three directories
 deep, and deliberately **not** symlink-resolved: a venv's `bin/python` points at the base
 interpreter, and resolving it would check the wrong environment every time).
+
+### Capability routing — `pick --capability`
+
+A caller that wants "a premium model" should not have to know which model that is this
+week, or which provider has quota for it. `--capability` asks for a quality level and gets
+back the provider, the account, and the concrete model id to request:
+
+```sh
+$ quotapick pick --capability frontier | jq -c '[.decision.account, .decision.model.id]'
+["claude_d","claude-fable-5-1"]
+```
+
+| capability | Claude | Codex | Antigravity (Gemini pools only) |
+|---|---|---|---|
+| `fast` | newest Haiku | newest `gpt-*-luna` | newest Gemini Flash (High) |
+| `standard` | newest Sonnet | newest `gpt-*-terra` | newest Gemini Flash (High) |
+| `premium` | newest Opus | newest `gpt-*-sol` | newest Gemini Pro (High) |
+| `frontier` | newest Fable | newest `gpt-*-astra` | none |
+
+"Capability" is a new word on purpose: "tier" already means the subscription plan
+(`max_20x`), and a *model class* is the family that decides which usage windows apply.
+
+**The model is resolved per account, from that account's own model list.** Nothing in this
+table names a version, so Opus 5 → 5.5 or gpt-6-sol → gpt-6.1-sol needs no edit:
+
+- **Claude:** the `main`-section model of the family in
+  `<config_dir>/cache/model-catalog/<organizationUuid>-*-cc.json`, which Claude Code writes
+  itself. A file read; no token is touched. The default account's identity is read from
+  `~/.claude.json`, outside `~/.claude`.
+- **Codex:** the app-server's `model/list` (the same list `models_cache.json` caches; that
+  file is the fallback when the call fails), plus the home's `config.toml` default model.
+  Both accounts served `gpt-6.1-sol` while neither list carried it, so the default counts as
+  available, with `listed: false`.
+- **Antigravity:** `agy models`, run the way the account is launched (its `launch-plan`
+  prefix). Only Gemini-flavour pools take part: a Claude-flavour pool was seen serving
+  `Gemini 3.8 Flash (High)` when asked for `Claude Opus 4.6 (Thinking)`, and the router never
+  routes a call under a model identity other than the one it requests.
+
+**`pick` never reads a model list.** digital-twin kills `pick` after 3000 ms, and a timeout
+silently drops its routing. The lists are read by `quotapick capabilities --refresh`, which
+the poller runs after every `status` (Claude catalogs each time, the network sources at most
+every 15 minutes), into `capabilities.json` beside the state file. `pick` reads that one
+file. A missing table, or an entry more than an hour old, excludes the account with the path
+and the fix in its reason; it never triggers a read.
+
+**A new model must persist before it counts.** Lists change within minutes: on 2026-10-05
+codex_b's list carried `gpt-6.1-sol` at 05:36:47Z and had dropped it by 05:43:29Z. A
+capability moves only after the new answer is seen in 2 reads with new data, spanning 30
+minutes; seeing the old answer again starts the clock over. One empty read cannot drop a
+working model either. Each committed move is appended to `capability-moves.jsonl`, `pick`
+warns about it for 24 hours, and `doctor` for 7 days. `quotapick capabilities` shows the
+table, including any candidate that has not yet committed.
+
+**What `pick --capability` adds to the payload.** `contract_version` stays `1`:
+
+- `capability`: `{requested, pinned, table_path, table_error}`.
+- `decision.model`, and `model` on every `ranked` and `excluded` row:
+  `{id, family, provider, source, source_fetched_at, listed, since, note}`. Each row
+  carries its own model because accounts on one provider can resolve differently, and
+  because a client walking the ranking needs the model for each row.
+
+Three rules for clients:
+
+1. **These keys appear only when you pass `--capability`.** A caller that never passes it
+   sees byte-identical output; `tests/test_contract_golden.py` pins that.
+2. **`model.id` is what to request, not proof of what is served.** `listed` means the id was
+   in the account's list at refresh time. Vendors substitute without saying so; check the
+   served model in your own telemetry.
+3. **`decision` can name a provider you cannot use.** A client limited to Claude Code (for
+   example, one that needs per-run tool allow/deny lists) passes `--only` with its Claude
+   accounts, or walks `ranked`.
+
+**Each account is judged for its own model.** A spent Fable window does not stop a
+`premium` (Opus) pick on that account, and Codex is not dropped from `frontier` for lacking
+the Fable window Claude reports. A Codex limit scoped to a concrete slug binds only that
+model.
+
+**Frontier never downgrades.** When every Fable window and every Codex account is spent,
+`pick --capability frontier` does what `pick --model fable` does today: it names whoever
+resets first, with `fits: false` and `available_at`, and still names the frontier model. A
+client that wants premium instead asks for `--capability premium`.
+
+**Pinning.** `--capability premium --model claude-opus-5` keeps only the accounts of the
+model's provider, and only those whose list carries it (`source: "pinned"`). An operator
+can pin per provider in config instead:
+
+```toml
+# ~/.config/quota-router/config.toml
+[capabilities.premium]
+codex = "gpt-6-sol"        # an exact id; "luna"/"terra"/"sol"/"astra" select the newest
+antigravity = "none"       # take a provider out of a capability
+```
+
+An unknown capability, provider, or a selector that belongs to another provider
+(`codex = "opus"`) is a config error, not a silent misroute.
+
+Python: `select_account(capability="premium")` sets `Selection.capability` and
+`Selection.model` (a `ModelChoice`); `Selection.ranked` rows carry `model` dicts.
+
+#### Antigravity pools as a last resort
+
+Antigravity publishes no usage reading, so by default a pool never wins. Marking one lets a
+capability request use it only when no measured account can serve:
+
+```toml
+[accounts.antigravity_gemini]
+provider = "antigravity"
+unmetered = "fallback"
+```
+
+It is then ranked first with `fits: true` and a warning that its quota is unmeasured. It
+never competes with a measured account, a caller's `--min-remaining` keeps it out (an
+unknown figure cannot meet a floor), and without `--capability` nothing changes.
+
+When its call fails, tell the router:
+
+```sh
+quotapick report-failure antigravity_gemini --text "Individual quota reached. ... Resets in 25m54s"
+```
+
+The text goes through the same classifier the rest of the package uses. An account-wide
+exhaustion keeps the pool out of capability picks until the reset the message names, or
+for an hour when it names none; a transient failure or a limit on one model class records
+nothing. Only `unmetered = "fallback"` accounts are accepted: a measured account already has
+live readings, and a second, failure-learned source could disagree with them.
 
 ### Preferring one account over another for a while
 
@@ -782,6 +915,10 @@ things the router cannot produce for itself:
 
 - **`history.jsonl` density**, which is what burn-rate learning and `calibrate` read.
 - **`waste.jsonl`**, one row per window reset — the measurement described above.
+- **`capabilities.json`**, refreshed right after `status` by
+  `quotapick capabilities --refresh` (see Capability routing). It logs to its own
+  `capability-refresh.log`, so `usage-poll.log` stays one `status --json` record per run,
+  and the job still exits with `status`'s code.
 
 It is a reader like everything else here: it mints nothing and writes to no
 credential store. Skipping it costs no correctness, but it does cost the measurement,
@@ -1000,7 +1137,9 @@ need.
 The pre-publication check ran on 2026-09-06: the history holds no account
 emails or identity keys outside the synthetic fixtures, and the only absolute
 home paths describe the author's machine in `AGENTS.md`. `contract_version` is
-now a public stability commitment.
+now a public stability commitment. Keys that appear only under a new opt-in flag
+(`--capability`) are additive within version 1: a consumer that never passes the
+flag sees byte-identical output.
 
 Upstreaming the scorer into `claude-swap` is a live alternative to publishing
 separately, and would likely reach more people with less maintenance — both

@@ -47,7 +47,7 @@ route on it. The failure mode is a wedged or mis-routed launch, not a red test.
 To test your own changes, use your checkout's venv, which is isolated:
 
 ```sh
-./.venv/bin/python -m pytest -q          # 705 tests, ~7s
+./.venv/bin/python -m pytest -q          # ~980 tests, ~12s
 ./.venv/bin/quotapick status             # your code, not the installed copy
 ```
 
@@ -108,6 +108,23 @@ as nine account ids at `08:50:32Z` and seven at `08:52:39Z` -- proof the job
 picked up the new code and exited cleanly, from the data rather than from an
 mtime. `launchctl list | grep llm-quota-router` gives the last exit status, and
 the run before yours is the one it may still be reporting.
+
+The poller also runs `quotapick capabilities --refresh` after `status`, which
+writes `capabilities.json` (the only input `pick --capability` reads). It logs
+to `capability-refresh.log`, one JSON report per run, never to
+`usage-poll.log`. That second command exists only in a plist written by an
+`ops/install-launchd.sh` that has it, so after shipping a change to the script,
+re-run it **from repo-prod**. Then check the refresh from its own data:
+
+```sh
+tail -1 ~/Library/Logs/llm-quota-router/capability-refresh.log \
+  | jq -c '{at: .generated_at} + (.refresh | {attempted, succeeded, failed, failed_by_kind})'
+quotapick capabilities          # REFRESHED column within the last 15 min
+```
+
+Testing capability code from a working checkout: point `XDG_STATE_HOME` at a
+scratch directory, so your `capabilities --refresh` never rewrites the live
+table that every `pick --capability` on this machine reads.
 
 ## Git protocol between checkouts
 

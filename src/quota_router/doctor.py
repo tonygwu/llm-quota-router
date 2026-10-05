@@ -41,7 +41,7 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 __all__ = [
     "REQUIRED_FEATURES",
@@ -325,6 +325,106 @@ def check_reserve_is_enforced(
             )
             continue
         checks.append(Check(f"reserve[{account}]", "ok", detail))
+    return checks
+
+
+#: How far back a committed capability move is still worth a warning.
+CAPABILITY_MOVE_WARN_S: Final[float] = 7 * 24 * 3600.0
+
+
+def check_capabilities(
+    *,
+    table: Mapping[str, Any] | None,
+    table_error: str | None,
+    path: str,
+    accounts: Sequence[tuple[str, str]],
+    now_s: float,
+) -> list[Check]:
+    """Is capability routing set up and current? One check per capability.
+
+    Args:
+        accounts: ``(account_id, provider)`` for every enabled account that can take
+            part (Claude, Codex, Gemini-flavour Antigravity).
+
+    No table at all means capability routing is not in use, which is not a fault. A
+    table that exists but has gone past its TTL means the poller stopped refreshing
+    it, and every capability pick is now excluding accounts: that is a failure.
+    """
+    from . import capability as cap
+
+    remedy_refresh = (
+        "run `quotapick capabilities --refresh`; if it keeps going stale, re-run "
+        "ops/install-launchd.sh from repo-prod so the usage poller refreshes it, and "
+        "read ~/Library/Logs/llm-quota-router/capability-refresh.log"
+    )
+    if table_error:
+        return [Check("capabilities", "fail", table_error, remedy=remedy_refresh)]
+    if table is None:
+        return [
+            Check(
+                "capabilities",
+                "ok",
+                f"not set up (no table at {path}); `pick --capability` would exclude "
+                f"every account until it exists",
+            )
+        ]
+
+    checks: list[Check] = []
+    for name in cap.CAPABILITIES:
+        resolved: dict[str, Any] = {}
+        unresolved: dict[str, str] = {}
+        for account_id, _provider in accounts:
+            result = cap.lookup(table, account_id, name, now_s=now_s, path=Path(path))
+            if isinstance(result, cap.ModelChoice):
+                resolved[account_id] = result
+            else:
+                unresolved[account_id] = result.reason
+
+        by_provider: dict[str, dict[str, list[str]]] = {}
+        for account_id, choice in resolved.items():
+            by_provider.setdefault(choice.provider, {}).setdefault(choice.id, []).append(account_id)
+        detail = "; ".join(
+            f"{provider}: "
+            + ", ".join(f"{model_id} ({', '.join(ids)})" for model_id, ids in sorted(models.items()))
+            for provider, models in sorted(by_provider.items())
+        ) or "no account resolves it"
+
+        problems: list[str] = []
+        stale = sorted(a for a, why in unresolved.items() if "TTL" in why)
+        if stale:
+            problems.append(f"past the table's TTL: {', '.join(stale)}")
+        for provider, models in sorted(by_provider.items()):
+            if len(models) > 1:
+                problems.append(f"{provider} accounts disagree ({', '.join(sorted(models))})")
+        for account_id, choice in sorted(resolved.items()):
+            if choice.source == "codex_models_cache":
+                problems.append(f"{account_id} fell back to models_cache.json")
+            entry = table.get("accounts", {}).get(account_id, {})
+            cap_entry = (entry.get("capabilities") or {}).get(name) or {}
+            moved_at = cap_entry.get("moved_at")
+            if isinstance(moved_at, (int, float)) and now_s - moved_at <= CAPABILITY_MOVE_WARN_S:
+                problems.append(
+                    f"{account_id} moved {cap_entry.get('moved_from') or 'unresolved'} -> "
+                    f"{choice.id} at {cap._iso(moved_at)}"
+                )
+            for warning in entry.get("warnings", []) or []:
+                if "old" in str(warning):
+                    problems.append(str(warning))
+
+        if not resolved:
+            status = "fail"
+            remedy = remedy_refresh
+            reasons = sorted(set(unresolved.values()))[:3]
+            detail = f"no enabled account resolves {name}: " + " | ".join(reasons)
+        elif stale:
+            status, remedy = "fail", remedy_refresh
+        elif problems:
+            status, remedy = "warn", "informational; `quotapick capabilities` shows the table"
+        else:
+            status, remedy = "ok", ""
+        if problems:
+            detail += " -- " + "; ".join(dict.fromkeys(problems))
+        checks.append(Check(f"capability[{name}]", status, detail, remedy=remedy))
     return checks
 
 
