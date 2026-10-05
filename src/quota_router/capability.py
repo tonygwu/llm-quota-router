@@ -312,6 +312,21 @@ class ModelChoice:
         }
 
 
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ModelChoice":
+        """Inverse of :meth:`to_dict`, for the Python API."""
+        return cls(
+            id=str(raw["id"]),
+            family=raw.get("family"),
+            provider=str(raw.get("provider")),
+            source=str(raw.get("source")),
+            source_fetched_at_s=_epoch(raw.get("source_fetched_at")),
+            listed=bool(raw.get("listed")),
+            since_s=_epoch(raw.get("since")),
+            note=raw.get("note"),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Unresolved:
     """No model for this account and capability, and why."""
@@ -640,9 +655,101 @@ def lookup(
     )
 
 
+def fresh_listing(
+    table: Mapping[str, Any] | None,
+    account_id: str,
+    *,
+    now_s: float,
+    path: Path,
+    ttl_s: float = TABLE_TTL_S,
+) -> Listing | Unresolved:
+    """An account's last-read model list, if the table holds a fresh one."""
+    if table is None:
+        return Unresolved(
+            f"no capability table at {path}; run `quotapick capabilities --refresh`"
+        )
+    entry = table.get("accounts", {}).get(account_id)
+    if not isinstance(entry, Mapping):
+        return Unresolved(f"{account_id} has no entry in the capability table {path}")
+    refreshed = entry.get("refreshed_at")
+    if not isinstance(refreshed, (int, float)) or now_s - float(refreshed) > ttl_s:
+        return Unresolved(f"capability table for {account_id} is missing or past its TTL")
+    listing = Listing.from_json(entry.get("list"))
+    if listing is None:
+        return Unresolved(f"capability table entry for {account_id} has no readable list")
+    return listing
+
+
+def listing_offers(listing: Listing, model_id: str) -> tuple[bool, bool]:
+    """``(available, listed)`` for an exact id in one account's listing.
+
+    Codex's ``config.toml`` default is available but not listed by the server.
+    """
+    if listing.provider == PROVIDER_ANTIGRAVITY:
+        labels = {label for _id, label in listing.entries}
+        return model_id in labels, model_id in labels
+    if listing.provider == PROVIDER_CODEX:
+        visible = {slug for slug, visibility in listing.entries if visibility != "hide"}
+        return model_id in visible or model_id in listing.extras, model_id in visible
+    ids = {model_id_ for model_id_, _section in listing.entries}
+    return model_id in ids, model_id in ids
+
+
+#: Which provider serves a model class, for ``--capability X --model <pin>``.
+PROVIDER_FOR_CLASS: Final[Mapping[str, str]] = {
+    "opus": PROVIDER_CLAUDE,
+    "sonnet": PROVIDER_CLAUDE,
+    "haiku": PROVIDER_CLAUDE,
+    "fable": PROVIDER_CLAUDE,
+    "gpt": PROVIDER_CODEX,
+    "gemini": PROVIDER_ANTIGRAVITY,
+}
+
+#: How long after a committed move ``pick`` keeps warning about it.
+MOVE_WARNING_S: Final[float] = 24 * 3600.0
+
+
+def pick_notes(
+    table: Mapping[str, Any] | None, account_id: str, capability: str, *, now_s: float
+) -> list[str]:
+    """Warnings ``pick`` adds for one account: recent moves, pending candidates, stale sources."""
+    if table is None:
+        return []
+    entry = table.get("accounts", {}).get(account_id)
+    if not isinstance(entry, Mapping):
+        return []
+    notes = [str(w) for w in entry.get("warnings", []) or []]
+    cap_entry = (entry.get("capabilities") or {}).get(capability)
+    if not isinstance(cap_entry, Mapping):
+        return notes
+    committed = cap_entry.get("committed") or {}
+    moved_at = cap_entry.get("moved_at")
+    if isinstance(moved_at, (int, float)) and now_s - moved_at <= MOVE_WARNING_S:
+        notes.append(
+            f"capability {capability} on {account_id} moved "
+            f"{cap_entry.get('moved_from') or 'unresolved'} -> "
+            f"{committed.get('id') or 'unresolved'} at {_iso(moved_at)}"
+        )
+    candidate = cap_entry.get("candidate")
+    if isinstance(candidate, Mapping):
+        notes.append(
+            f"capability {capability} on {account_id}: "
+            f"{candidate.get('id') or 'unresolved'} seen {candidate.get('seen')}x since "
+            f"{_iso(candidate.get('first_seen'))}, not yet committed; still routing "
+            f"{committed.get('id') or 'unresolved'}"
+        )
+    return notes
+
+
 # ======================================================================================
 # Formatting helpers
 # ======================================================================================
+
+
+def _epoch(text: Any) -> float | None:
+    if not isinstance(text, str):
+        return None
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
 
 
 def _iso(epoch_s: float | None) -> str | None:

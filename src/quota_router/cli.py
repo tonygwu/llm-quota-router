@@ -427,10 +427,17 @@ class Prepared:
     manual_reserves: tuple[reserve_mod.ManualReserve, ...] = ()
     warnings: tuple[str, ...] = ()
     degraded: tuple[dict[str, Any], ...] = ()
+    #: Set only when the caller asked for a capability; ``None`` keeps every path and
+    #: every byte of output exactly as it was before capabilities existed.
+    capability: "CapabilityContext | None" = None
 
     @property
     def snapshot_map(self) -> dict[str, AccountSnapshot]:
-        return {snapshot.id: snapshot for snapshot in self.snapshots}
+        mapping = {snapshot.id: snapshot for snapshot in self.snapshots}
+        if self.capability is not None:
+            for snapshot in self.capability.excluded_snapshots:
+                mapping.setdefault(snapshot.id, snapshot)
+        return mapping
 
 
 def _unclaimed_account_warnings(
@@ -1034,6 +1041,157 @@ def exclude_accounts_blind_to_model_class(
     return kept, dropped
 
 
+@dataclass
+class CapabilityContext:
+    """What a ``--capability`` request resolved, per account."""
+
+    name: str
+    table_path: str
+    table_error: str | None
+    choices: dict[str, Any] = field(default_factory=dict)
+    classes: dict[str, str | None] = field(default_factory=dict)
+    excluded: list[ScoreBreakdown] = field(default_factory=list)
+    excluded_snapshots: list[AccountSnapshot] = field(default_factory=list)
+    pinned: str | None = None
+
+
+def _capability_view(snapshot: AccountSnapshot, model_class: str | None, model_id: str) -> AccountSnapshot:
+    """The snapshot as it constrains a call for THIS account's model.
+
+    Windows scoped to another class are dropped, and the ones that apply become
+    account-wide, so the unchanged scoring layer can judge each account for its own
+    model under one shared label. A window applies when it is account-wide, or scoped
+    to the model's class, or to the concrete id (Codex scopes carry slug aliases). An
+    id with no known class keeps every window: guessing must never drop a limit.
+    """
+    wanted = {
+        text
+        for text in (normalize_model_class(model_class), model_id.strip().casefold())
+        if text
+    }
+    if normalize_model_class(model_class) is None:
+        kept = tuple(replace(w, applies_to=None) for w in snapshot.windows)
+    else:
+        kept = tuple(
+            replace(w, applies_to=None)
+            for w in snapshot.windows
+            if w.applies_to is None
+            or wanted & {str(a).strip().casefold() for a in w.applies_to}
+        )
+    return replace(snapshot, windows=kept)
+
+
+def _apply_capability(
+    config: Config,
+    snapshots: Sequence[AccountSnapshot],
+    capability: str,
+    pinned: str | None,
+    env: Mapping[str, str],
+    now_s: float,
+    warnings: list[str],
+) -> tuple[tuple[AccountSnapshot, ...], CapabilityContext]:
+    """Resolve each account's model from the table alone, then build its view.
+
+    Reads ONE file. Never reads a model list, never spawns: digital-twin kills pick at
+    3000 ms and a timeout silently drops its routing.
+    """
+    from . import capability as cap_mod
+
+    path = cap_mod.table_path(env)
+    table, table_error = cap_mod.read_table(path)
+    if table_error:
+        warnings.append(table_error)
+    ctx = CapabilityContext(
+        name=capability, table_path=str(path), table_error=table_error, pinned=pinned
+    )
+    pin_provider = None
+    if pinned:
+        pin_class = mc.classify(pinned, config.model_patterns)
+        pin_provider = cap_mod.PROVIDER_FOR_CLASS.get(pin_class or "")
+
+    def exclude(snapshot: AccountSnapshot, why: str) -> None:
+        ctx.excluded.append(
+            _breakdown_for(
+                snapshot, None, now_s=now_s, eligible=False,
+                reason=f"capability {capability}: {why}",
+            )
+        )
+        ctx.excluded_snapshots.append(snapshot)
+
+    kept: list[AccountSnapshot] = []
+    for snapshot in snapshots:
+        account = config.account(snapshot.id)
+        if account is not None and not account.enabled:
+            kept.append(snapshot)  # policy exclusion; _partition_candidates says why
+            continue
+        provider = account.provider if account is not None else snapshot.provider
+        if provider not in cap_mod.CAPABILITY_PROVIDERS:
+            exclude(snapshot, f"provider {provider} publishes no model list")
+            continue
+        if provider == "antigravity" and cap_mod.antigravity_flavour(account) == "claude":
+            exclude(
+                snapshot,
+                "Claude-flavour Antigravity pools are out of capability routing "
+                "(one was seen serving Gemini under a Claude label)",
+            )
+            continue
+        if pinned:
+            if pin_provider is None:
+                exclude(snapshot, f"cannot tell which provider serves pinned model {pinned!r}")
+                continue
+            if provider != pin_provider:
+                exclude(snapshot, f"pinned to {pinned}, a {pin_provider} model")
+                continue
+            listing = cap_mod.fresh_listing(table, snapshot.id, now_s=now_s, path=path)
+            if isinstance(listing, cap_mod.Unresolved):
+                exclude(snapshot, listing.reason)
+                continue
+            available, listed = cap_mod.listing_offers(listing, pinned)
+            if not available:
+                exclude(snapshot, f"{snapshot.id} does not list {pinned}")
+                continue
+            choice: Any = cap_mod.ModelChoice(
+                id=pinned, family=pin_class, provider=provider, source="pinned",
+                source_fetched_at_s=listing.fetched_at_s, listed=listed,
+            )
+        else:
+            choice = cap_mod.lookup(table, snapshot.id, capability, now_s=now_s, path=path)
+            if isinstance(choice, cap_mod.Unresolved):
+                exclude(snapshot, choice.reason)
+                continue
+        warnings.extend(cap_mod.pick_notes(table, snapshot.id, capability, now_s=now_s))
+        ctx.choices[snapshot.id] = choice
+        ctx.classes[snapshot.id] = mc.classify(choice.id, config.model_patterns)
+        kept.append(snapshot)
+
+    # The blind-account guard, per class: an account is compared only with the accounts
+    # that would request the same class. Fleet-wide, a frontier request would drop both
+    # Codex accounts for lacking the Fable window that Claude reports.
+    by_class: dict[str | None, list[AccountSnapshot]] = {}
+    for snapshot in kept:
+        if snapshot.id in ctx.choices:
+            by_class.setdefault(ctx.classes[snapshot.id], []).append(snapshot)
+    blind_ids: set[str] = set()
+    for model_class, group in by_class.items():
+        _visible, blind = exclude_accounts_blind_to_model_class(group, model_class)
+        for entry in blind:
+            blind_ids.add(entry["account"])
+            warnings.append(f"{entry['account']}: {entry['reason']}")
+    views: list[AccountSnapshot] = []
+    for snapshot in kept:
+        if snapshot.id in blind_ids:
+            exclude(snapshot, "cannot see a limit its model is subject to")
+            ctx.choices.pop(snapshot.id, None)
+            continue
+        if snapshot.id in ctx.choices:
+            views.append(
+                _capability_view(snapshot, ctx.classes[snapshot.id], ctx.choices[snapshot.id].id)
+            )
+        else:
+            views.append(snapshot)
+    return tuple(views), ctx
+
+
 def _prepare(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -1057,11 +1215,23 @@ def _prepare(
     warnings: list[str] = list(config.warnings) + list(config.tier_override_warnings())
     degraded: list[dict[str, Any]] = []
 
-    model = mc.resolve(
-        getattr(args, "model", None),
-        patterns=config.model_patterns,
-        multipliers=config.model_multipliers,
-    )
+    capability = getattr(args, "capability", None)
+    if capability:
+        # Each account is judged for its own model (see _apply_capability), so the
+        # pipeline runs under one label. The label is also the sticky scope, so
+        # capability picks keep their own incumbent.
+        model = mc.ModelResolution(
+            raw=getattr(args, "model", None),
+            model_class=f"capability:{capability}",
+            source="capability",
+            multiplier=mc.DEFAULT_MULTIPLIER,
+        )
+    else:
+        model = mc.resolve(
+            getattr(args, "model", None),
+            patterns=config.model_patterns,
+            multipliers=config.model_multipliers,
+        )
     if model.warning:
         warnings.append(model.warning)
 
@@ -1162,6 +1332,11 @@ def _prepare(
         warnings.append(
             "single candidate: pileup reservations not applied (nothing to spread to)"
         )
+    capability_ctx: CapabilityContext | None = None
+    if capability:
+        adjusted, capability_ctx = _apply_capability(
+            config, adjusted, capability, getattr(args, "model", None), env, now_s, warnings
+        )
     # Before eligibility: an account that cannot SEE the requested class's limit must
     # not be scored as though that limit did not exist.
     adjusted_list, blind = exclude_accounts_blind_to_model_class(adjusted, model.model_class)
@@ -1183,6 +1358,7 @@ def _prepare(
         manual_reserves=manual_reserves,
         warnings=tuple(warnings),
         degraded=tuple(degraded),
+        capability=capability_ctx,
     )
 
     records_a_pick = bool(write_state and not getattr(args, "dry_run", False))
@@ -1194,17 +1370,26 @@ def _prepare(
     )
     prepared.decision = decision
     prepared.from_fallback = bool(fallback_flag)
-    prepared.cli_excluded = partition.excluded
+    prepared.cli_excluded = partition.excluded + (
+        tuple(capability_ctx.excluded) if capability_ctx is not None else ()
+    )
     prepared.warnings = tuple(warnings) + tuple(decision.warnings)
     prepared.degraded = tuple(degraded)
 
     records_a_pick = records_a_pick and bool(decision.chosen)
 
+    # What this call will actually spend: under a capability, the chosen account's own
+    # model, not the shared label the pipeline ran under.
+    spent_class, spent_multiplier = model.model_class, model.multiplier
+    if capability_ctx is not None:
+        spent_class = capability_ctx.classes.get(decision.chosen or "")
+        spent_multiplier = mc.demand_multiplier(spent_class, config.model_multipliers)
+
     if records_a_pick:
         result = store.record_pick(
             decision.chosen or "",
             now_s=now_s,
-            cost=model.multiplier,
+            cost=spent_multiplier,
             scope=model.model_class or GLOBAL_SCOPE,
             window_s=config.pileup.window_s,
             max_records=config.pileup.max_records,
@@ -1243,9 +1428,9 @@ def _prepare(
             now_s=now_s,
             event=event,
             chosen=decision.chosen if records_a_pick else None,
-            model_class=model.model_class,
-            multiplier=model.multiplier if records_a_pick else None,
-            cost=model.multiplier if records_a_pick else None,
+            model_class=spent_class,
+            multiplier=spent_multiplier if records_a_pick else None,
+            cost=spent_multiplier if records_a_pick else None,
             regime=decision.regime,
             degraded=bool(prepared.degraded) or decision.degraded,
             env=env,
@@ -1397,6 +1582,32 @@ def _meets_policy(prepared: Prepared) -> bool:
 
 
 def _pick_payload(prepared: Prepared) -> dict[str, Any]:
+    payload = _pick_payload_v1(prepared)
+    ctx = prepared.capability
+    if ctx is None:
+        return payload
+    # Additive, and only here: a caller that never passes --capability never sees
+    # these keys (tests/test_contract_golden.py pins that).
+
+    def model_of(account_id: Any) -> dict[str, Any] | None:
+        choice = ctx.choices.get(account_id or "")
+        return choice.to_dict() if choice is not None else None
+
+    payload["capability"] = {
+        "requested": ctx.name,
+        "pinned": ctx.pinned,
+        "table_path": ctx.table_path,
+        "table_error": ctx.table_error,
+    }
+    payload["decision"]["model"] = model_of(payload["decision"]["account"])
+    for row in payload["ranked"]:
+        row["model"] = model_of(row["account"])
+    for row in payload["excluded"]:
+        row["model"] = model_of(row["account"])
+    return payload
+
+
+def _pick_payload_v1(prepared: Prepared) -> dict[str, Any]:
     decision = prepared.decision
     snapshots = prepared.snapshot_map
     winner = decision.chosen_breakdown
@@ -1505,6 +1716,9 @@ def _cmd_pick(
         raise
     except Exception as exc:  # noqa: BLE001 - pick must always emit valid JSON
         payload = _degraded_payload(now_s, f"router failure: {type(exc).__name__}: {exc}")
+        if getattr(args, "capability", None):
+            payload["capability"] = {"requested": args.capability}
+            payload["decision"]["model"] = None
         _dump_json(payload, stdout)
         return EXIT_OK
 
@@ -2218,10 +2432,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    subparsers.add_parser(
+    pick_parser = subparsers.add_parser(
         "pick",
         parents=[common],
         help="print the routing decision as JSON (always exits 0 unless flags are bad)",
+    )
+    pick_parser.add_argument(
+        "--capability",
+        choices=("fast", "standard", "premium", "frontier"),
+        default=None,
+        help=(
+            "route by capability across providers: each account is judged for the model "
+            "it resolves to (from the table `quotapick capabilities --refresh` keeps), "
+            "and the payload names that model. With --model, the model is pinned and "
+            "only its provider's accounts are considered"
+        ),
     )
     exec_parser = subparsers.add_parser(
         "exec",

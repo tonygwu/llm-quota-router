@@ -71,6 +71,12 @@ class Selection:
     available_at: float | None = None
     reason: str | None = None
     contract_version: int = 1
+    #: The capability asked for, or ``None`` when the caller passed none.
+    capability: str | None = None
+    #: The model to REQUEST on :attr:`account`, set only under a capability. It is not
+    #: proof of what the vendor serves; check that in your own telemetry. Each row of
+    #: :attr:`ranked` carries its own ``model`` too, for callers that walk the ranking.
+    model: Any = None
     _payload: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,8 +101,18 @@ class Selection:
             available_at=decision.get("available_at"),
             reason=decision.get("reason"),
             contract_version=int(payload.get("contract_version") or 1),
+            capability=(payload.get("capability") or {}).get("requested"),
+            model=_model_choice(decision.get("model")),
             _payload=dict(payload),
         )
+
+
+def _model_choice(raw: Any) -> Any:
+    if not isinstance(raw, Mapping):
+        return None
+    from .capability import ModelChoice
+
+    return ModelChoice.from_dict(raw)
 
 
 def select_account(
@@ -113,6 +129,7 @@ def select_account(
     now_s: float | None = None,
     cwd: str | None = None,
     deps: Any = None,
+    capability: str | None = None,
 ) -> Selection:
     """Choose which account to spend on this invocation.
 
@@ -128,6 +145,12 @@ def select_account(
             about to run the work; pass ``False`` when you are only inspecting,
             because a decision that is never acted on should not book anyone's quota.
         env / now_s / cwd / deps: Injection points. Tests use them; callers rarely do.
+        capability: ``"fast"``, ``"standard"``, ``"premium"`` or ``"frontier"``. Routes
+            across providers, judging each account for the model it resolves to, and
+            sets :attr:`Selection.model`. Reads the table ``quotapick capabilities
+            --refresh`` keeps and nothing else. With ``model``, that model is pinned and
+            only its provider's accounts are considered. A provider the caller cannot
+            use may still win; pass ``only`` or walk :attr:`Selection.ranked`.
 
     Returns:
         A :class:`Selection`. **This function does not raise on routing failure** --
@@ -137,7 +160,12 @@ def select_account(
     """
     from . import cli as _cli
 
+    if capability is not None and capability not in ("fast", "standard", "premium", "frontier"):
+        raise ValueError(
+            f"unknown capability {capability!r} (known: fast, standard, premium, frontier)"
+        )
     args = SimpleNamespace(
+        capability=capability,
         model=model,
         # argparse declares --only/--exclude with action="append", so _split_list
         # expects an ITERABLE OF STRINGS. Handing it one joined string makes it
