@@ -1,0 +1,103 @@
+{
+  "contract_version": 1,
+  "decision": {
+    "account": "claude_b",
+    "available_at": 1786733812.0,
+    "binding_window": "five_hour",
+    "fits": false,
+    "meets_policy": false,
+    "provider": "claude",
+    "reason": "every candidate is out of quota; earliest reset in 10m",
+    "regime": null,
+    "score": 0.0,
+    "sticky": false
+  },
+  "degraded": [],
+  "excluded": [
+    {
+      "account": "claude",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": false,
+      "fits": false,
+      "min_slack": -0.5,
+      "reason": "only 0.0% left in its tightest applicable window (min-remaining 2.0%)",
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    },
+    {
+      "account": "claude_b",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": false,
+      "fits": false,
+      "min_slack": -0.033333333333333326,
+      "reason": "only 0.0% left in its tightest applicable window (min-remaining 2.0%)",
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    },
+    {
+      "account": "claude_c",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": false,
+      "fits": false,
+      "min_slack": -0.2222222222222222,
+      "reason": "only 0.0% left in its tightest applicable window (min-remaining 2.0%)",
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    }
+  ],
+  "exec": {
+    "argv_prefix": [],
+    "env": {
+      "CLAUDE_CONFIG_DIR": "<TMP>/home/.claude-b"
+    },
+    "unset_env": []
+  },
+  "generated_at": "<GENERATED_AT>",
+  "ranked": [
+    {
+      "account": "claude_b",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": true,
+      "fits": false,
+      "min_slack": -0.033333333333333326,
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    },
+    {
+      "account": "claude_c",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": true,
+      "fits": false,
+      "min_slack": -0.2222222222222222,
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    },
+    {
+      "account": "claude",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": true,
+      "fits": false,
+      "min_slack": -0.5,
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    }
+  ],
+  "warnings": [
+    "account 'claude_d' is configured under provider 'claude' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the claude adapter does not read declared accounts",
+    "account 'codex' is configured under provider 'codex' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the codex adapter does not read declared accounts",
+    "account 'cursor' is configured under provider 'cursor' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the cursor adapter does not read declared accounts",
+    "no candidate can serve this call right now"
+  ]
+}

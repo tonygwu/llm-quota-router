@@ -1,0 +1,21 @@
+{
+  "account": "antigravity_claude_b",
+  "argv_prefix": [
+    "sudo",
+    "-n",
+    "/usr/local/libexec/agy-as-user",
+    "tonyagents"
+  ],
+  "command": "agy",
+  "contract_version": 1,
+  "enabled": true,
+  "env": {
+    "AGY_MODEL": "claude"
+  },
+  "generated_at": "<GENERATED_AT>",
+  "identity_email": "second@example.com",
+  "provider": "antigravity",
+  "unset_env": [
+    "HOME"
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "contract_version": 1,
+  "decision": {
+    "account": "claude",
+    "available_at": null,
+    "binding_window": "scoped:fable",
+    "fits": true,
+    "meets_policy": true,
+    "provider": "claude",
+    "reason": "claude wins: 0.200 PSE min_slack (no weekly window; cannot normalize) (binding scoped:fable, tier scale 1.00)",
+    "regime": "B",
+    "score": 0.19999999999999996,
+    "sticky": false
+  },
+  "degraded": [],
+  "excluded": [
+    {
+      "account": "claude_c",
+      "age_s": 0.0,
+      "binding_window": "five_hour",
+      "eligible": false,
+      "fits": false,
+      "min_slack": -0.24,
+      "reason": "only 0.0% left in its tightest applicable window (min-remaining 2.0%)",
+      "remaining": 0.0,
+      "score": 0.0,
+      "source": "live"
+    }
+  ],
+  "exec": {
+    "argv_prefix": [],
+    "env": {},
+    "unset_env": []
+  },
+  "generated_at": "<GENERATED_AT>",
+  "ranked": [
+    {
+      "account": "claude",
+      "age_s": 0.0,
+      "binding_window": "scoped:fable",
+      "eligible": true,
+      "fits": true,
+      "min_slack": -0.254,
+      "remaining": 0.19999999999999996,
+      "score": 0.19999999999999996,
+      "source": "live"
+    },
+    {
+      "account": "claude_b",
+      "age_s": 0.0,
+      "binding_window": "scoped:fable",
+      "eligible": true,
+      "fits": true,
+      "min_slack": -0.536,
+      "remaining": 0.12,
+      "score": 0.12,
+      "source": "live"
+    }
+  ],
+  "warnings": [
+    "account 'claude_d' is configured under provider 'claude' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the claude adapter does not read declared accounts",
+    "account 'codex' is configured under provider 'codex' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the codex adapter does not read declared accounts",
+    "account 'cursor' is configured under provider 'cursor' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the cursor adapter does not read declared accounts"
+  ]
+}

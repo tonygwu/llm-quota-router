@@ -1,0 +1,33 @@
+{
+  "contract_version": 1,
+  "decision": {
+    "account": null,
+    "available_at": null,
+    "binding_window": null,
+    "fits": false,
+    "meets_policy": false,
+    "provider": null,
+    "reason": "no accounts are configured or visible",
+    "regime": null,
+    "score": 0.0,
+    "sticky": false
+  },
+  "degraded": [
+    {
+      "account": null,
+      "reason": "no usage data at all; routing on configuration order"
+    }
+  ],
+  "excluded": [],
+  "exec": {
+    "argv_prefix": [],
+    "env": {},
+    "unset_env": []
+  },
+  "generated_at": "<GENERATED_AT>",
+  "ranked": [],
+  "warnings": [
+    "oracle returned no accounts",
+    "no candidates at all"
+  ]
+}

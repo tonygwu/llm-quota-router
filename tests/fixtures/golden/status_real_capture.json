@@ -1,0 +1,184 @@
+{
+  "accounts": [
+    {
+      "age_s": 0.0,
+      "available": true,
+      "binding_window": "scoped:fable",
+      "capacity": 1.0,
+      "confidence": 1.0,
+      "deprioritized": false,
+      "id": "claude",
+      "identity": null,
+      "manual_reserve": null,
+      "min_remaining": 0.19999999999999996,
+      "min_slack": -0.254,
+      "note": null,
+      "provider": "claude",
+      "source": "live",
+      "tier": "max_20x",
+      "windows": [
+        {
+          "applies_to": null,
+          "expected_used_fraction": null,
+          "held_fraction": 0.0,
+          "key": "five_hour",
+          "length_s": 18000.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1786733932.0,
+          "used_fraction": 0.12
+        },
+        {
+          "applies_to": null,
+          "expected_used_fraction": 0.546,
+          "held_fraction": 0.0,
+          "key": "seven_day",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1787006812.0,
+          "used_fraction": 0.6
+        },
+        {
+          "applies_to": [
+            "fable"
+          ],
+          "expected_used_fraction": 0.546,
+          "held_fraction": 0.0,
+          "key": "scoped:fable",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1787006812.0,
+          "used_fraction": 0.8
+        }
+      ]
+    },
+    {
+      "age_s": 0.0,
+      "available": true,
+      "binding_window": "scoped:fable",
+      "capacity": 1.0,
+      "confidence": 1.0,
+      "deprioritized": false,
+      "id": "claude_b",
+      "identity": null,
+      "manual_reserve": null,
+      "min_remaining": 0.12,
+      "min_slack": -0.536,
+      "note": null,
+      "provider": "claude",
+      "source": "live",
+      "tier": "max_20x",
+      "windows": [
+        {
+          "applies_to": null,
+          "expected_used_fraction": null,
+          "held_fraction": 0.0,
+          "key": "five_hour",
+          "length_s": 18000.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1786746532.0,
+          "used_fraction": 0.68
+        },
+        {
+          "applies_to": null,
+          "expected_used_fraction": 0.344,
+          "held_fraction": 0.0,
+          "key": "seven_day",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1787130412.0,
+          "used_fraction": 0.57
+        },
+        {
+          "applies_to": [
+            "fable"
+          ],
+          "expected_used_fraction": 0.344,
+          "held_fraction": 0.0,
+          "key": "scoped:fable",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1787130412.0,
+          "used_fraction": 0.88
+        }
+      ]
+    },
+    {
+      "age_s": 0.0,
+      "available": true,
+      "binding_window": "five_hour",
+      "capacity": 0.25,
+      "confidence": 1.0,
+      "deprioritized": false,
+      "id": "claude_c",
+      "identity": null,
+      "manual_reserve": null,
+      "min_remaining": 0.0,
+      "min_slack": -0.24,
+      "note": null,
+      "provider": "claude",
+      "source": "live",
+      "tier": "max_5x",
+      "windows": [
+        {
+          "applies_to": null,
+          "expected_used_fraction": null,
+          "held_fraction": 0.0,
+          "key": "five_hour",
+          "length_s": 18000.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1786737532.0,
+          "used_fraction": 1.0
+        },
+        {
+          "applies_to": null,
+          "expected_used_fraction": 0.957,
+          "held_fraction": 0.0,
+          "key": "seven_day",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1786759132.0,
+          "used_fraction": 1.0
+        },
+        {
+          "applies_to": [
+            "fable"
+          ],
+          "expected_used_fraction": 0.957,
+          "held_fraction": 0.0,
+          "key": "scoped:fable",
+          "length_s": 604800.0,
+          "observed_at_s": 1786733212.0,
+          "reserved_fraction": 0.0,
+          "resets_at_s": 1786759132.0,
+          "used_fraction": 1.0
+        }
+      ]
+    }
+  ],
+  "config_sources": [],
+  "contract_version": 1,
+  "degraded": [],
+  "generated_at": "<GENERATED_AT>",
+  "model_class": null,
+  "state": {
+    "path": "<TMP>/state/quota-router/state.json",
+    "reservations": [],
+    "selection": {},
+    "stateless": false,
+    "sticky": {},
+    "warnings": []
+  },
+  "warnings": [
+    "account 'claude_d' is configured under provider 'claude' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the claude adapter does not read declared accounts",
+    "account 'codex' is configured under provider 'codex' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the codex adapter does not read declared accounts",
+    "account 'cursor' is configured under provider 'cursor' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the cursor adapter does not read declared accounts"
+  ]
+}
