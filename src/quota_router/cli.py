@@ -121,6 +121,9 @@ class Deps:
     run: Callable[..., Any] = subprocess.run
     engine_error: str | None = None
     oracle_error: str | None = None
+    #: I/O for ``capabilities --refresh`` (``model/list``, ``agy models``). ``pick``
+    #: never uses it; tests inject it so no process is spawned.
+    capability_refresh: Any = None
 
     @classmethod
     def resolve(cls, given: Deps | None = None) -> Deps:
@@ -2323,6 +2326,27 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="per-consumer probe timeout (default: 20)",
     )
+    capabilities_parser = subparsers.add_parser(
+        "capabilities",
+        parents=[common],
+        help=(
+            "show which model each account resolves for each capability "
+            "(fast, standard, premium, frontier), from the table the poller keeps"
+        ),
+    )
+    capabilities_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help=(
+            "read every account's model list first (Claude catalogs; Codex model/list "
+            "and agy models at most every 15 minutes) and update the table"
+        ),
+    )
+    capabilities_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="with --refresh, call the network sources even if read in the last 15 minutes",
+    )
     waste_parser = subparsers.add_parser(
         "waste",
         parents=[common],
@@ -2472,6 +2496,172 @@ def _cmd_launch_plan(
     return EXIT_OK
 
 
+def _cmd_capabilities(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Show the capability table, refreshing it first with ``--refresh``.
+
+    Exit 0 when every account resolved, 1 when a refresh read failed or the table is
+    missing or unreadable, 3 on a config error.
+    """
+    from . import capability as cap_mod
+    from . import capability_refresh as refresh_mod
+
+    try:
+        config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    except ConfigError as exc:
+        stderr.write(f"{_PROG}: {exc}\n")
+        return EXIT_ROUTER_FAILURE
+
+    report = None
+    if args.refresh:
+        report = refresh_mod.refresh(
+            config,
+            env=env,
+            now_s=now_s,
+            deps=deps.capability_refresh,
+            force=bool(getattr(args, "force", False)),
+        )
+
+    path = cap_mod.table_path(env)
+    table, error = cap_mod.read_table(path)
+    rows = _capability_rows(config, table, path, now_s)
+    if args.json:
+        payload = {
+            "generated_at": _iso(now_s),
+            "table_path": str(path),
+            "table_error": error,
+            "refresh": report.to_dict() if report else None,
+            "accounts": rows,
+        }
+        stdout.write(json.dumps(payload, indent=2) + "\n")
+    else:
+        stdout.write(_format_capability_rows(rows, path, report, error))
+    failed = bool(report and (report.failed or report.locked))
+    return EXIT_OK if (table is not None and not failed and not error) else 1
+
+
+def _capability_rows(
+    config: Config, table: Mapping[str, Any] | None, path: Any, now_s: float
+) -> list[dict[str, Any]]:
+    from . import capability as cap_mod
+
+    rows = []
+    for account in config.enabled_accounts():
+        if account.provider not in cap_mod.CAPABILITY_PROVIDERS:
+            continue
+        entry = (table or {}).get("accounts", {}).get(account.id)
+        listing = cap_mod.Listing.from_json(entry.get("list")) if isinstance(entry, Mapping) else None
+        row: dict[str, Any] = {
+            "account": account.id,
+            "provider": account.provider,
+            "refreshed_at": (
+                _iso(entry["refreshed_at"])
+                if isinstance(entry, Mapping) and isinstance(entry.get("refreshed_at"), (int, float))
+                else None
+            ),
+            "list_source": listing.source if listing else None,
+            "list_fetched_at": cap_mod._iso(listing.fetched_at_s) if listing else None,
+            "warnings": list(entry.get("warnings", [])) if isinstance(entry, Mapping) else [],
+            "capabilities": {},
+        }
+        for name in cap_mod.CAPABILITIES:
+            if account.provider == "antigravity" and cap_mod.antigravity_flavour(account) == "claude":
+                result: Any = cap_mod.Unresolved(
+                    "Claude-flavour Antigravity is out of capability routing"
+                )
+            else:
+                result = cap_mod.lookup(table, account.id, name, now_s=now_s, path=path)
+            cap_entry = (
+                entry.get("capabilities", {}).get(name) if isinstance(entry, Mapping) else None
+            )
+            candidate = cap_entry.get("candidate") if isinstance(cap_entry, Mapping) else None
+            row["capabilities"][name] = {
+                "model": result.to_dict() if isinstance(result, cap_mod.ModelChoice) else None,
+                "reason": result.reason if isinstance(result, cap_mod.Unresolved) else None,
+                "candidate": (
+                    {
+                        "id": candidate.get("id"),
+                        "reason": candidate.get("reason"),
+                        "first_seen": cap_mod._iso(candidate.get("first_seen")),
+                        "seen": candidate.get("seen"),
+                    }
+                    if isinstance(candidate, Mapping)
+                    else None
+                ),
+                "moved_at": (
+                    cap_mod._iso(cap_entry.get("moved_at")) if isinstance(cap_entry, Mapping) else None
+                ),
+            }
+        rows.append(row)
+    return rows
+
+
+def _format_capability_rows(
+    rows: Sequence[Mapping[str, Any]], path: Any, report: Any, error: str | None
+) -> str:
+    from . import capability as cap_mod
+
+    lines = [f"capability table: {path}"]
+    if error:
+        lines.append(f"  ERROR: {error}")
+    if report is not None:
+        summary = report.to_dict()
+        kinds = ", ".join(f"{k} {v}" for k, v in sorted(summary["failed_by_kind"].items()))
+        lines.append(
+            f"refresh: attempted {summary['attempted']}, succeeded {summary['succeeded']}, "
+            f"failed {summary['failed']}" + (f" ({kinds})" if kinds else "")
+            + (" [skipped: another refresh holds the lock]" if summary["locked"] else "")
+        )
+        for outcome in summary["outcomes"]:
+            if outcome["outcome"] == "failed":
+                lines.append(f"  {outcome['account']}: FAILED {outcome['kind']}: {outcome['detail']}")
+        for move in summary["moves"]:
+            lines.append(
+                f"  MOVED {move['account']} {move['capability']}: "
+                f"{move['from'] or move['from_reason']} -> {move['to'] or move['to_reason']} ({move['cause']})"
+            )
+    lines.append("")
+    header = ["ACCOUNT", *cap_mod.CAPABILITIES, "SOURCE", "REFRESHED"]
+    table_rows = []
+    notes = []
+    for row in rows:
+        cells = [row["account"]]
+        for name in cap_mod.CAPABILITIES:
+            item = row["capabilities"][name]
+            if item["model"]:
+                text = item["model"]["id"]
+                if not item["model"]["listed"]:
+                    text += " (unlisted)"
+            else:
+                text = "-"
+                notes.append(f"{row['account']} {name}: {item['reason']}")
+            if item["candidate"]:
+                text += "*"
+                cand = item["candidate"]
+                notes.append(
+                    f"{row['account']} {name}: candidate {cand['id'] or cand['reason']} "
+                    f"(seen {cand['seen']}x since {cand['first_seen']})"
+                )
+            cells.append(text)
+        cells += [row["list_source"] or "-", row["refreshed_at"] or "-"]
+        table_rows.append(cells)
+        notes.extend(row["warnings"])
+    widths = [max(len(str(r[i])) for r in [header, *table_rows]) for i in range(len(header))]
+    for cells in [header, *table_rows]:
+        lines.append("  ".join(str(c).ljust(w) for c, w in zip(cells, widths)).rstrip())
+    if notes:
+        lines.append("")
+        lines.extend(f"  {note}" for note in dict.fromkeys(notes))
+    return "\n".join(lines) + "\n"
+
+
 def _cmd_doctor(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -2589,6 +2779,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,
+    "capabilities": _cmd_capabilities,
 }
 
 

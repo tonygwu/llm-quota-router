@@ -34,6 +34,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
+from . import capability as capability_mod
 from . import model_classes as mc
 from .pse import MIN_WEEKLY_TO_SESSION
 from .types import (
@@ -612,6 +613,12 @@ class Config:
     #: is the one place ``cl`` injects ``--model``, because an override that is not
     #: passed through is not an override.
     fallback_model: str | None = None
+    #: Capability -> provider -> selector or exact model id, merged over
+    #: :data:`quota_router.capability.DEFAULT_TABLE`. Used only when a caller asks for a
+    #: capability; see :mod:`quota_router.capability`.
+    capabilities: Mapping[str, Mapping[str, str]] = field(
+        default_factory=lambda: capability_mod.validate_table(None)
+    )
     #: Files that were actually read, in application order.
     sources: tuple[str, ...] = ()
     #: Non-fatal complaints (unknown sections, unrecognized tiers, ...).
@@ -869,6 +876,9 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "max_records": 500,
         },
         "oracle": {"command": "", "timeout_ms": 5000, "use_cache_on_failure": True},
+        # Empty here: the defaults live in quota_router.capability, and an operator's
+        # [capabilities.<name>] rows are validated and merged over them.
+        "capabilities": {},
         "exec": {
             "commands": dict(PROVIDER_COMMANDS),
             "env_vars": dict(PROVIDER_CONFIG_DIR_ENV),
@@ -1246,6 +1256,7 @@ def _build(
             env_vars=_as_str_table(exec_raw.get("env_vars", {}), "exec.env_vars")
             or dict(PROVIDER_CONFIG_DIR_ENV),
         ),
+        capabilities=_build_capabilities(merged.get("capabilities")),
         fallback_model=(
             _as_str(merged["fallback_model"], "", "fallback_model") or None
             if merged.get("fallback_model") is not None
@@ -1254,6 +1265,13 @@ def _build(
         sources=tuple(sources),
         warnings=tuple(warnings),
     )
+
+
+def _build_capabilities(raw: Any) -> dict[str, dict[str, str]]:
+    try:
+        return capability_mod.validate_table(raw or None)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def builtin_config(env: Mapping[str, str] | None = None) -> Config:

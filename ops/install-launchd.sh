@@ -66,6 +66,13 @@ INTERVAL="${POLL_INTERVAL_S:-120}"
 # `.1`, one generation kept, so at most twice this is ever on disk.
 LOG_MAX_BYTES="${POLL_LOG_MAX_BYTES:-20000000}"
 LOG_FILE="${LOG_DIR}/usage-poll.log"
+# The capability refresh (model lists -> capabilities.json, which `pick --capability`
+# reads) runs in the same job, right after status, and logs HERE, never to
+# usage-poll.log: that log is one `status --json` record per run, and both AGENTS.md's
+# install check and anything reading the series depend on that. The job still exits
+# with status's code, so `launchctl list` keeps meaning what it meant. A refresh that
+# keeps failing shows up in this log and as a doctor FAIL once the table goes stale.
+CAPABILITY_LOG_FILE="${LOG_DIR}/capability-refresh.log"
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
@@ -91,17 +98,20 @@ read -r -d '' PLIST_XML <<XML
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
-  <!-- \$0 is quotapick, \$1 the log, \$2 the cap. The run's own output lands in the
-       log first; the rotation happens after it, from inside the same process, which is
-       safe because launchd reopens StandardOutPath fresh for every run. -->
+  <!-- \$0 is quotapick, \$1 the log, \$2 the cap, \$3 the capability-refresh log.
+       The run's own output lands in the log first; the rotation happens after it,
+       from inside the same process, which is safe because launchd reopens
+       StandardOutPath fresh for every run. The refresh appends to its own log and
+       rotates it the same way; its exit code is deliberately dropped. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>"\$0" status --json; rc=\$?; size=\$(stat -f %z "\$1" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$1" "\$1.1"; fi; exit \$rc</string>
+    <string>"\$0" status --json; rc=\$?; size=\$(stat -f %z "\$1" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$1" "\$1.1"; fi; "\$0" capabilities --refresh --json >>"\$3" 2>&amp;1; size=\$(stat -f %z "\$3" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$3" "\$3.1"; fi; exit \$rc</string>
     <string>${QUOTAPICK}</string>
     <string>${LOG_FILE}</string>
     <string>${LOG_MAX_BYTES}</string>
+    <string>${CAPABILITY_LOG_FILE}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

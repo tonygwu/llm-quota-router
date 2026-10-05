@@ -92,6 +92,9 @@ DEFAULT_TIMEOUT_S: Final[float] = 2.0
 _TERMINATE_GRACE_S: Final[float] = 0.3
 
 RATE_LIMITS_METHOD: Final[str] = "account/rateLimits/read"
+#: The server's model list for this account. Measured 2026-10-05: the same list the CLI
+#: caches in ``models_cache.json`` (and calling it rewrites that file), 0.05-0.75s.
+MODEL_LIST_METHOD: Final[str] = "model/list"
 _INITIALIZE_ID: Final[int] = 1
 _READ_ID: Final[int] = 2
 
@@ -106,6 +109,10 @@ Spawn = Callable[[Sequence[str], Mapping[str, str]], "subprocess.Popen[bytes]"]
 
 class _ReadFailed(Exception):
     """One account's read failed; the message is the cause, for the warning."""
+
+
+class ModelListFailed(Exception):
+    """``model/list`` failed for one account; the message is the cause."""
 
 
 def default_spawn(argv: Sequence[str], env: Mapping[str, str]) -> "subprocess.Popen[bytes]":
@@ -420,7 +427,30 @@ class CodexAppServerAdapter:
         env["PATH"] = os.pathsep.join([directory, *rest])
         return env
 
-    def _exchange(self, account: CodexAccountConfig, binary: str) -> Any:
+    def model_list(self, account: CodexAccountConfig, *, include_hidden: bool = True) -> Any:
+        """``model/list`` for one account: the server's model list, as raw ``result``.
+
+        Raises :class:`ModelListFailed` with the cause. Used only by the capability
+        refresher, never on the ``pick`` path, so the caller owns the timeout.
+        """
+        try:
+            return self._exchange(
+                account,
+                self.codex_bin(),
+                method=MODEL_LIST_METHOD,
+                params={"includeHidden": include_hidden},
+            )
+        except _ReadFailed as exc:
+            raise ModelListFailed(str(exc)) from exc
+
+    def _exchange(
+        self,
+        account: CodexAccountConfig,
+        binary: str,
+        *,
+        method: str = RATE_LIMITS_METHOD,
+        params: Mapping[str, Any] | None = None,
+    ) -> Any:
         """Run the three-message exchange and return the read's ``result``."""
         deadline = time.monotonic() + self.timeout_s
         try:
@@ -493,7 +523,7 @@ class CodexAppServerAdapter:
             )
             await_response(_INITIALIZE_ID, "initialize")
             send(_request(None, "initialized", {}))
-            send(_request(_READ_ID, RATE_LIMITS_METHOD, {}))
-            return await_response(_READ_ID, RATE_LIMITS_METHOD)["result"]
+            send(_request(_READ_ID, method, params or {}))
+            return await_response(_READ_ID, method)["result"]
         finally:
             _stop(process)
