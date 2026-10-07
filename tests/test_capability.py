@@ -312,21 +312,36 @@ def test_account_a_resolves_from_claude_json_beside_its_dir_without_claude_confi
     assert (home / ".claude" / ".claude.json").exists()
 
 
-def test_codex_premium_uses_the_config_default_when_the_list_lacks_it(env, tmp_path, agy_on_path):
+def test_codex_premium_never_resolves_a_config_default_the_list_lacks(env, tmp_path, agy_on_path):
+    # ~/.codex/config.toml names gpt-6.1-sol (the home fixture), and no list carries it.
+    # The Codex Desktop app writes that file and serves the model; headless `codex exec`
+    # 0.157.1 got HTTP 400 for it on all 53 attempts from 2026-10-05 to 2026-10-07.
     _refresh(env, tmp_path, FakeIO())  # T7, T8
 
-    codex = _committed(env, "codex", "premium")
-    assert (codex["id"], codex["source"], codex["listed"]) == (
-        "gpt-6.1-sol", "codex_config_default", False,
-    )
-    # codex_b has no config.toml: per account, not per provider.
-    codex_b = _committed(env, "codex_b", "premium")
-    assert (codex_b["id"], codex_b["source"], codex_b["listed"]) == (
-        "gpt-6-sol", "codex_model_list", True,
-    )
+    for account in ("codex", "codex_b"):
+        entry = _committed(env, account, "premium")
+        assert (entry["id"], entry["source"], entry["listed"]) == (
+            "gpt-6-sol", "codex_model_list", True,
+        )
+    table, _ = cap.read_table(cap.table_path(env))
+    assert "gpt-6.1-sol" not in json.dumps(table["accounts"]["codex"])
     assert _committed(env, "codex", "standard")["note"] == (
         "no gpt-6 terra; newest terra is gpt-5.6-terra"
     )
+
+
+def test_the_models_cache_fallback_ignores_the_config_default_too(
+    env, tmp_path, home, agy_on_path
+):
+    (home / ".codex" / "models_cache.json").write_text(json.dumps({
+        "fetched_at": "2026-08-14T20:00:00Z",
+        "models": [{"slug": "gpt-6-sol", "visibility": "list"}],
+    }))
+    io = FakeIO(codex_error=RuntimeError("app-server exited"))
+    _refresh(env, tmp_path, io, now_s=1_786_744_800.0)  # 2026-08-14T21:20Z
+
+    entry = _committed(env, "codex", "premium")
+    assert (entry["id"], entry["source"]) == ("gpt-6-sol", "codex_models_cache")
 
 
 def test_a_macos_user_account_lists_models_through_its_launch_wrapper(
@@ -559,7 +574,7 @@ def test_capabilities_command_exits_1_without_a_table_and_0_after_refresh(
     payload = json.loads(out)
     assert payload["refresh"]["failed"] == 0
     rows = {row["account"]: row for row in payload["accounts"]}
-    assert rows["codex"]["capabilities"]["premium"]["model"]["id"] == "gpt-6.1-sol"
+    assert rows["codex"]["capabilities"]["premium"]["model"]["id"] == "gpt-6-sol"
     assert rows["antigravity_claude"]["capabilities"]["premium"]["reason"] == (
         "Claude-flavour Antigravity is out of capability routing"
     )
@@ -629,7 +644,9 @@ def test_doctor_says_not_set_up_without_a_table(env):
 
 
 def test_doctor_reports_each_capability_and_flags_codex_disagreement(env, tmp_path, agy_on_path):
-    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    io = FakeIO()
+    io.codex["codex"] = [*CODEX_LIST, ("gpt-6.1-sol", False)]
+    _refresh(env, tmp_path, io, now_s=NOW)
     checks = _doctor(env, NOW + MIN)
 
     assert checks["capability[fast]"].status == "ok"

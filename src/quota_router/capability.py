@@ -242,8 +242,6 @@ class Listing:
         location: The file or command, for messages.
         entries: Claude ``(id, section)``; Codex ``(slug, "list"|"hide")``; Antigravity
             ``(id, label)``.
-        extras: Codex only: the home's ``config.toml`` default model, available but not
-            in the server list.
     """
 
     provider: str
@@ -251,7 +249,6 @@ class Listing:
     fetched_at_s: float | None
     location: str
     entries: tuple[tuple[str, str], ...]
-    extras: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -260,7 +257,6 @@ class Listing:
             "fetched_at": self.fetched_at_s,
             "location": self.location,
             "entries": [list(entry) for entry in self.entries],
-            "extras": list(self.extras),
         }
 
     @classmethod
@@ -276,7 +272,6 @@ class Listing:
                 ),
                 location=str(raw["location"]),
                 entries=tuple((str(a), str(b)) for a, b in raw["entries"]),
-                extras=tuple(str(x) for x in raw.get("extras", ())),
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -399,21 +394,16 @@ def resolve(capability: str, selector: str, listing: Listing) -> dict[str, Any]:
                 model_id=selector, reason=None, family=None, listing=listing,
                 source="config_pin", listed=listed, selector=selector,
             )
-        chosen, note = choose_codex([*visible, *listing.extras], selector)
+        chosen, note = choose_codex(visible, selector)
         if chosen is None:
             return _resolution(
                 model_id=None,
                 reason=f"no gpt-*-{selector} model in {listing.source} ({listing.location})",
                 family=selector, listing=listing, selector=selector,
             )
-        if chosen in visible:
-            return _resolution(
-                model_id=chosen, reason=None, family=selector, listing=listing, listed=True,
-                note=note, selector=selector,
-            )
         return _resolution(
-            model_id=chosen, reason=None, family=selector, listing=listing,
-            source="codex_config_default", listed=False, note=note, selector=selector,
+            model_id=chosen, reason=None, family=selector, listing=listing, listed=True,
+            note=note, selector=selector,
         )
 
     if provider == PROVIDER_ANTIGRAVITY:
@@ -680,19 +670,17 @@ def fresh_listing(
     return listing
 
 
-def listing_offers(listing: Listing, model_id: str) -> tuple[bool, bool]:
-    """``(available, listed)`` for an exact id in one account's listing.
+def listing_offers(listing: Listing, model_id: str) -> bool:
+    """Whether one account's listing carries an exact id.
 
-    Codex's ``config.toml`` default is available but not listed by the server.
+    Only the list counts. Codex's ``config.toml`` default does not: the Desktop app writes
+    that file and serves the model, while headless ``codex exec`` got HTTP 400 for it.
     """
     if listing.provider == PROVIDER_ANTIGRAVITY:
-        labels = {label for _id, label in listing.entries}
-        return model_id in labels, model_id in labels
+        return model_id in {label for _id, label in listing.entries}
     if listing.provider == PROVIDER_CODEX:
-        visible = {slug for slug, visibility in listing.entries if visibility != "hide"}
-        return model_id in visible or model_id in listing.extras, model_id in visible
-    ids = {model_id_ for model_id_, _section in listing.entries}
-    return model_id in ids, model_id in ids
+        return model_id in {slug for slug, visibility in listing.entries if visibility != "hide"}
+    return model_id in {model_id_ for model_id_, _section in listing.entries}
 
 
 #: Which provider serves a model class, for ``--capability X --model <pin>``.

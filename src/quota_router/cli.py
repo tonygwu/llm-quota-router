@@ -1146,13 +1146,12 @@ def _apply_capability(
             if isinstance(listing, cap_mod.Unresolved):
                 exclude(snapshot, listing.reason)
                 continue
-            available, listed = cap_mod.listing_offers(listing, pinned)
-            if not available:
+            if not cap_mod.listing_offers(listing, pinned):
                 exclude(snapshot, f"{snapshot.id} does not list {pinned}")
                 continue
             choice: Any = cap_mod.ModelChoice(
                 id=pinned, family=pin_class, provider=provider, source="pinned",
-                source_fetched_at_s=listing.fetched_at_s, listed=listed,
+                source_fetched_at_s=listing.fetched_at_s, listed=True,
             )
         else:
             choice = cap_mod.lookup(table, snapshot.id, capability, now_s=now_s, path=path)

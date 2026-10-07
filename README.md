@@ -772,9 +772,11 @@ table names a version, so Opus 5 → 5.5 or gpt-6-sol → gpt-6.1-sol needs no e
   itself. A file read; no token is touched. The default account's identity is read from
   `~/.claude.json`, outside `~/.claude`.
 - **Codex:** the app-server's `model/list` (the same list `models_cache.json` caches; that
-  file is the fallback when the call fails), plus the home's `config.toml` default model.
-  Both accounts served `gpt-6.1-sol` while neither list carried it, so the default counts as
-  available, with `listed: false`.
+  file is the fallback when the call fails), and nothing else. The home's `config.toml`
+  default model does not count. The Codex Desktop app writes that file, and its default
+  `gpt-6.1-sol` served there from 2026-10-03 to 10-07. Headless `codex exec` 0.157.1 got
+  HTTP 400 for it on all 53 attempts from 10-05 to 10-07 ("not supported when using
+  Codex with a ChatGPT account"), and its `model/list` omits it.
 - **Antigravity:** `agy models`, run the way the account is launched (its `launch-plan`
   prefix). Only Gemini-flavour pools take part: a Claude-flavour pool was seen serving
   `Gemini 3.8 Flash (High)` when asked for `Claude Opus 4.6 (Thinking)`, and the router never

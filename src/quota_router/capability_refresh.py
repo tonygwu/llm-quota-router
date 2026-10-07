@@ -11,9 +11,10 @@ Sources, per provider:
   the shared ``.claude.json`` reader, which handles the default account's
   ``~/.claude.json`` living outside ``~/.claude``. ``CLAUDE_CONFIG_DIR`` is never set.
 * **Codex:** ``model/list`` over the app-server channel ``status`` already uses, at most
-  every :data:`NETWORK_INTERVAL_S`; ``models_cache.json`` when the call fails. Plus the
-  home's ``config.toml`` default model, which both accounts served while neither list
-  carried it.
+  every :data:`NETWORK_INTERVAL_S`; ``models_cache.json`` when the call fails. Never the
+  home's ``config.toml`` default: the Codex Desktop app writes that file and serves its
+  model (``gpt-6.1-sol``, 2026-10-03 to 10-07), while headless ``codex exec`` 0.157.1 got
+  HTTP 400 for the same model on every attempt, and its list omits it.
 * **Antigravity:** ``agy models``, run the way the account is launched (its
   ``launch-plan`` prefix and environment), at most every :data:`NETWORK_INTERVAL_S`.
   Gemini-flavour accounts only: a Claude-flavour pool was observed serving Gemini under
@@ -27,7 +28,6 @@ import json
 import os
 import shutil
 import subprocess
-import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -186,24 +186,6 @@ def read_claude_listing(account: Any) -> cap.Listing:
 
 
 
-def _codex_config_default(home: Path) -> tuple[str | None, str | None]:
-    """``(model, warning)`` from ``<CODEX_HOME>/config.toml``."""
-    path = home / "config.toml"
-    try:
-        with open(path, "rb") as handle:
-            data = tomllib.load(handle)
-    except FileNotFoundError:
-        return None, None
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        return None, f"cannot read {path}: {exc}"
-    model = data.get("model")
-    if model is None:
-        return None, None
-    if not isinstance(model, str) or not model.strip():
-        return None, f"{path}: model is not a non-empty string"
-    return model.strip(), None
-
-
 def _parse_iso(text: Any) -> float | None:
     if not isinstance(text, str):
         return None
@@ -216,15 +198,11 @@ def _parse_iso(text: Any) -> float | None:
 def read_codex_listing(
     account: Any, env: Mapping[str, str], deps: RefreshDeps, now_s: float
 ) -> tuple[cap.Listing, list[str]]:
-    """``model/list``, else ``models_cache.json``; plus the ``config.toml`` default."""
+    """``model/list``, else ``models_cache.json``."""
     if not account.config_dir:
         raise ReadFailed("no_config_dir", f"{account.id} has no config_dir")
     home = Path(account.config_dir)
     warnings: list[str] = []
-    default, problem = _codex_config_default(home)
-    if problem:
-        warnings.append(f"{account.id}: {problem}")
-    extras = (default,) if default else ()
 
     try:
         result = deps.codex_model_list(
@@ -242,7 +220,7 @@ def read_codex_listing(
             cap.Listing(
                 provider=PROVIDER_CODEX, source="codex_model_list", fetched_at_s=now_s,
                 location=f"codex app-server model/list (CODEX_HOME={home})",
-                entries=tuple(entries), extras=extras,
+                entries=tuple(entries),
             ),
             warnings,
         )
@@ -271,7 +249,7 @@ def read_codex_listing(
     return (
         cap.Listing(
             provider=PROVIDER_CODEX, source="codex_models_cache", fetched_at_s=fetched_s,
-            location=str(cache_path), entries=tuple(entries), extras=extras,
+            location=str(cache_path), entries=tuple(entries),
         ),
         warnings,
     )

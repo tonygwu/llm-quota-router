@@ -97,7 +97,7 @@ def test_a_capability_pick_is_contract_v1_and_names_a_model_on_every_row(env, ta
 
     assert payload["contract_version"] == 1
     assert payload["capability"]["requested"] == "premium"
-    assert payload["decision"]["model"]["id"] in {"claude-opus-5-5", "gpt-6.1-sol", "gpt-6-sol"}
+    assert payload["decision"]["model"]["id"] in {"claude-opus-5-5", "gpt-6-sol"}
     assert payload["ranked"]
     assert all(row["model"] and row["model"]["id"] for row in payload["ranked"])
     assert all("model" in row for row in payload["excluded"])
@@ -118,9 +118,10 @@ def test_the_same_pick_without_a_capability_carries_no_new_keys(env, table):
 def test_each_account_carries_its_own_model(env, table):
     rows = _rows(_pick(env, table, "--capability", "premium"))
     assert rows["claude"]["model"]["id"] == "claude-opus-5-5"
-    assert rows["codex"]["model"]["id"] == "gpt-6.1-sol"  # its config.toml default
-    assert rows["codex"]["model"]["listed"] is False
-    assert rows["codex_b"]["model"]["id"] == "gpt-6-sol"  # no config.toml
+    # codex's config.toml names gpt-6.1-sol, which no list carries: never requested.
+    assert rows["codex"]["model"]["id"] == "gpt-6-sol"
+    assert rows["codex"]["model"]["listed"] is True
+    assert rows["codex_b"]["model"]["id"] == "gpt-6-sol"
 
 
 def test_claude_flavour_antigravity_is_excluded_with_its_reason(env, table):
@@ -192,6 +193,13 @@ def test_a_pin_the_account_does_not_list_is_excluded(env, table):
     assert payload["decision"]["account"] is None
     excluded = _rows(payload, "excluded")
     assert "claude does not list claude-opus-9" in excluded["claude"]["reason"]
+
+
+def test_a_pin_only_a_config_default_names_is_excluded(env, table):
+    payload = _pick(env, table, "--capability", "premium", "--model", "gpt-6.1-sol")
+    assert payload["decision"]["account"] is None
+    excluded = _rows(payload, "excluded")
+    assert "codex does not list gpt-6.1-sol" in excluded["codex"]["reason"]
 
 
 def test_a_codex_window_scoped_to_the_concrete_slug_binds_only_that_model(env, table):
