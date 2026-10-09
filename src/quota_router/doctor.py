@@ -343,8 +343,10 @@ def check_capabilities(
     """Is capability routing set up and current? One check per capability.
 
     Args:
-        accounts: ``(account_id, provider)`` for every enabled account that can take
-            part (Claude, Codex, Gemini-flavour Antigravity).
+        accounts: ``(account_id, pool)`` for every enabled account that can take part.
+            ``pool`` is the provider, or ``antigravity (claude)`` for a Claude-flavour
+            Antigravity account, so its Claude label is never read as disagreeing with
+            a Gemini pool's Gemini label.
 
     No table at all means capability routing is not in use, which is not a fault. A
     table that exists but has gone past its TTL means the poller stopped refreshing
@@ -373,7 +375,8 @@ def check_capabilities(
     for name in cap.CAPABILITIES:
         resolved: dict[str, Any] = {}
         unresolved: dict[str, str] = {}
-        for account_id, _provider in accounts:
+        pool_of = dict(accounts)
+        for account_id in pool_of:
             result = cap.lookup(table, account_id, name, now_s=now_s, path=Path(path))
             if isinstance(result, cap.ModelChoice):
                 resolved[account_id] = result
@@ -382,7 +385,9 @@ def check_capabilities(
 
         by_provider: dict[str, dict[str, list[str]]] = {}
         for account_id, choice in resolved.items():
-            by_provider.setdefault(choice.provider, {}).setdefault(choice.id, []).append(account_id)
+            by_provider.setdefault(pool_of[account_id], {}).setdefault(choice.id, []).append(
+                account_id
+            )
         detail = "; ".join(
             f"{provider}: "
             + ", ".join(f"{model_id} ({', '.join(ids)})" for model_id, ids in sorted(models.items()))

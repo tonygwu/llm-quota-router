@@ -17,8 +17,10 @@ Sources, per provider:
   HTTP 400 for the same model on every attempt, and its list omits it.
 * **Antigravity:** ``agy models``, run the way the account is launched (its
   ``launch-plan`` prefix and environment), at most every :data:`NETWORK_INTERVAL_S`.
-  Gemini-flavour accounts only: a Claude-flavour pool was observed serving Gemini under
-  a Claude label.
+  Both flavours: a Gemini-flavour account resolves the ``antigravity`` column, a
+  Claude-flavour one the ``claude`` column. The pool that once served Gemini under a
+  Claude label was sent a retired label; agy 1.2.0 and 1.3.1 now refuse one (exit 1),
+  and on 2026-10-08 both served Claude Opus and Sonnet 5.5 under their own labels.
 """
 
 from __future__ import annotations
@@ -374,14 +376,8 @@ def _refresh_locked(
         provider = account.provider
         if provider not in cap.CAPABILITY_PROVIDERS:
             continue
-        if provider == PROVIDER_ANTIGRAVITY and cap.antigravity_flavour(account) == "claude":
-            report.outcomes.append({
-                "account": account.id, "provider": provider, "outcome": "skipped",
-                "kind": "claude_flavour_antigravity",
-                "detail": "a Claude-flavour Antigravity pool can serve Gemini under a "
-                          "Claude label, so it never takes part in capability routing",
-            })
-            continue
+        flavour = cap.antigravity_flavour(account) if provider == PROVIDER_ANTIGRAVITY else ""
+        column = PROVIDER_CLAUDE if flavour == "claude" else provider
 
         prior = prior_accounts.get(account.id) if isinstance(prior_accounts, dict) else None
         prior_listing = cap.Listing.from_json(prior.get("list")) if isinstance(prior, dict) else None
@@ -428,8 +424,8 @@ def _refresh_locked(
 
         cap_entries = dict(entry.get("capabilities") or {})
         for name in cap.CAPABILITIES:
-            selector = capabilities[name].get(provider, cap.NONE)
-            fresh = cap.resolve(name, selector, listing)
+            selector = capabilities[name].get(column, cap.NONE)
+            fresh = cap.resolve(name, selector, listing, flavour=flavour or "gemini")
             prior_cap = cap_entries.get(name)
             if new_data or not isinstance(prior_cap, dict) or (
                 prior_cap.get("committed", {}).get("selector") != selector

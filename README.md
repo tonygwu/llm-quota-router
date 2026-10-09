@@ -754,12 +754,18 @@ $ quotapick pick --capability frontier | jq -c '[.decision.account, .decision.mo
 ["claude_d","claude-fable-5-1"]
 ```
 
-| capability | Claude | Codex | Antigravity (Gemini pools only) |
+| capability | Claude | Codex | Antigravity, Gemini pools |
 |---|---|---|---|
 | `fast` | newest Haiku | newest `gpt-*-luna` | newest Gemini Flash (High) |
 | `standard` | newest Sonnet | newest `gpt-*-terra` | newest Gemini Flash (High) |
 | `premium` | newest Opus | newest `gpt-*-sol` | newest Gemini Pro (High) |
 | `frontier` | newest Fable | newest `gpt-*-astra` | none |
+
+A Claude-flavour Antigravity pool (`AGY_MODEL` contains "claude") reads the **Claude**
+column against agy's labels: `premium` is `Claude Opus 5.5 (High)` and `standard` is
+`Claude Sonnet 5.5 (High)` today. agy lists no Haiku or Fable, so `fast` and `frontier`
+leave the pool out, with that reason. An exact Claude Code id pinned in the `claude`
+column is not an agy label, so it never reaches agy; the pool is unresolved instead.
 
 "Capability" is a new word on purpose: "tier" already means the subscription plan
 (`max_20x`), and a *model class* is the family that decides which usage windows apply.
@@ -778,9 +784,13 @@ table names a version, so Opus 5 → 5.5 or gpt-6-sol → gpt-6.1-sol needs no e
   HTTP 400 for it on all 53 attempts from 10-05 to 10-07 ("not supported when using
   Codex with a ChatGPT account"), and its `model/list` omits it.
 - **Antigravity:** `agy models`, run the way the account is launched (its `launch-plan`
-  prefix). Only Gemini-flavour pools take part: a Claude-flavour pool was seen serving
-  `Gemini 3.8 Flash (High)` when asked for `Claude Opus 4.6 (Thinking)`, and the router never
-  routes a call under a model identity other than the one it requests.
+  prefix), for both flavours. Until 2026-10-09 Claude-flavour pools were left out, because
+  one served `Gemini 3.8 Flash (High)` when asked for `Claude Opus 4.6 (Thinking)`. That was
+  a retired label, and agy 1.2.0 and 1.3.1 now refuse it with exit 1. On 2026-10-08 both
+  versions answered `Claude Opus 5.5 (High)` and `Claude Sonnet 5.5 (High)` on both logins,
+  each through an Anthropic-on-Vertex response id (`req_vrtx_...` in the agy log). The
+  router still cannot see what agy serves; a client checks the served model in its own
+  telemetry.
 
 **`pick` never reads a model list.** digital-twin kills `pick` after 3000 ms, and a timeout
 silently drops its routing. The lists are read by `quotapick capabilities --refresh`, which
@@ -853,6 +863,9 @@ capability request use it only when no measured account can serve:
 provider = "antigravity"
 unmetered = "fallback"
 ```
+
+A Claude-flavour pool takes the same line and then serves `premium` and `standard` with
+its Claude label.
 
 It is then ranked first with `fits: true` and a warning that its quota is unmeasured. It
 never competes with a measured account, a caller's `--min-remaining` keeps it out (an

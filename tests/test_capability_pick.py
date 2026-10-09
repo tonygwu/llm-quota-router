@@ -124,10 +124,16 @@ def test_each_account_carries_its_own_model(env, table):
     assert rows["codex_b"]["model"]["id"] == "gpt-6-sol"
 
 
-def test_claude_flavour_antigravity_is_excluded_with_its_reason(env, table):
+def test_claude_flavour_antigravity_requests_an_agy_claude_label(env, table):
+    payload = _pick(env, table, "--capability", "premium")
+    rows = {**_rows(payload, "excluded"), **_rows(payload)}
+    assert rows["antigravity_claude"]["model"]["id"] == "Claude Opus 5.5 (High)"
+    assert rows["antigravity_claude"]["model"]["provider"] == "antigravity"
+    # agy lists no Haiku: fast leaves the pool out, with the list's reason.
     excluded = _rows(_pick(env, table, "--capability", "fast"), "excluded")
-    assert "Claude-flavour Antigravity" in excluded["antigravity_claude"]["reason"]
-    assert excluded["antigravity_claude"]["model"] is None
+    assert excluded["antigravity_claude"]["reason"] == (
+        "capability fast: agy lists no claude haiku model at high effort"
+    )
 
 
 # ======================================================================================
@@ -264,7 +270,7 @@ def test_pick_never_reads_a_model_list(env, table, monkeypatch):
 def test_without_a_table_every_account_is_excluded_with_the_fix(env, tmp_path):
     payload = _pick(env, _config_file(tmp_path), "--capability", "premium")
     assert payload["decision"]["account"] is None
-    reasons = {row["reason"] for row in payload["excluded"] if row["account"] != "antigravity_claude"}
+    reasons = {row["reason"] for row in payload["excluded"]}
     assert any("no capability table at" in r and "capabilities --refresh" in r for r in reasons)
 
 

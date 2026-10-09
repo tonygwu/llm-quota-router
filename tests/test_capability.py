@@ -54,7 +54,9 @@ AGY_OUTPUT = (
     "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n"
     "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
     "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+    "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
     "claude-opus-5-5-high\tClaude Opus 5.5 (High)\n"
+    "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n"
 )
 
 MIN = 60.0
@@ -275,22 +277,63 @@ def test_a_bad_capabilities_section_fails_loudly(env, tmp_path, extra, message):
 # ======================================================================================
 
 
-def test_refresh_resolves_every_provider_and_skips_claude_flavour_antigravity(
+def test_refresh_resolves_every_provider_including_claude_flavour_antigravity(
     env, tmp_path, agy_on_path
 ):
     io = FakeIO()
     report = _refresh(env, tmp_path, io)
 
     summary = report.to_dict()
-    assert (summary["attempted"], summary["succeeded"], summary["failed"]) == (6, 6, 0)
-    skipped = [o for o in report.outcomes if o["outcome"] == "skipped"]
-    assert [o["account"] for o in skipped] == ["antigravity_claude"]
+    assert (summary["attempted"], summary["succeeded"], summary["failed"]) == (7, 7, 0)
+    assert [o for o in report.outcomes if o["outcome"] == "skipped"] == []
 
     assert _committed(env, "claude", "premium")["id"] == "claude-opus-5-5"
     assert _committed(env, "claude_b", "frontier")["id"] == "claude-fable-5-1"
     assert _committed(env, "antigravity_gemini", "premium")["id"] == "Gemini 3.1 Pro (High)"
     assert _committed(env, "antigravity_gemini", "frontier")["reason"] == (
         "no antigravity model for frontier"
+    )
+
+
+def test_claude_flavour_antigravity_resolves_the_claude_column_to_agy_labels(
+    env, tmp_path, agy_on_path
+):
+    # agy 1.3.1 and 1.2.0 both served these labels on 2026-10-08 (Anthropic-on-Vertex
+    # response ids); a retired label now fails with exit 1 instead of turning into Gemini.
+    _refresh(env, tmp_path, FakeIO())
+
+    premium = _committed(env, "antigravity_claude", "premium")
+    assert (premium["id"], premium["family"], premium["source"], premium["listed"]) == (
+        "Claude Opus 5.5 (High)", "opus", "agy_models", True,
+    )
+    assert _committed(env, "antigravity_claude", "standard")["id"] == "Claude Sonnet 5.5 (High)"
+    assert _committed(env, "antigravity_claude", "fast")["reason"] == (
+        "agy lists no claude haiku model at high effort"
+    )
+    assert _committed(env, "antigravity_claude", "frontier")["reason"] == (
+        "agy lists no claude fable model at high effort"
+    )
+    # The Gemini pool on the same agy list keeps its Gemini column.
+    assert _committed(env, "antigravity_gemini", "premium")["id"] == "Gemini 3.1 Pro (High)"
+
+
+def test_a_claude_code_pin_is_never_sent_to_agy(env, tmp_path, agy_on_path):
+    extra = '[capabilities.premium]\nclaude = "claude-opus-4-8"\n'
+    _refresh(env, tmp_path, FakeIO(), extra=extra)
+
+    assert _committed(env, "claude", "premium")["id"] == "claude-opus-4-8"
+    entry = _committed(env, "antigravity_claude", "premium")
+    assert entry["id"] is None
+    assert entry["reason"].startswith("'claude-opus-4-8' is not an agy model label")
+
+
+def test_an_agy_label_pinned_in_the_claude_column_resolves_on_agy(env, tmp_path, agy_on_path):
+    extra = '[capabilities.premium]\nclaude = "Claude Opus 5.5 (Low)"\n'
+    _refresh(env, tmp_path, FakeIO(), extra=extra)
+
+    entry = _committed(env, "antigravity_claude", "premium")
+    assert (entry["id"], entry["source"], entry["listed"]) == (
+        "Claude Opus 5.5 (Low)", "config_pin", True,
     )
 
 
@@ -357,7 +400,7 @@ def test_a_macos_user_account_lists_models_through_its_launch_wrapper(
                     "/usr/local/bin/agy", "models"]
     assert "HOME" not in child
     plain = [argv for argv, _child in io.runs if argv[0] != "sudo"]
-    assert plain == [[str(agy_on_path), "models"]]
+    assert plain == [[str(agy_on_path), "models"]] * 2  # antigravity_gemini, antigravity_claude
 
 
 def test_network_sources_are_read_at_most_every_15_minutes(env, tmp_path, agy_on_path):
@@ -365,11 +408,11 @@ def test_network_sources_are_read_at_most_every_15_minutes(env, tmp_path, agy_on
     _refresh(env, tmp_path, io)
     _refresh(env, tmp_path, io, now_s=NOW + 14 * MIN)
     assert io.codex_calls == ["codex", "codex_b"]
-    assert len(io.runs) == 2
+    assert len(io.runs) == 3  # one agy models per Antigravity account, both flavours
 
     _refresh(env, tmp_path, io, now_s=NOW + 15 * MIN)
     assert io.codex_calls == ["codex", "codex_b"] * 2
-    assert len(io.runs) == 4
+    assert len(io.runs) == 6
 
 
 def test_a_failed_model_list_falls_back_to_a_fresh_models_cache(env, tmp_path, home, agy_on_path):
@@ -425,7 +468,11 @@ def test_an_unreadable_catalog_fails_that_account_and_names_the_path(
 def test_agy_failure_is_reported_with_its_kind(env, tmp_path, agy_on_path):
     report = _refresh(env, tmp_path, FakeIO(agy_rc=1))
     kinds = {o["account"]: o["kind"] for o in report.failed}
-    assert kinds == {"antigravity_gemini": "agy_failed", "antigravity_gemini_b": "agy_failed"}
+    assert kinds == {
+        "antigravity_gemini": "agy_failed",
+        "antigravity_gemini_b": "agy_failed",
+        "antigravity_claude": "agy_failed",
+    }
 
 
 def test_a_refresh_holding_the_lock_makes_a_second_one_skip(env, tmp_path, agy_on_path):
@@ -575,8 +622,8 @@ def test_capabilities_command_exits_1_without_a_table_and_0_after_refresh(
     assert payload["refresh"]["failed"] == 0
     rows = {row["account"]: row for row in payload["accounts"]}
     assert rows["codex"]["capabilities"]["premium"]["model"]["id"] == "gpt-6-sol"
-    assert rows["antigravity_claude"]["capabilities"]["premium"]["reason"] == (
-        "Claude-flavour Antigravity is out of capability routing"
+    assert rows["antigravity_claude"]["capabilities"]["premium"]["model"]["id"] == (
+        "Claude Opus 5.5 (High)"
     )
 
 
@@ -623,12 +670,12 @@ def test_the_poller_logs_the_refresh_separately_and_keeps_status_exit_code(tmp_p
 # ======================================================================================
 
 
-def _doctor(env, now_s):
+def _doctor(env, now_s, accounts=None):
     from quota_router import doctor
 
     table, error = cap.read_table(cap.table_path(env))
-    accounts = [("claude", "claude"), ("claude_b", "claude"), ("codex", "codex"),
-                ("codex_b", "codex"), ("antigravity_gemini", "antigravity")]
+    accounts = accounts or [("claude", "claude"), ("claude_b", "claude"), ("codex", "codex"),
+                            ("codex_b", "codex"), ("antigravity_gemini", "antigravity")]
     checks = doctor.check_capabilities(
         table=table, table_error=error, path=str(cap.table_path(env)),
         accounts=accounts, now_s=now_s,
@@ -654,6 +701,23 @@ def test_doctor_reports_each_capability_and_flags_codex_disagreement(env, tmp_pa
     assert premium.status == "warn"
     assert "codex accounts disagree (gpt-6-sol, gpt-6.1-sol)" in premium.detail
     assert "claude: claude-opus-5-5 (claude, claude_b)" in premium.detail
+
+
+def test_doctor_groups_antigravity_pools_by_flavour(env, tmp_path, agy_on_path):
+    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    # The list the doctor command builds: every enabled account, labelled by cap.pool.
+    accounts = [
+        (account.id, cap.pool(account))
+        for account in _load(env, tmp_path).enabled_accounts()
+        if account.provider in cap.CAPABILITY_PROVIDERS
+    ]
+    assert ("antigravity_claude", "antigravity (claude)") in accounts
+    premium = _doctor(env, NOW + MIN, accounts)["capability[premium]"]
+
+    assert premium.status == "ok", premium.detail
+    assert "antigravity accounts disagree" not in premium.detail
+    assert "antigravity (claude): Claude Opus 5.5 (High) (antigravity_claude)" in premium.detail
+    assert "antigravity: Gemini 3.1 Pro (High) (antigravity_gemini" in premium.detail
 
 
 def test_doctor_fails_once_the_table_is_past_its_ttl(env, tmp_path, agy_on_path):

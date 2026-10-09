@@ -126,6 +126,45 @@ def test_an_unavailable_fallback_account_is_not_revived(env, fallback):
     assert _rows(payload, "excluded")["antigravity_gemini"]["reason"].endswith("agy is not installed")
 
 
+def _claude_fallback_config(tmp_path) -> str:
+    path = _config_file(tmp_path)
+    text = open(path).read()
+    old = '[accounts.antigravity_claude]\nprovider = "antigravity"\n'
+    assert text.count(old) == 1
+    open(path, "w").write(text.replace(old, old + 'unmetered = "fallback"\n'))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("capability", "label"),
+    [("premium", "Claude Opus 5.5 (High)"), ("standard", "Claude Sonnet 5.5 (High)")],
+)
+def test_a_claude_flavour_fallback_serves_when_nothing_measured_can(
+    env, tmp_path, agy_on_path, capability, label
+):
+    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    config = _claude_fallback_config(tmp_path)
+
+    payload = _pick(env, config, "--capability", capability, snapshots=_spent())
+    decision = payload["decision"]
+    assert decision["account"] == "antigravity_claude"
+    assert decision["model"]["id"] == label
+    assert any("chosen as fallback-only" in w for w in payload["warnings"])
+
+
+def test_a_claude_flavour_fallback_waits_while_a_measured_account_fits(
+    env, tmp_path, agy_on_path
+):
+    _refresh(env, tmp_path, FakeIO(), now_s=NOW)
+    config = _claude_fallback_config(tmp_path)
+
+    payload = _pick(env, config, "--capability", "premium", snapshots=_fleet())
+    assert payload["decision"]["provider"] in {"claude", "codex"}
+    assert _rows(payload, "excluded")["antigravity_claude"]["reason"] == (
+        "fallback-only: used only when no measured account can serve premium"
+    )
+
+
 def test_frontier_has_no_antigravity_fallback(env, fallback):
     payload = _pick(env, fallback, "--capability", "frontier", snapshots=_spent())
     assert payload["decision"]["fits"] is False

@@ -1128,13 +1128,6 @@ def _apply_capability(
         if provider not in cap_mod.CAPABILITY_PROVIDERS:
             exclude(snapshot, f"provider {provider} publishes no model list")
             continue
-        if provider == "antigravity" and cap_mod.antigravity_flavour(account) == "claude":
-            exclude(
-                snapshot,
-                "Claude-flavour Antigravity pools are out of capability routing "
-                "(one was seen serving Gemini under a Claude label)",
-            )
-            continue
         if pinned:
             if pin_provider is None:
                 exclude(snapshot, f"cannot tell which provider serves pinned model {pinned!r}")
@@ -2994,12 +2987,7 @@ def _capability_rows(
             "capabilities": {},
         }
         for name in cap_mod.CAPABILITIES:
-            if account.provider == "antigravity" and cap_mod.antigravity_flavour(account) == "claude":
-                result: Any = cap_mod.Unresolved(
-                    "Claude-flavour Antigravity is out of capability routing"
-                )
-            else:
-                result = cap_mod.lookup(table, account.id, name, now_s=now_s, path=path)
+            result: Any = cap_mod.lookup(table, account.id, name, now_s=now_s, path=path)
             cap_entry = (
                 entry.get("capabilities", {}).get(name) if isinstance(entry, Mapping) else None
             )
@@ -3168,13 +3156,9 @@ def _cmd_doctor(
             table_error=cap_error,
             path=str(cap_path),
             accounts=[
-                (account.id, account.provider)
+                (account.id, cap_mod.pool(account))
                 for account in config.enabled_accounts()
                 if account.provider in cap_mod.CAPABILITY_PROVIDERS
-                and not (
-                    account.provider == "antigravity"
-                    and cap_mod.antigravity_flavour(account) == "claude"
-                )
             ],
             now_s=now_s,
         )

@@ -43,11 +43,13 @@ __all__ = [
     "ModelChoice",
     "Unresolved",
     "antigravity_flavour",
+    "choose_agy_claude",
     "choose_claude",
     "choose_codex",
     "choose_gemini",
     "lookup",
     "observe",
+    "pool",
     "read_table",
     "resolve",
     "table_path",
@@ -91,9 +93,10 @@ DEFAULT_TABLE: Final[Mapping[str, Mapping[str, str]]] = {
     "frontier": {PROVIDER_CLAUDE: "fable", PROVIDER_CODEX: "astra", PROVIDER_ANTIGRAVITY: NONE},
 }
 
-#: Antigravity labels carry the effort. The table names the High variant; a client that
-#: wants another effort rewrites the suffix, as digital-twin already does.
-GEMINI_EFFORT: Final[str] = "high"
+#: Antigravity labels carry the effort. The table names the High variant, Gemini and
+#: Claude alike; a client that wants another effort rewrites the suffix, as digital-twin
+#: already does.
+AGY_EFFORT: Final[str] = "high"
 
 
 def validate_table(raw: Any) -> dict[str, dict[str, str]]:
@@ -140,10 +143,24 @@ def antigravity_flavour(account: Any) -> str:
     """``"claude"`` or ``"gemini"``: which Antigravity pool an account draws on.
 
     Same rule the config documents for ``AGY_MODEL``: a value containing "claude" means
-    the Claude pool, anything else means Gemini.
+    the Claude pool, anything else means Gemini. A Claude-flavour pool takes its selector
+    from the table's ``claude`` column, so ``premium = opus`` means the newest Opus on
+    Claude Code and on agy alike.
     """
     env = getattr(account, "env", None) or {}
     return "claude" if "claude" in str(env.get("AGY_MODEL", "")).casefold() else "gemini"
+
+
+def pool(account: Any) -> str:
+    """The account's provider, or ``antigravity (claude)`` for a Claude-flavour pool.
+
+    What doctor groups by: a Claude label on one Antigravity pool and a Gemini label on
+    another are two pools, not two accounts that disagree.
+    """
+    provider = str(getattr(account, "provider", ""))
+    if provider == PROVIDER_ANTIGRAVITY and antigravity_flavour(account) == "claude":
+        return f"{PROVIDER_ANTIGRAVITY} (claude)"
+    return provider
 
 
 # ======================================================================================
@@ -211,8 +228,23 @@ def choose_codex(slugs: Sequence[str], size: str) -> tuple[str | None, str | Non
     return chosen, note
 
 
+def choose_agy_claude(
+    models: Sequence[tuple[str, str]], family: str, effort: str = AGY_EFFORT
+) -> str | None:
+    """The label of the newest ``claude-<family>-<version>-<effort>`` in an ``agy models`` list."""
+    pattern = re.compile(
+        rf"^claude-{re.escape(family)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+    )
+    found = sorted(
+        (_version(match.group(1)), label)
+        for model_id, label in models
+        if (match := pattern.match(model_id))
+    )
+    return found[-1][1] if found else None
+
+
 def choose_gemini(
-    models: Sequence[tuple[str, str]], line: str, effort: str = GEMINI_EFFORT
+    models: Sequence[tuple[str, str]], line: str, effort: str = AGY_EFFORT
 ) -> str | None:
     """The label of the newest ``gemini-<version>-<line>-<effort>`` in an ``agy models`` list."""
     pattern = re.compile(rf"^gemini-(\d+(?:\.\d+)*)-{re.escape(line)}-{re.escape(effort)}$")
@@ -352,8 +384,14 @@ def _resolution(
     }
 
 
-def resolve(capability: str, selector: str, listing: Listing) -> dict[str, Any]:
+def resolve(
+    capability: str, selector: str, listing: Listing, *, flavour: str = "gemini"
+) -> dict[str, Any]:
     """Resolve one capability on one account's listing to a resolution record.
+
+    Args:
+        flavour: Antigravity only, from :func:`antigravity_flavour`. ``"claude"`` reads
+            ``selector`` as a Claude one (the ``claude`` column) against agy's labels.
 
     A record has an ``id`` or a ``reason``, never a guessed id.
     """
@@ -406,6 +444,33 @@ def resolve(capability: str, selector: str, listing: Listing) -> dict[str, Any]:
             note=note, selector=selector,
         )
 
+    if provider == PROVIDER_ANTIGRAVITY and flavour == "claude":
+        labels = {label for _model_id, label in listing.entries}
+        if selector not in SELECTORS[PROVIDER_CLAUDE]:
+            # The claude column pins Claude Code ids, which agy never lists. Only a pin
+            # that is itself an agy label may reach agy.
+            if selector not in labels:
+                return _resolution(
+                    model_id=None,
+                    reason=f"{selector!r} is not an agy model label ({listing.location})",
+                    family=None, listing=listing, selector=selector,
+                )
+            return _resolution(
+                model_id=selector, reason=None, family=None, listing=listing,
+                source="config_pin", listed=True, selector=selector,
+            )
+        chosen = choose_agy_claude(listing.entries, selector)
+        if chosen is None:
+            return _resolution(
+                model_id=None,
+                reason=f"agy lists no claude {selector} model at {AGY_EFFORT} effort",
+                family=selector, listing=listing, selector=selector,
+            )
+        return _resolution(
+            model_id=chosen, reason=None, family=selector, listing=listing, listed=True,
+            selector=selector,
+        )
+
     if provider == PROVIDER_ANTIGRAVITY:
         labels = {label for _model_id, label in listing.entries}
         if selector not in SELECTORS[PROVIDER_ANTIGRAVITY]:
@@ -417,7 +482,7 @@ def resolve(capability: str, selector: str, listing: Listing) -> dict[str, Any]:
         if chosen is None:
             return _resolution(
                 model_id=None,
-                reason=f"agy lists no gemini {selector} model at {GEMINI_EFFORT} effort",
+                reason=f"agy lists no gemini {selector} model at {AGY_EFFORT} effort",
                 family=selector, listing=listing, selector=selector,
             )
         return _resolution(
