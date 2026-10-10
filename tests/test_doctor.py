@@ -13,6 +13,7 @@ fake ``run``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -45,7 +46,28 @@ def test_probe_survives_a_percent_sign_in_its_own_body() -> None:
     doctor.probe_source()  # must not raise
 
 
-def test_a_real_interpreter_round_trips_the_probe() -> None:
+#: The ``src`` directory the tests imported ``quota_router`` from.
+_THIS_SRC = Path(doctor.__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def child_imports_this_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let a child interpreter import the ``quota_router`` these tests import.
+
+    pytest finds the package through ``pythonpath = ["src"]``, which edits only
+    pytest's own ``sys.path``. A child started from ``sys.executable`` does not
+    inherit that. In a venv that never installed the package, which is exactly
+    the venv CI builds, the probe answered "No module named 'quota_router'". A
+    venv made by ``uv sync`` hides the problem with an editable install, so
+    these tests passed on every developer machine and failed on every CI run
+    from 2026-09-20.
+    """
+    existing = os.environ.get("PYTHONPATH")
+    value = str(_THIS_SRC) if not existing else os.pathsep.join([str(_THIS_SRC), existing])
+    monkeypatch.setenv("PYTHONPATH", value)
+
+
+def test_a_real_interpreter_round_trips_the_probe(child_imports_this_checkout) -> None:
     """One live probe, against the interpreter running the tests.
 
     A fake `run` can only prove the parsing. This proves the script itself is
@@ -54,6 +76,8 @@ def test_a_real_interpreter_round_trips_the_probe() -> None:
     report = doctor.inspect_consumer(sys.executable)
     assert report.error is None, report
     assert report.features.get("reserve") is True, report
+    # The child must have probed this checkout, not some other installed copy.
+    assert Path(report.path).resolve().parent == _THIS_SRC / "quota_router", report
 
 
 # ======================================================================================
@@ -303,7 +327,9 @@ def test_doctor_reports_a_reserve_that_routing_honoured(env) -> None:
     assert "none probed" in out
 
 
-def test_doctor_probes_a_named_consumer_and_exits_on_its_verdict(env) -> None:
+def test_doctor_probes_a_named_consumer_and_exits_on_its_verdict(
+    env, child_imports_this_checkout
+) -> None:
     write_config(env, SECOND_CODEX)
     code, out, _ = run(
         ["doctor", "--consumer", sys.executable],
