@@ -725,8 +725,10 @@ Three checks, each for a failure that is otherwise silent:
   spendable that routing still chose.
 - **consumer[&lt;python&gt;]** — what another environment actually has. It asks for the
   submodule rather than the version string, because the version is static across many
-  commits and cannot answer the question. An environment with no `quota_router` at all is
-  not a finding; most virtualenvs have no business carrying it.
+  commits and cannot answer the question. An environment that `--scan` found with no
+  `quota_router` at all is not a finding; most virtualenvs have no business carrying it.
+  One you named with `--consumer` is a warning, because you said it is a consumer and a
+  mistyped venv path would otherwise read as "all clear".
 
 `doctor` also prints one **capability[&lt;name&gt;]** row per capability (see
 [Capability routing](#capability-routing--pick---capability)): which model each provider's

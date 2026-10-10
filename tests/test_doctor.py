@@ -203,6 +203,35 @@ def test_an_environment_without_the_package_is_not_a_finding() -> None:
     assert doctor.check_consumers(reports, own_version="0.1.6") == []
 
 
+def test_a_named_environment_without_the_package_warns_rather_than_vanishing() -> None:
+    """--scan finds venvs that never carried the router; --consumer is a claim.
+
+    The operator said this interpreter is a consumer. Dropping it printed "all
+    clear" about an environment nothing had checked, which is what a mistyped
+    venv path looked like.
+    """
+    reports = [
+        doctor.ConsumerReport(
+            python="/x/python", error="ModuleNotFoundError: No module named 'quota_router'"
+        )
+    ]
+    checks = doctor.check_consumers(reports, own_version="0.1.6", named=["/x/python"])
+    assert [c.status for c in checks] == ["warn"]
+    assert checks[0].name == "consumer[/x/python]"
+    assert "cannot import quota_router" in checks[0].detail
+    assert "--consumer" in checks[0].remedy
+
+
+def test_naming_one_environment_does_not_surface_a_scanned_one() -> None:
+    missing = "ModuleNotFoundError: No module named 'quota_router'"
+    reports = [
+        doctor.ConsumerReport(python="/named/python", error=missing),
+        doctor.ConsumerReport(python="/scanned/python", error=missing),
+    ]
+    checks = doctor.check_consumers(reports, own_version="0.1.6", named=["/named/python"])
+    assert [c.name for c in checks] == ["consumer[/named/python]"]
+
+
 def test_an_environment_that_could_not_be_probed_warns_rather_than_passing() -> None:
     reports = [doctor.ConsumerReport(python="/x/python", error="probe timed out after 20s")]
     checks = doctor.check_consumers(reports, own_version="0.1.6")
@@ -338,6 +367,25 @@ def test_doctor_probes_a_named_consumer_and_exits_on_its_verdict(
     )
     assert sys.executable in out
     assert code == doctor.EXIT_OK, out
+
+
+def test_doctor_warns_about_a_named_consumer_that_cannot_import_the_package(
+    env, monkeypatch
+) -> None:
+    write_config(env, SECOND_CODEX)
+    monkeypatch.setattr(
+        doctor,
+        "inspect_consumer",
+        lambda python, **kw: doctor.ConsumerReport(
+            python=str(python), error="ModuleNotFoundError: No module named 'quota_router'"
+        ),
+    )
+    code, out, _ = run(
+        ["doctor", "--consumer", "/x/python"], env, snapshots=[codex(), codex_b()]
+    )
+    assert "consumer[/x/python]" in out, out
+    assert "all clear" not in out, out
+    assert code == doctor.EXIT_WARN, (code, out)
 
 
 def test_doctor_fails_when_a_probed_consumer_is_too_old(env, monkeypatch) -> None:

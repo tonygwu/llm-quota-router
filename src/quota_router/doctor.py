@@ -239,18 +239,42 @@ def discover_consumer_pythons(
     return sorted(found)
 
 
-def check_consumers(reports: Sequence[ConsumerReport], *, own_version: str | None) -> list[Check]:
+def check_consumers(
+    reports: Sequence[ConsumerReport],
+    *,
+    own_version: str | None,
+    named: Iterable[str] = (),
+) -> list[Check]:
     """One check per probed environment, plus nothing when none were asked for.
 
-    An environment WITHOUT quota_router installed is not a finding. Plenty of
-    virtualenvs have no business carrying it. Only an environment that HAS it and
-    is too old to obey the config is.
+    An environment that ``--scan`` found WITHOUT quota_router installed is not a
+    finding. Plenty of virtualenvs have no business carrying it. Only an
+    environment that HAS it and is too old to obey the config is.
+
+    An environment in ``named`` is different, because the operator said with
+    ``--consumer`` that it is a consumer. Skipping it printed "all clear" about an
+    interpreter nothing had checked, which is how a mistyped venv path looked.
     """
+    named_pythons = {str(python) for python in named}
     checks: list[Check] = []
     for report in reports:
         label = f"consumer[{report.python}]"
         if report.error and not report.features:
             if "No module named" in (report.error or ""):
+                if report.python in named_pythons:
+                    checks.append(
+                        Check(
+                            label,
+                            "warn",
+                            f"cannot import quota_router, so nothing here reads the config: "
+                            f"{report.error}",
+                            remedy=(
+                                "check the path names the consumer's own venv interpreter; "
+                                "drop it from --consumer if that project only runs the cl, "
+                                "cdx or quotapick binaries"
+                            ),
+                        )
+                    )
                 continue
             checks.append(
                 Check(label, "warn", f"could not be probed: {report.error}",

@@ -3164,7 +3164,8 @@ def _cmd_doctor(
         )
     )
 
-    targets = list(getattr(args, "consumer", None) or [])
+    named = list(getattr(args, "consumer", None) or [])
+    targets = list(named)
     for root in getattr(args, "scan", None) or []:
         targets.extend(doctor_mod.discover_consumer_pythons([root]))
     seen: set[str] = set()
@@ -3177,7 +3178,9 @@ def _cmd_doctor(
             for target in ordered
         ]
         checks.extend(
-            doctor_mod.check_consumers(reports, own_version=doctor_mod.own_version())
+            doctor_mod.check_consumers(
+                reports, own_version=doctor_mod.own_version(), named=named
+            )
         )
     else:
         checks.append(
