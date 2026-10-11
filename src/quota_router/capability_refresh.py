@@ -156,7 +156,7 @@ def read_claude_listing(account: Any) -> cap.Listing:
             f"no model catalog for org {uuid[:8]}... in {catalog_dir} (identity from "
             f"{identity_file}); run claude once on this account",
         )
-    best: tuple[float, Path, list[tuple[str, str]]] | None = None
+    best: tuple[float, Path, list[tuple[str, str]], list[tuple[str, tuple[str, ...]]]] | None = None
     problems = []
     for path in files:
         try:
@@ -165,17 +165,20 @@ def read_claude_listing(account: Any) -> cap.Listing:
             models = data["catalog"]["config"]["models"]
             if not isinstance(fetched_ms, (int, float)) or not isinstance(models, list):
                 raise TypeError("fetchedAt or catalog.config.models has the wrong type")
-            entries = []
+            entries, efforts = [], []
             for model in models:
                 if not isinstance(model.get("id"), str) or not isinstance(model.get("section"), str):
                     raise TypeError(f"model entry without string id/section: {model!r:.80}")
                 entries.append((model["id"], model["section"]))
+                levels = _claude_effort_levels(model.get("thinking"))
+                if levels is not None:
+                    efforts.append((model["id"], levels))
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             problems.append(f"{path.name}: {exc}")
             continue
         fetched_s = float(fetched_ms) / 1000.0
         if best is None or fetched_s > best[0]:
-            best = (fetched_s, path, entries)
+            best = (fetched_s, path, entries, efforts)
     if best is None:
         raise ReadFailed("malformed", f"no readable catalog in {catalog_dir}: {'; '.join(problems)}")
     return cap.Listing(
@@ -184,7 +187,42 @@ def read_claude_listing(account: Any) -> cap.Listing:
         fetched_at_s=best[0],
         location=str(best[1]),
         entries=tuple(best[2]),
+        efforts=tuple(best[3]),
     )
+
+
+def _claude_effort_levels(thinking: Any) -> tuple[str, ...] | None:
+    """A catalog model's ``thinking`` block as effort levels.
+
+    ``type: "effort"`` gives its ``effort_options`` ids; ``type: "none"`` gives ``()``, a
+    model that takes no effort. Anything else gives ``None``: the levels are unknown, and
+    ``pick --effort`` says so for that model rather than guessing Claude Code's defaults.
+    """
+    if not isinstance(thinking, Mapping):
+        return None
+    if thinking.get("type") == "none":
+        return ()
+    options = thinking.get("effort_options")
+    if thinking.get("type") != "effort" or not isinstance(options, list):
+        return None
+    levels = [option.get("id") for option in options if isinstance(option, Mapping)]
+    if len(levels) != len(options) or not all(isinstance(level, str) for level in levels):
+        return None
+    return tuple(levels)
+
+
+def _codex_effort_levels(raw: Any, key: str) -> tuple[str, ...] | None:
+    """``supportedReasoningEfforts`` (``key="reasoningEffort"``) from ``model/list``, or
+    ``supported_reasoning_levels`` (``key="effort"``) from ``models_cache.json``.
+
+    ``None`` when absent or malformed, so the model's levels are unknown rather than empty.
+    """
+    if not isinstance(raw, list):
+        return None
+    levels = [item.get(key) for item in raw if isinstance(item, Mapping)]
+    if len(levels) != len(raw) or not all(isinstance(level, str) for level in levels):
+        return None
+    return tuple(levels)
 
 
 
@@ -213,16 +251,19 @@ def read_codex_listing(
         data = result.get("data") if isinstance(result, Mapping) else None
         if not isinstance(data, list):
             raise ModelListFailed(f"model/list result has no data list: {str(result)[:120]}")
-        entries = []
+        entries, efforts = [], []
         for model in data:
             if not isinstance(model, Mapping) or not isinstance(model.get("id"), str):
                 raise ModelListFailed(f"model/list entry without a string id: {str(model)[:120]}")
             entries.append((model["id"], "hide" if model.get("hidden") else "list"))
+            levels = _codex_effort_levels(model.get("supportedReasoningEfforts"), "reasoningEffort")
+            if levels is not None:
+                efforts.append((model["id"], levels))
         return (
             cap.Listing(
                 provider=PROVIDER_CODEX, source="codex_model_list", fetched_at_s=now_s,
                 location=f"codex app-server model/list (CODEX_HOME={home})",
-                entries=tuple(entries),
+                entries=tuple(entries), efforts=tuple(efforts),
             ),
             warnings,
         )
@@ -236,6 +277,12 @@ def read_codex_listing(
         entries = [
             (str(m["slug"]), "hide" if m.get("visibility") == "hide" else "list")
             for m in cache["models"]
+        ]
+        efforts = [
+            (str(m["slug"]), levels)
+            for m in cache["models"]
+            if (levels := _codex_effort_levels(m.get("supported_reasoning_levels"), "effort"))
+            is not None
         ]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ReadFailed(
@@ -251,7 +298,7 @@ def read_codex_listing(
     return (
         cap.Listing(
             provider=PROVIDER_CODEX, source="codex_models_cache", fetched_at_s=fetched_s,
-            location=str(cache_path), entries=tuple(entries),
+            location=str(cache_path), entries=tuple(entries), efforts=tuple(efforts),
         ),
         warnings,
     )
@@ -316,6 +363,10 @@ def read_agy_listing(
 
 def _due(prior: cap.Listing | None, now_s: float, force: bool) -> bool:
     if force or prior is None or prior.fetched_at_s is None:
+        return True
+    if prior.provider == PROVIDER_CODEX and prior.efforts is None:
+        # Written before effort support: it cannot answer `pick --effort`, so read now
+        # rather than leave Codex out of effort picks for up to 15 minutes.
         return True
     return now_s - prior.fetched_at_s >= NETWORK_INTERVAL_S
 
@@ -434,6 +485,19 @@ def _refresh_locked(
                 cap_entries[name] = updated
                 if move:
                     report.moves.append({"account": account.id, "capability": name, **move})
+            committed = (cap_entries.get(name) or {}).get("committed")
+            if isinstance(committed, dict) and "effort_ids" not in committed:
+                # A resolution written before effort support. Give it its levels from
+                # this list directly: re-observing would count a read with no new data
+                # toward a pending candidate, and the debounce must not move for that.
+                model_id = committed.get("id")
+                cap_entries[name] = {
+                    **cap_entries[name],
+                    "committed": {
+                        **committed,
+                        "effort_ids": cap.effort_ids(listing, model_id) if model_id else None,
+                    },
+                }
         entry["capabilities"] = cap_entries
         accounts_out[account.id] = entry
         report.outcomes.append({

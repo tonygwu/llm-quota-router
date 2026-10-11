@@ -1,0 +1,197 @@
+{
+  "capability": {
+    "pinned": null,
+    "requested": "premium",
+    "table_error": null,
+    "table_path": "<TMP>/state/quota-router/capabilities.json"
+  },
+  "contract_version": 1,
+  "decision": {
+    "account": "claude",
+    "available_at": null,
+    "binding_window": "seven_day",
+    "fits": true,
+    "meets_policy": true,
+    "model": {
+      "family": "opus",
+      "id": "claude-opus-5-5",
+      "listed": true,
+      "note": null,
+      "provider": "claude",
+      "since": "2026-08-14T18:46:52Z",
+      "source": "claude_catalog",
+      "source_fetched_at": "2026-08-14T18:36:52Z"
+    },
+    "provider": "claude",
+    "reason": "claude wins: 0.369 PSE min_slack (no weekly window; cannot normalize) (binding seven_day, tier scale 1.00)",
+    "regime": "A",
+    "score": 0.36931216931216926,
+    "sticky": false
+  },
+  "degraded": [],
+  "excluded": [
+    {
+      "account": "antigravity_claude",
+      "age_s": null,
+      "binding_window": null,
+      "eligible": false,
+      "fits": false,
+      "min_slack": 0.0,
+      "model": {
+        "family": "opus",
+        "id": "Claude Opus 5.5 (High)",
+        "listed": true,
+        "note": null,
+        "provider": "antigravity",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "agy_models",
+        "source_fetched_at": "2026-08-14T18:46:52Z"
+      },
+      "reason": "no usage windows in snapshot",
+      "remaining": null,
+      "score": 0.0,
+      "source": "assumed"
+    },
+    {
+      "account": "antigravity_gemini",
+      "age_s": null,
+      "binding_window": null,
+      "eligible": false,
+      "fits": false,
+      "min_slack": 0.0,
+      "model": {
+        "family": "pro",
+        "id": "Gemini 3.1 Pro (High)",
+        "listed": true,
+        "note": null,
+        "provider": "antigravity",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "agy_models",
+        "source_fetched_at": "2026-08-14T18:46:52Z"
+      },
+      "reason": "no usage windows in snapshot",
+      "remaining": null,
+      "score": 0.0,
+      "source": "assumed"
+    },
+    {
+      "account": "antigravity_gemini_b",
+      "age_s": null,
+      "binding_window": null,
+      "eligible": false,
+      "fits": false,
+      "min_slack": 0.0,
+      "model": {
+        "family": "pro",
+        "id": "Gemini 3.1 Pro (High)",
+        "listed": true,
+        "note": null,
+        "provider": "antigravity",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "agy_models",
+        "source_fetched_at": "2026-08-14T18:46:52Z"
+      },
+      "reason": "no usage windows in snapshot",
+      "remaining": null,
+      "score": 0.0,
+      "source": "assumed"
+    }
+  ],
+  "exec": {
+    "argv_prefix": [],
+    "env": {},
+    "unset_env": []
+  },
+  "generated_at": "<GENERATED_AT>",
+  "ranked": [
+    {
+      "account": "claude",
+      "age_s": 0.0,
+      "binding_window": "seven_day",
+      "eligible": true,
+      "fits": true,
+      "min_slack": 0.36931216931216926,
+      "model": {
+        "family": "opus",
+        "id": "claude-opus-5-5",
+        "listed": true,
+        "note": null,
+        "provider": "claude",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "claude_catalog",
+        "source_fetched_at": "2026-08-14T18:36:52Z"
+      },
+      "remaining": 0.7,
+      "score": 0.36931216931216926,
+      "source": "live"
+    },
+    {
+      "account": "claude_b",
+      "age_s": 0.0,
+      "binding_window": "seven_day",
+      "eligible": true,
+      "fits": true,
+      "min_slack": 0.36931216931216926,
+      "model": {
+        "family": "opus",
+        "id": "claude-opus-5-5",
+        "listed": true,
+        "note": null,
+        "provider": "claude",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "claude_catalog",
+        "source_fetched_at": "2026-08-14T18:36:52Z"
+      },
+      "remaining": 0.7,
+      "score": 0.36931216931216926,
+      "source": "live"
+    },
+    {
+      "account": "codex",
+      "age_s": 0.0,
+      "binding_window": "seven_day",
+      "eligible": true,
+      "fits": true,
+      "min_slack": 0.2039682539682539,
+      "model": {
+        "family": "sol",
+        "id": "gpt-6-sol",
+        "listed": true,
+        "note": null,
+        "provider": "codex",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "codex_model_list",
+        "source_fetched_at": "2026-08-14T18:46:52Z"
+      },
+      "remaining": 0.7,
+      "score": 0.14277777777777773,
+      "source": "live"
+    },
+    {
+      "account": "codex_b",
+      "age_s": 0.0,
+      "binding_window": "seven_day",
+      "eligible": true,
+      "fits": true,
+      "min_slack": 0.2039682539682539,
+      "model": {
+        "family": "sol",
+        "id": "gpt-6-sol",
+        "listed": true,
+        "note": null,
+        "provider": "codex",
+        "since": "2026-08-14T18:46:52Z",
+        "source": "codex_model_list",
+        "source_fetched_at": "2026-08-14T18:46:52Z"
+      },
+      "remaining": 0.7,
+      "score": 0.14277777777777773,
+      "source": "live"
+    }
+  ],
+  "warnings": [
+    "antigravity_gemini: snapshot carries no usage windows",
+    "antigravity_gemini_b: snapshot carries no usage windows",
+    "antigravity_claude: snapshot carries no usage windows"
+  ]
+}

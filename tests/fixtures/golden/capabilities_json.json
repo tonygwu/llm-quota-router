@@ -1,0 +1,462 @@
+{
+  "accounts": [
+    {
+      "account": "claude",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "haiku",
+            "id": "claude-haiku-4-5-20251001",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": {
+            "family": "fable",
+            "id": "claude-fable-5-1",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "opus",
+            "id": "claude-opus-5-5",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "sonnet",
+            "id": "claude-sonnet-5-5",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:36:52Z",
+      "list_source": "claude_catalog",
+      "provider": "claude",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "claude_b",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "haiku",
+            "id": "claude-haiku-4-5-20251001",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": {
+            "family": "fable",
+            "id": "claude-fable-5-1",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "opus",
+            "id": "claude-opus-5-5",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "sonnet",
+            "id": "claude-sonnet-5-5",
+            "listed": true,
+            "note": null,
+            "provider": "claude",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "claude_catalog",
+            "source_fetched_at": "2026-08-14T18:36:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:36:52Z",
+      "list_source": "claude_catalog",
+      "provider": "claude",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "codex",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "luna",
+            "id": "gpt-6-luna",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": {
+            "family": "astra",
+            "id": "gpt-6-astra",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "sol",
+            "id": "gpt-6-sol",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "terra",
+            "id": "gpt-5.6-terra",
+            "listed": true,
+            "note": "no gpt-6 terra; newest terra is gpt-5.6-terra",
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:46:52Z",
+      "list_source": "codex_model_list",
+      "provider": "codex",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "codex_b",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "luna",
+            "id": "gpt-6-luna",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": {
+            "family": "astra",
+            "id": "gpt-6-astra",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "sol",
+            "id": "gpt-6-sol",
+            "listed": true,
+            "note": null,
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "terra",
+            "id": "gpt-5.6-terra",
+            "listed": true,
+            "note": "no gpt-6 terra; newest terra is gpt-5.6-terra",
+            "provider": "codex",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "codex_model_list",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:46:52Z",
+      "list_source": "codex_model_list",
+      "provider": "codex",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "antigravity_gemini",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "flash",
+            "id": "Gemini 3.8 Flash (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": null,
+          "moved_at": null,
+          "reason": "no antigravity model for frontier"
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "pro",
+            "id": "Gemini 3.1 Pro (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "flash",
+            "id": "Gemini 3.8 Flash (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:46:52Z",
+      "list_source": "agy_models",
+      "provider": "antigravity",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "antigravity_gemini_b",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": {
+            "family": "flash",
+            "id": "Gemini 3.8 Flash (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "frontier": {
+          "candidate": null,
+          "model": null,
+          "moved_at": null,
+          "reason": "no antigravity model for frontier"
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "pro",
+            "id": "Gemini 3.1 Pro (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "flash",
+            "id": "Gemini 3.8 Flash (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:46:52Z",
+      "list_source": "agy_models",
+      "provider": "antigravity",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    },
+    {
+      "account": "antigravity_claude",
+      "capabilities": {
+        "fast": {
+          "candidate": null,
+          "model": null,
+          "moved_at": null,
+          "reason": "agy lists no claude haiku model at high effort"
+        },
+        "frontier": {
+          "candidate": null,
+          "model": null,
+          "moved_at": null,
+          "reason": "agy lists no claude fable model at high effort"
+        },
+        "premium": {
+          "candidate": null,
+          "model": {
+            "family": "opus",
+            "id": "Claude Opus 5.5 (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        },
+        "standard": {
+          "candidate": null,
+          "model": {
+            "family": "sonnet",
+            "id": "Claude Sonnet 5.5 (High)",
+            "listed": true,
+            "note": null,
+            "provider": "antigravity",
+            "since": "2026-08-14T18:46:52Z",
+            "source": "agy_models",
+            "source_fetched_at": "2026-08-14T18:46:52Z"
+          },
+          "moved_at": null,
+          "reason": null
+        }
+      },
+      "list_fetched_at": "2026-08-14T18:46:52Z",
+      "list_source": "agy_models",
+      "provider": "antigravity",
+      "refreshed_at": "2026-08-14T18:46:52Z",
+      "warnings": []
+    }
+  ],
+  "generated_at": "<GENERATED_AT>",
+  "refresh": null,
+  "table_error": null,
+  "table_path": "<TMP>/state/quota-router/capabilities.json"
+}

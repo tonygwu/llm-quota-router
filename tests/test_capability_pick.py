@@ -27,6 +27,7 @@ from tests.test_capability import (  # noqa: F401 - fixtures
     home,
 )
 from tests.test_cli import FIVE_HOURS, NOW, _NO_CONFIG_FILES, account, run, window
+from tests.test_contract_golden import _assert_golden, _normalize
 
 
 def _claude(account_id, *, five=0.2, fable=0.2):
@@ -108,6 +109,25 @@ def test_the_same_pick_without_a_capability_carries_no_new_keys(env, table):
     assert "capability" not in payload
     assert "model" not in payload["decision"]
     assert all("model" not in row for row in payload["ranked"] + payload["excluded"])
+
+
+def test_a_capability_pick_without_effort_is_byte_identical_to_446de00(env, table, tmp_path):
+    # Frozen before --effort existed: the flag is additive, so a caller that never
+    # passes it must see the payload it saw at 446de00, value for value.
+    code, out, err = run(
+        ["pick", "--config", table, "--dry-run", "--capability", "premium"],
+        env, snapshots=_fleet(), now_s=NOW, cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    _assert_golden("pick_capability_premium", _normalize(out, tmp_path))
+
+
+def test_capabilities_json_without_effort_is_byte_identical_to_446de00(env, table, tmp_path):
+    code, out, err = run(
+        ["capabilities", "--config", table, "--json"], env, now_s=NOW, cwd=_NO_CONFIG_FILES
+    )
+    assert code == cli.EXIT_OK, err
+    _assert_golden("capabilities_json", _normalize(out, tmp_path))
 
 
 # ======================================================================================
@@ -323,3 +343,161 @@ def test_pick_rejects_an_unknown_capability(env, table):
                           snapshots=_fleet(), cwd=_NO_CONFIG_FILES)
     assert code != cli.EXIT_OK
     assert "invalid choice: 'ultra'" in err
+
+
+# ======================================================================================
+# --effort: the app chooses the effort, the router translates it per account
+# ======================================================================================
+
+LOW_TO_MAX = ["low", "medium", "high", "xhigh", "max"]
+
+
+def _efforts(payload):
+    # Ranked and excluded alike: Antigravity pools are excluded as fallback-only (here for
+    # carrying no usage windows) and still carry the model they would request.
+    return {
+        row["account"]: (row["model"]["id"], row["model"]["effort"])
+        for row in payload["ranked"] + payload["excluded"]
+        if row.get("model")
+    }
+
+
+def test_effort_xhigh_on_premium_is_exact_on_claude_and_codex_and_clamped_on_agy(env, table):
+    rows = _efforts(_pick(env, table, "--capability", "premium", "--effort", "xhigh"))
+
+    exact = {"requested": "xhigh", "applied": "xhigh", "clamped": False, "supported": LOW_TO_MAX}
+    assert rows["claude"] == ("claude-opus-5-5", exact)
+    assert rows["codex"] == ("gpt-6-sol", exact)
+    # agy has no xhigh: the highest label at or below it, reported as a clamp.
+    assert rows["antigravity_gemini"] == ("Gemini 3.1 Pro (High)", {
+        "requested": "xhigh", "applied": "high", "clamped": True, "supported": ["low", "high"],
+    })
+    assert rows["antigravity_claude"] == ("Claude Opus 5.5 (High)", {
+        "requested": "xhigh", "applied": "high", "clamped": True, "supported": ["low", "high"],
+    })
+
+
+def test_an_agy_model_id_becomes_the_label_at_the_applied_effort(env, table):
+    payload = _pick(env, table, "--capability", "premium", "--effort", "medium")
+    rows = _efforts(payload)
+    assert rows["antigravity_gemini"][0] == "Gemini 3.1 Pro (Low)"
+    assert rows["antigravity_gemini"][1]["applied"] == "low"
+    assert rows["antigravity_claude"][0] == "Claude Opus 5.5 (Low)"
+    # Claude Code and Codex take the effort as a flag; their id never changes.
+    assert rows["claude"] == ("claude-opus-5-5", {
+        "requested": "medium", "applied": "medium", "clamped": False, "supported": LOW_TO_MAX,
+    })
+
+
+def test_every_clamp_is_reported_in_the_warnings_too(env, table):
+    payload = _pick(env, table, "--capability", "premium", "--effort", "xhigh")
+    clamps = [w for w in payload["warnings"] if w.startswith("effort xhigh clamped")]
+    assert clamps == [
+        "effort xhigh clamped on 3 accounts: antigravity_claude -> high, "
+        "antigravity_gemini -> high, antigravity_gemini_b -> high"
+    ]
+    assert not [w for w in _pick(env, table, "--capability", "premium", "--effort", "high")
+                ["warnings"] if w.startswith("effort ")]
+
+
+def test_effort_never_changes_which_account_wins(env, table):
+    # Ranking is a quota decision. A clamped account is not demoted; it is reported.
+    plain = _pick(env, table, "--capability", "premium")
+    for level in LOW_TO_MAX:
+        with_effort = _pick(env, table, "--capability", "premium", "--effort", level)
+        assert with_effort["decision"]["account"] == plain["decision"]["account"]
+        assert [r["account"] for r in with_effort["ranked"]] == [
+            r["account"] for r in plain["ranked"]
+        ]
+        assert with_effort["decision"]["model"]["effort"]["requested"] == level
+
+
+def test_a_model_that_takes_no_effort_is_excluded_with_the_reason(env, table):
+    # The fixture catalog's main Haiku is claude-haiku-4-5, whose thinking is "none".
+    payload = _pick(env, table, "--capability", "fast", "--effort", "max")
+    excluded = _rows(payload, "excluded")
+    assert "claude-haiku-4-5-20251001 takes no effort level" in excluded["claude"]["reason"]
+    assert excluded["claude"]["model"] is None
+    # Codex Luna stops at max, so max is exact there.
+    assert _efforts(payload)["codex"] == ("gpt-6-luna", {
+        "requested": "max", "applied": "max", "clamped": False, "supported": LOW_TO_MAX,
+    })
+
+
+def test_a_pinned_model_is_clamped_to_its_own_levels(env, table):
+    payload = _pick(env, table, "--capability", "premium", "--model", "gpt-5.5",
+                    "--effort", "max")
+    assert _efforts(payload)["codex"] == ("gpt-5.5", {
+        "requested": "max", "applied": "xhigh", "clamped": True,
+        "supported": ["low", "medium", "high", "xhigh"],
+    })
+
+
+def test_a_table_without_effort_levels_excludes_rather_than_guesses(env, table):
+    from quota_router import capability as cap_mod
+
+    path = cap_mod.table_path(env)
+    data = json.loads(path.read_text())
+    data["accounts"]["codex"]["capabilities"]["premium"]["committed"].pop("effort_ids")
+    path.write_text(json.dumps(data))
+
+    payload = _pick(env, table, "--capability", "premium", "--effort", "high")
+    reason = _rows(payload, "excluded")["codex"]["reason"]
+    assert "records no effort levels for gpt-6-sol" in reason
+    # Without --effort the same table still routes codex: the gap only matters under it.
+    assert "codex" in _rows(_pick(env, table, "--capability", "premium"))
+
+
+def test_effort_without_a_capability_is_a_usage_error(env, table):
+    code, _out, err = run(["pick", "--config", table, "--effort", "high"], env,
+                          snapshots=_fleet(), cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_USAGE
+    assert "--effort needs --capability" in err
+
+
+def test_pick_rejects_an_unknown_effort(env, table):
+    code, _out, err = run(
+        ["pick", "--config", table, "--capability", "premium", "--effort", "ultra"],
+        env, snapshots=_fleet(), cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_USAGE
+    assert "invalid choice: 'ultra'" in err
+
+
+def test_capabilities_json_translates_the_effort_per_cell(env, table):
+    code, out, err = run(["capabilities", "--config", table, "--json", "--effort", "xhigh"],
+                         env, now_s=NOW, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    rows = {row["account"]: row["capabilities"] for row in json.loads(out)["accounts"]}
+    gemini = rows["antigravity_gemini"]["premium"]["model"]
+    assert (gemini["id"], gemini["effort"]["applied"], gemini["effort"]["clamped"]) == (
+        "Gemini 3.1 Pro (High)", "high", True,
+    )
+    assert rows["codex"]["premium"]["model"]["effort"]["applied"] == "xhigh"
+    # A cell whose model takes no effort does not resolve under --effort.
+    assert rows["claude"]["fast"]["model"] is None
+    assert "takes no effort level" in rows["claude"]["fast"]["reason"]
+
+
+def test_capabilities_text_lists_every_clamp(env, table):
+    code, out, err = run(["capabilities", "--config", table, "--effort", "xhigh"],
+                         env, now_s=NOW, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert "antigravity_gemini premium: effort xhigh clamped to high (supports low, high)" in out
+    assert "Gemini 3.1 Pro (High)" in out
+    assert "codex premium: effort" not in out  # an exact level is not a clamp
+
+
+def test_select_account_translates_the_effort(env, table):
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(_fleet()), []))
+    chosen = select_account(env=env, now_s=NOW, deps=deps, record=False, config=table,
+                            cwd=_NO_CONFIG_FILES, capability="premium", effort="xhigh")
+    assert chosen.model.effort == chosen.to_dict()["decision"]["model"]["effort"]
+    assert chosen.model.effort["requested"] == "xhigh"
+
+
+def test_select_account_rejects_an_effort_without_a_capability(env):
+    with pytest.raises(ValueError, match="effort needs a capability"):
+        select_account(env=env, effort="high")
+    with pytest.raises(ValueError, match="unknown effort 'ultra'"):
+        select_account(env=env, capability="premium", effort="ultra")

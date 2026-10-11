@@ -1053,6 +1053,7 @@ class CapabilityContext:
     excluded: list[ScoreBreakdown] = field(default_factory=list)
     excluded_snapshots: list[AccountSnapshot] = field(default_factory=list)
     pinned: str | None = None
+    effort: str | None = None
 
 
 def _capability_view(snapshot: AccountSnapshot, model_class: str | None, model_id: str) -> AccountSnapshot:
@@ -1089,11 +1090,16 @@ def _apply_capability(
     env: Mapping[str, str],
     now_s: float,
     warnings: list[str],
+    effort: str | None = None,
 ) -> tuple[tuple[AccountSnapshot, ...], CapabilityContext]:
     """Resolve each account's model from the table alone, then build its view.
 
     Reads ONE file. Never reads a model list, never spawns: digital-twin kills pick at
     3000 ms and a timeout silently drops its routing.
+
+    With ``effort``, each model is translated to the caller's level for its account. A
+    clamp is reported, never hidden, and does not change the ranking; a model with no
+    known levels is excluded with the reason.
     """
     from . import capability as cap_mod
 
@@ -1102,7 +1108,8 @@ def _apply_capability(
     if table_error:
         warnings.append(table_error)
     ctx = CapabilityContext(
-        name=capability, table_path=str(path), table_error=table_error, pinned=pinned
+        name=capability, table_path=str(path), table_error=table_error, pinned=pinned,
+        effort=effort,
     )
     pin_provider = None
     if pinned:
@@ -1145,11 +1152,17 @@ def _apply_capability(
             choice: Any = cap_mod.ModelChoice(
                 id=pinned, family=pin_class, provider=provider, source="pinned",
                 source_fetched_at_s=listing.fetched_at_s, listed=True,
+                effort_ids=cap_mod.effort_ids(listing, pinned),
             )
         else:
             choice = cap_mod.lookup(table, snapshot.id, capability, now_s=now_s, path=path)
             if isinstance(choice, cap_mod.Unresolved):
                 exclude(snapshot, choice.reason)
+                continue
+        if effort:
+            choice = cap_mod.apply_effort(choice, effort)
+            if isinstance(choice, cap_mod.Unresolved):
+                exclude(snapshot, f"effort {effort}: {choice.reason}")
                 continue
         warnings.extend(cap_mod.pick_notes(table, snapshot.id, capability, now_s=now_s))
         ctx.choices[snapshot.id] = choice
@@ -1181,6 +1194,17 @@ def _apply_capability(
             )
         else:
             views.append(snapshot)
+    clamped = sorted(
+        (account_id, choice.effort["applied"])
+        for account_id, choice in ctx.choices.items()
+        if choice.effort is not None and choice.effort["clamped"]
+    )
+    if clamped:
+        warnings.append(
+            f"effort {effort} clamped on {len(clamped)} account"
+            f"{'' if len(clamped) == 1 else 's'}: "
+            + ", ".join(f"{account_id} -> {applied}" for account_id, applied in clamped)
+        )
     return tuple(views), ctx
 
 
@@ -1417,7 +1441,8 @@ def _prepare(
     capability_ctx: CapabilityContext | None = None
     if capability:
         adjusted, capability_ctx = _apply_capability(
-            config, adjusted, capability, getattr(args, "model", None), env, now_s, warnings
+            config, adjusted, capability, getattr(args, "model", None), env, now_s, warnings,
+            effort=getattr(args, "effort", None),
         )
     # Before eligibility: an account that cannot SEE the requested class's limit must
     # not be scored as though that limit did not exist.
@@ -1792,6 +1817,9 @@ def _cmd_pick(
     stderr: TextIO,
     cwd: str | None,
 ) -> int:
+    if getattr(args, "effort", None) and not getattr(args, "capability", None):
+        stderr.write(f"{_PROG}: --effort needs --capability\n")
+        return EXIT_USAGE
     try:
         prepared = _prepare(
             args, env, now_s, deps, cwd, event="pick", write_state=True
@@ -2507,6 +2535,8 @@ def _common_parser() -> argparse.ArgumentParser:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from .capability import EFFORTS as _EFFORTS
+
     common = _common_parser()
     parser = argparse.ArgumentParser(
         prog=_PROG,
@@ -2531,6 +2561,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "it resolves to (from the table `quotapick capabilities --refresh` keeps), "
             "and the payload names that model. With --model, the model is pinned and "
             "only its provider's accounts are considered"
+        ),
+    )
+    pick_parser.add_argument(
+        "--effort",
+        choices=_EFFORTS,
+        default=None,
+        help=(
+            "with --capability: the reasoning effort YOU chose, translated per account. "
+            "Each model gains effort {requested, applied, clamped, supported}; applied is "
+            "the highest supported level at or below the request, else the lowest above "
+            "it. Never changes which account wins"
         ),
     )
     exec_parser = subparsers.add_parser(
@@ -2670,6 +2711,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="with --refresh, call the network sources even if read in the last 15 minutes",
+    )
+    capabilities_parser.add_argument(
+        "--effort",
+        choices=_EFFORTS,
+        default=None,
+        help="translate each cell's model to this reasoning effort, as pick --effort does",
     )
     waste_parser = subparsers.add_parser(
         "waste",
@@ -2944,7 +2991,7 @@ def _cmd_capabilities(
 
     path = cap_mod.table_path(env)
     table, error = cap_mod.read_table(path)
-    rows = _capability_rows(config, table, path, now_s)
+    rows = _capability_rows(config, table, path, now_s, effort=getattr(args, "effort", None))
     if args.json:
         payload = {
             "generated_at": _iso(now_s),
@@ -2963,7 +3010,12 @@ def _cmd_capabilities(
 
 
 def _capability_rows(
-    config: Config, table: Mapping[str, Any] | None, path: Any, now_s: float
+    config: Config,
+    table: Mapping[str, Any] | None,
+    path: Any,
+    now_s: float,
+    *,
+    effort: str | None = None,
 ) -> list[dict[str, Any]]:
     from . import capability as cap_mod
 
@@ -2988,6 +3040,10 @@ def _capability_rows(
         }
         for name in cap_mod.CAPABILITIES:
             result: Any = cap_mod.lookup(table, account.id, name, now_s=now_s, path=path)
+            if effort and isinstance(result, cap_mod.ModelChoice):
+                result = cap_mod.apply_effort(result, effort)
+                if isinstance(result, cap_mod.Unresolved):
+                    result = cap_mod.Unresolved(f"effort {effort}: {result.reason}")
             cap_entry = (
                 entry.get("capabilities", {}).get(name) if isinstance(entry, Mapping) else None
             )
@@ -3049,6 +3105,13 @@ def _format_capability_rows(
                 text = item["model"]["id"]
                 if not item["model"]["listed"]:
                     text += " (unlisted)"
+                effort = item["model"].get("effort")
+                if effort and effort["clamped"]:
+                    text += "!"
+                    notes.append(
+                        f"{row['account']} {name}: effort {effort['requested']} clamped to "
+                        f"{effort['applied']} (supports {', '.join(effort['supported'])})"
+                    )
             else:
                 text = "-"
                 notes.append(f"{row['account']} {name}: {item['reason']}")

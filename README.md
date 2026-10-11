@@ -298,6 +298,7 @@ quotapick exec --only claude_b -- claude -p "..."   # pick, then run
 quotapick launch-plan antigravity_claude_b --json  # how to reach ONE named account
 quotapick waste                          # what expired unused, per account, in PSE
 quotapick pick --capability premium      # provider + account + the model to request
+quotapick pick --capability premium --effort xhigh  # ...translated to YOUR effort level
 quotapick capabilities                   # which model each account resolves, per capability
 ```
 
@@ -852,8 +853,71 @@ antigravity = "none"       # take a provider out of a capability
 An unknown capability, provider, or a selector that belongs to another provider
 (`codex = "opus"`) is a config error, not a silent misroute.
 
+#### Reasoning effort — `--effort`
+
+The caller chooses the effort, because it knows the workload. The router translates the
+effort for each account, because it knows the models. The router never chooses an effort
+itself.
+
+```sh
+$ quotapick pick --capability premium --effort xhigh --dry-run | jq -c \
+    '(.ranked[], .excluded[]) | select(.model) | [.account, .model.id, .model.effort.applied, .model.effort.clamped]'
+["claude_b","claude-opus-5-5","xhigh",false]
+["codex_b","gpt-6-sol","xhigh",false]
+["antigravity_claude","Claude Opus 5.5 (High)","high",true]
+["antigravity_gemini","Gemini 3.1 Pro (High)","high",true]
+```
+
+`--effort` takes `low`, `medium`, `high`, `xhigh` or `max`, on `pick --capability` and on
+`capabilities`. It is an error without `--capability`. Each `model` gains
+`effort: {requested, applied, clamped, supported}`:
+
+- `supported` lists the levels that this model offers, lowest first. It comes from the
+  same lists the capability table already reads:
+  - **Claude:** the catalog's `thinking.effort_options` for the model. Every main-section
+    model offers `low` to `max` today. An overflow model can offer fewer
+    (`claude-opus-4-6` has no `xhigh`), and a model whose `thinking` type is `none` offers
+    none.
+  - **Codex:** the model's `supportedReasoningEfforts` from `model/list`
+    (`supported_reasoning_levels` in `models_cache.json`). `gpt-6-luna` stops at `max`
+    and `gpt-5.5` at `xhigh`. Codex also lists `ultra` ("maximum reasoning with automatic
+    task delegation"). That word is not one of the five, so `supported` leaves it out,
+    and the table keeps the raw list.
+  - **Antigravity:** the labels that `agy models` lists for the same model.
+    `Gemini 3.1 Pro` has Low and High only, and `GPT-OSS 120B` has Medium only.
+- `applied` is the highest supported level at or below `requested`. If no supported level
+  is that low, it is the lowest supported level above it. So `medium` on Gemini 3.1 Pro
+  applies `low`, and `low` on GPT-OSS 120B applies `medium`.
+- `clamped` is `true` when `applied` differs from `requested`.
+- On Antigravity the effort is part of the label, so `model.id` becomes the label at
+  `applied`, for example `Gemini 3.1 Pro (Low)`. Without `--effort` it stays the `(High)`
+  label. Claude Code and Codex take the effort as a flag, so their `id` never changes.
+
+**A clamp is reported, and it does not lower the account's rank.** Each clamp shows in
+its row's `effort.clamped`, and `warnings` gains one line that names every clamped
+account: `effort xhigh clamped on 4 accounts: antigravity_claude -> high, ...`. The ranking
+stays a quota decision, so `--effort` never changes which account wins or the order of
+`ranked`. There are two reasons. First, a demotion would make the router trade quota
+against effort fidelity, and that tradeoff belongs to the caller, who chose the effort.
+Second, a flag that only translates can be adopted without re-checking routing. A caller
+that needs the exact level walks `ranked` to the first row with `clamped: false`.
+
+**A model with unknown levels is excluded, never guessed.** If the table records no levels
+for a model, or the model offers none of the five, the account is excluded with the
+reason, for example `effort max: claude-haiku-4-5-20251001 takes no effort level`. This is
+the only way `--effort` can change the decision. The levels are stored with each committed
+resolution, so a debounced model keeps its levels while a flapping list briefly drops it.
+A table written before effort support gains the levels on the next refresh: the refresher
+re-reads Codex at once, and fills the other providers from the lists it already holds.
+
+Without `--effort`, every byte of `pick --capability` and `capabilities --json` output is
+unchanged, and `contract_version` stays `1`.
+`tests/fixtures/golden/pick_capability_premium.json` and `capabilities_json.json` were
+generated before the flag existed, and they pin that.
+
 Python: `select_account(capability="premium")` sets `Selection.capability` and
 `Selection.model` (a `ModelChoice`); `Selection.ranked` rows carry `model` dicts.
+`select_account(capability="premium", effort="xhigh")` adds `Selection.model.effort`.
 
 #### Antigravity pools as a last resort
 
@@ -1155,8 +1219,8 @@ The pre-publication check ran on 2026-09-06: the history holds no account
 emails or identity keys outside the synthetic fixtures, and the only absolute
 home paths describe the author's machine in `AGENTS.md`. `contract_version` is
 now a public stability commitment. Keys that appear only under a new opt-in flag
-(`--capability`) are additive within version 1: a consumer that never passes the
-flag sees byte-identical output.
+(`--capability`, `--effort`) are additive within version 1: a consumer that never
+passes the flag sees byte-identical output.
 
 Upstreaming the scorer into `claude-swap` is a live alternative to publishing
 separately, and would likely reach more people with less maintenance — both

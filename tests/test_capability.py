@@ -33,6 +33,7 @@ CATALOG_MODELS = [
     ("claude-opus-5", "overflow"),
     ("claude-fable-5", "overflow"),
     ("claude-opus-4-8", "overflow"),
+    ("claude-opus-4-6", "overflow"),
 ]
 
 CODEX_LIST = [
@@ -47,6 +48,25 @@ CODEX_LIST = [
     ("codex-auto-review", True),
 ]
 
+#: ``supportedReasoningEfforts`` per slug, as model/list returned them on 2026-10-10. A
+#: slug missing here gets ``CODEX_EFFORTS_DEFAULT``.
+CODEX_EFFORTS_DEFAULT = ("low", "medium", "high", "xhigh", "max", "ultra")
+CODEX_EFFORTS = {
+    "gpt-6-luna": ("low", "medium", "high", "xhigh", "max"),
+    "gpt-reserve": ("low", "medium", "high", "xhigh", "max"),
+    "gpt-5.6-luna": ("low", "medium", "high", "xhigh", "max"),
+    "gpt-5.5": ("low", "medium", "high", "xhigh"),
+    "codex-auto-review": ("low", "medium", "high", "xhigh", "max"),
+}
+
+#: ``thinking`` per catalog id, as the Claude Code catalog carried it on 2026-10-10.
+#: ``None`` is ``{"type": "none"}``; an id missing here offers low..max.
+CATALOG_EFFORTS_DEFAULT = ("low", "medium", "high", "xhigh", "max")
+CATALOG_EFFORTS = {
+    "claude-haiku-4-5-20251001": None,
+    "claude-opus-4-6": ("low", "medium", "high", "max"),
+}
+
 AGY_OUTPUT = (
     "Fetching available models...\n"
     "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
@@ -57,6 +77,7 @@ AGY_OUTPUT = (
     "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
     "claude-opus-5-5-high\tClaude Opus 5.5 (High)\n"
     "claude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n"
+    "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
 )
 
 MIN = 60.0
@@ -65,6 +86,13 @@ MIN = 60.0
 # ======================================================================================
 # Fixtures
 # ======================================================================================
+
+
+def _thinking(model_id: str) -> dict:
+    levels = CATALOG_EFFORTS.get(model_id, CATALOG_EFFORTS_DEFAULT)
+    if levels is None:
+        return {"type": "none"}
+    return {"type": "effort", "effort_options": [{"id": level, "name": level.title()} for level in levels]}
 
 
 def _write_catalog(config_dir: Path, org: str, models, fetched_s: float, suffix="aaaa") -> Path:
@@ -77,7 +105,11 @@ def _write_catalog(config_dir: Path, org: str, models, fetched_s: float, suffix=
                 "fetchedAt": int(fetched_s * 1000),
                 "catalog": {
                     "surface": "cc",
-                    "config": {"models": [{"id": i, "section": s} for i, s in models]},
+                    "config": {
+                        "models": [
+                            {"id": i, "section": s, "thinking": _thinking(i)} for i, s in models
+                        ]
+                    },
                 },
             }
         )
@@ -168,7 +200,17 @@ class FakeIO:
         if self.codex_error:
             raise self.codex_error
         return {
-            "data": [{"id": slug, "hidden": hidden} for slug, hidden in self.codex[account.account_id]],
+            "data": [
+                {
+                    "id": slug,
+                    "hidden": hidden,
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": level, "description": level}
+                        for level in CODEX_EFFORTS.get(slug, CODEX_EFFORTS_DEFAULT)
+                    ],
+                }
+                for slug, hidden in self.codex[account.account_id]
+            ],
             "nextCursor": None,
         }
 
@@ -735,3 +777,122 @@ def test_doctor_warns_about_a_recent_move(env, tmp_path, agy_on_path):
         _refresh(env, tmp_path, io, now_s=NOW + minute * MIN)
     premium = _doctor(env, NOW + 46 * MIN)["capability[premium]"]
     assert "codex_b moved gpt-6-sol -> gpt-6.1-sol" in premium.detail
+
+
+# ======================================================================================
+# Reasoning effort: the app chooses it, the router translates it per account
+# ======================================================================================
+
+LOW_TO_MAX = ["low", "medium", "high", "xhigh", "max"]
+
+
+@pytest.mark.parametrize(
+    ("requested", "supported", "applied"),
+    [
+        ("xhigh", LOW_TO_MAX, "xhigh"),
+        ("max", ["low", "medium", "high", "xhigh"], "xhigh"),  # gpt-5.5 stops at xhigh
+        ("xhigh", ["low", "high"], "high"),  # Gemini 3.1 Pro: Low and High only
+        ("medium", ["low", "high"], "low"),  # the highest at or below wins over above
+        ("low", ["medium"], "medium"),  # GPT-OSS 120B: nothing at or below, so go up
+        ("max", ["medium"], "medium"),
+    ],
+)
+def test_an_effort_clamps_to_the_highest_supported_level_at_or_below_it(
+    requested, supported, applied
+):
+    assert cap.clamp_effort(requested, supported) == applied
+
+
+def test_agy_effort_ids_are_the_sibling_labels_of_one_model():
+    entries = [tuple(line.split("\t")) for line in AGY_OUTPUT.splitlines()[1:]]
+    listing = cap.Listing("antigravity", "agy_models", NOW, "agy models", tuple(entries))
+    assert cap.effort_ids(listing, "Gemini 3.1 Pro (High)") == {
+        "low": "Gemini 3.1 Pro (Low)", "high": "Gemini 3.1 Pro (High)",
+    }
+    assert cap.effort_ids(listing, "GPT-OSS 120B (Medium)") == {"medium": "GPT-OSS 120B (Medium)"}
+    # Same version prefix, another line: 3.8 Flash never borrows 3.1 Pro's labels.
+    assert set(cap.effort_ids(listing, "Gemini 3.8 Flash (High)")) == {"low", "high"}
+    assert cap.effort_ids(listing, "Gemini 9 Ultra (High)") is None  # not listed: unknown
+
+
+def test_the_refresher_records_each_committed_models_effort_levels(env, tmp_path, agy_on_path):
+    _refresh(env, tmp_path, FakeIO())
+
+    # Claude: the catalog's thinking.effort_options, per model.
+    assert _committed(env, "claude", "premium")["effort_ids"] == {
+        level: "claude-opus-5-5" for level in LOW_TO_MAX
+    }
+    # A model whose catalog says thinking "none" takes no effort at all: {} is not "unknown".
+    assert _committed(env, "claude", "fast")["effort_ids"] == {}
+    # Codex: model/list's supportedReasoningEfforts. "ultra" is outside the vocabulary.
+    assert _committed(env, "codex", "premium")["effort_ids"] == {
+        level: "gpt-6-sol" for level in LOW_TO_MAX
+    }
+    # Antigravity: the labels agy lists for the same model.
+    assert _committed(env, "antigravity_gemini", "premium")["effort_ids"] == {
+        "low": "Gemini 3.1 Pro (Low)", "high": "Gemini 3.1 Pro (High)",
+    }
+    assert _committed(env, "antigravity_claude", "premium")["effort_ids"] == {
+        "low": "Claude Opus 5.5 (Low)", "high": "Claude Opus 5.5 (High)",
+    }
+
+
+def test_the_models_cache_fallback_carries_effort_levels_too(env, tmp_path, home, agy_on_path):
+    (home / ".codex" / "models_cache.json").write_text(json.dumps({
+        "fetched_at": "2026-08-14T20:00:00Z",
+        "models": [{
+            "slug": "gpt-6-luna", "visibility": "list",
+            "supported_reasoning_levels": [
+                {"effort": level, "description": level} for level in LOW_TO_MAX
+            ],
+        }],
+    }))
+    io = FakeIO(codex_error=RuntimeError("app-server exited"))
+    _refresh(env, tmp_path, io, now_s=1_786_744_800.0)  # 2026-08-14T21:20Z
+
+    entry = _committed(env, "codex", "fast")
+    assert (entry["source"], entry["effort_ids"]) == (
+        "codex_models_cache", {level: "gpt-6-luna" for level in LOW_TO_MAX},
+    )
+
+
+def test_a_model_list_entry_without_effort_levels_is_unknown_not_empty(env, tmp_path, agy_on_path):
+    io = FakeIO()
+    real = io.codex_model_list
+
+    def without_efforts(account, env_, timeout_s):
+        result = real(account, env_, timeout_s)
+        for model in result["data"]:
+            model.pop("supportedReasoningEfforts")
+        return result
+
+    io.codex_model_list = without_efforts
+    _refresh(env, tmp_path, io)
+    assert _committed(env, "codex", "premium")["effort_ids"] is None
+
+
+def test_a_table_from_before_effort_support_gains_effort_levels_on_the_next_refresh(
+    env, tmp_path, agy_on_path
+):
+    io = FakeIO()
+    _refresh(env, tmp_path, io)
+    # Rewrite the table as 446de00 wrote it: no efforts on a list, no effort_ids on a
+    # resolution.
+    path = cap.table_path(env)
+    table = json.loads(path.read_text())
+    for entry in table["accounts"].values():
+        entry["list"].pop("efforts", None)
+        for cap_entry in entry["capabilities"].values():
+            cap_entry["committed"].pop("effort_ids", None)
+    path.write_text(json.dumps(table))
+
+    # Five minutes later: inside the 15-minute network interval, and no new catalog.
+    _refresh(env, tmp_path, io, now_s=NOW + 5 * MIN)
+
+    # Codex is re-read early because its stored list cannot answer an effort question.
+    assert io.codex_calls == ["codex", "codex_b"] * 2
+    assert len(io.runs) == 3  # agy is not: its labels already carry the effort
+    for account, capability in [
+        ("claude", "premium"), ("codex", "premium"), ("antigravity_gemini", "premium"),
+    ]:
+        assert _committed(env, account, capability)["effort_ids"], (account, capability)

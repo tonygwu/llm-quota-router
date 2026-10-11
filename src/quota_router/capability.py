@@ -28,7 +28,7 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
@@ -39,14 +39,18 @@ __all__ = [
     "CAPABILITIES",
     "CAPABILITY_PROVIDERS",
     "DEFAULT_TABLE",
+    "EFFORTS",
     "Listing",
     "ModelChoice",
     "Unresolved",
     "antigravity_flavour",
+    "apply_effort",
     "choose_agy_claude",
     "choose_claude",
     "choose_codex",
     "choose_gemini",
+    "clamp_effort",
+    "effort_ids",
     "lookup",
     "observe",
     "pool",
@@ -93,10 +97,20 @@ DEFAULT_TABLE: Final[Mapping[str, Mapping[str, str]]] = {
     "frontier": {PROVIDER_CLAUDE: "fable", PROVIDER_CODEX: "astra", PROVIDER_ANTIGRAVITY: NONE},
 }
 
-#: Antigravity labels carry the effort. The table names the High variant, Gemini and
-#: Claude alike; a client that wants another effort rewrites the suffix, as digital-twin
-#: already does.
+#: Antigravity labels carry the effort. The table resolves the High variant, Gemini and
+#: Claude alike. ``pick --effort`` swaps in the sibling label at the applied level (see
+#: :func:`effort_ids`); without it, the High label is what a caller gets.
 AGY_EFFORT: Final[str] = "high"
+
+#: The reasoning-effort words a caller may request, lowest first. The caller chooses the
+#: level, because it knows the workload; this module only translates it per account,
+#: because it knows the models. It never chooses a level itself.
+EFFORTS: Final[tuple[str, ...]] = ("low", "medium", "high", "xhigh", "max")
+
+#: An ``agy models`` id ends in its effort: ``gemini-3.1-pro-low``, ``gpt-oss-120b-medium``.
+_AGY_EFFORT_ID: Final[re.Pattern[str]] = re.compile(
+    rf"^(?P<base>.+)-(?P<effort>{'|'.join(EFFORTS)})$"
+)
 
 
 def validate_table(raw: Any) -> dict[str, dict[str, str]]:
@@ -274,6 +288,10 @@ class Listing:
         location: The file or command, for messages.
         entries: Claude ``(id, section)``; Codex ``(slug, "list"|"hide")``; Antigravity
             ``(id, label)``.
+        efforts: Claude and Codex: ``(id, levels)`` for each model whose source gave its
+            effort levels, verbatim and in source order (Codex lists ``ultra`` too). A
+            model the source gave none for is absent. ``None`` for a list written before
+            effort support, and for Antigravity, whose ids carry the effort themselves.
     """
 
     provider: str
@@ -281,15 +299,19 @@ class Listing:
     fetched_at_s: float | None
     location: str
     entries: tuple[tuple[str, str], ...]
+    efforts: tuple[tuple[str, tuple[str, ...]], ...] | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "provider": self.provider,
             "source": self.source,
             "fetched_at": self.fetched_at_s,
             "location": self.location,
             "entries": [list(entry) for entry in self.entries],
         }
+        if self.efforts is not None:
+            out["efforts"] = {model_id: list(levels) for model_id, levels in self.efforts}
+        return out
 
     @classmethod
     def from_json(cls, raw: Any) -> "Listing | None":
@@ -304,8 +326,16 @@ class Listing:
                 ),
                 location=str(raw["location"]),
                 entries=tuple((str(a), str(b)) for a, b in raw["entries"]),
+                efforts=(
+                    None
+                    if raw.get("efforts") is None
+                    else tuple(
+                        (str(model_id), tuple(str(level) for level in levels))
+                        for model_id, levels in raw["efforts"].items()
+                    )
+                ),
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             return None
 
 
@@ -315,6 +345,10 @@ class ModelChoice:
 
     ``listed`` means the id was in the account's server-provided list at refresh time.
     It is not proof of what the vendor will serve.
+
+    ``effort_ids`` maps each effort level the model offers to the id to request at that
+    level (see :func:`effort_ids`); it is internal and never serialized. ``effort`` is set
+    only by :func:`apply_effort`, and only then does :meth:`to_dict` carry it.
     """
 
     id: str
@@ -325,9 +359,11 @@ class ModelChoice:
     listed: bool
     since_s: float | None = None
     note: str | None = None
+    effort_ids: Mapping[str, str] | None = field(default=None, compare=False)
+    effort: Mapping[str, Any] | None = field(default=None, hash=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "id": self.id,
             "family": self.family,
             "provider": self.provider,
@@ -337,6 +373,10 @@ class ModelChoice:
             "since": _iso(self.since_s),
             "note": self.note,
         }
+        # Additive: a caller that never passes --effort sees exactly the keys above.
+        if self.effort is not None:
+            out["effort"] = {**self.effort, "supported": list(self.effort["supported"])}
+        return out
 
 
     @classmethod
@@ -351,6 +391,7 @@ class ModelChoice:
             listed=bool(raw.get("listed")),
             since_s=_epoch(raw.get("since")),
             note=raw.get("note"),
+            effort=raw.get("effort"),
         )
 
 
@@ -381,6 +422,9 @@ def _resolution(
         "listed": listed,
         "note": note,
         "selector": selector,
+        # Stored with the resolution, so a debounced id keeps its own levels while a
+        # flapping list briefly drops it.
+        "effort_ids": effort_ids(listing, model_id) if (model_id and listing) else None,
     }
 
 
@@ -493,6 +537,89 @@ def resolve(
     return _resolution(
         model_id=None, reason=f"provider {provider!r} has no model list",
         family=None, listing=listing, selector=selector,
+    )
+
+
+# ======================================================================================
+# Reasoning effort (pure)
+# ======================================================================================
+
+
+def effort_ids(listing: Listing, model_id: str) -> dict[str, str] | None:
+    """For each effort level ``model_id`` offers on this listing, the id to request.
+
+    Claude Code and Codex take the effort as a flag, so every level maps to ``model_id``
+    itself. agy spells the effort into the label, so each level maps to a sibling label of
+    the same model: ``Gemini 3.1 Pro (High)`` gives ``{"low": "Gemini 3.1 Pro (Low)",
+    "high": "Gemini 3.1 Pro (High)"}``. Levels outside :data:`EFFORTS` (Codex's ``ultra``)
+    are left out.
+
+    Returns:
+        ``None`` when the listing cannot say: it predates effort support, its source gave
+        no levels for this model, or the model is not on it. ``{}`` when the model takes no
+        effort level at all (a Claude catalog ``thinking`` of type ``none``). The two are
+        kept apart because only the first can be fixed by a refresh.
+    """
+    if listing.provider == PROVIDER_ANTIGRAVITY:
+        own = next((agy_id for agy_id, label in listing.entries if label == model_id), None)
+        if own is None:
+            return None
+        found = _AGY_EFFORT_ID.match(own)
+        if found is None:
+            return {}
+        siblings = {
+            match.group("effort"): label
+            for agy_id, label in listing.entries
+            if (match := _AGY_EFFORT_ID.match(agy_id)) and match.group("base") == found.group("base")
+        }
+        return {level: siblings[level] for level in EFFORTS if level in siblings}
+    if listing.efforts is None:
+        return None
+    levels = dict(listing.efforts).get(model_id)
+    if levels is None:
+        return None
+    return {level: model_id for level in EFFORTS if level in levels}
+
+
+def clamp_effort(requested: str, supported: Sequence[str]) -> str:
+    """The highest supported level at or below ``requested``, else the lowest above it.
+
+    Raises:
+        ValueError: ``requested`` or a supported level is not in :data:`EFFORTS`, or
+            ``supported`` is empty. :func:`apply_effort` handles the empty case first.
+    """
+    if not supported:
+        raise ValueError("no supported effort level to clamp to")
+    ordered = sorted(supported, key=EFFORTS.index)
+    at_or_below = [level for level in ordered if EFFORTS.index(level) <= EFFORTS.index(requested)]
+    return at_or_below[-1] if at_or_below else ordered[0]
+
+
+def apply_effort(choice: ModelChoice, requested: str) -> ModelChoice | Unresolved:
+    """``choice`` translated to the caller's effort, or why it cannot be.
+
+    The id changes only where the effort lives in the id (agy labels). Every clamp is
+    reported in ``effort.clamped``; a model with no known levels is unresolved, never
+    given a guessed one.
+    """
+    if choice.effort_ids is None:
+        return Unresolved(
+            f"the capability table records no effort levels for {choice.id}; "
+            "`quotapick capabilities --refresh` records them when the model list gives them"
+        )
+    supported = [level for level in EFFORTS if level in choice.effort_ids]
+    if not supported:
+        return Unresolved(f"{choice.id} takes no effort level ({', '.join(EFFORTS)})")
+    applied = clamp_effort(requested, supported)
+    return replace(
+        choice,
+        id=choice.effort_ids[applied],
+        effort={
+            "requested": requested,
+            "applied": applied,
+            "clamped": applied != requested,
+            "supported": supported,
+        },
     )
 
 
@@ -707,6 +834,11 @@ def lookup(
         listed=bool(committed.get("listed")),
         since_s=committed.get("since"),
         note=committed.get("note"),
+        effort_ids=(
+            {str(k): str(v) for k, v in committed["effort_ids"].items()}
+            if isinstance(committed.get("effort_ids"), Mapping)
+            else None
+        ),
     )
 
 

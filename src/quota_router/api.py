@@ -130,6 +130,7 @@ def select_account(
     cwd: str | None = None,
     deps: Any = None,
     capability: str | None = None,
+    effort: str | None = None,
 ) -> Selection:
     """Choose which account to spend on this invocation.
 
@@ -151,6 +152,11 @@ def select_account(
             --refresh`` keeps and nothing else. With ``model``, that model is pinned and
             only its provider's accounts are considered. A provider the caller cannot
             use may still win; pass ``only`` or walk :attr:`Selection.ranked`.
+        effort: With ``capability``: ``"low"``, ``"medium"``, ``"high"``, ``"xhigh"`` or
+            ``"max"``, the reasoning effort the caller chose. Each model is translated
+            for its account and gains ``effort`` (``requested``, ``applied``,
+            ``clamped``, ``supported``); an Antigravity id becomes the label at
+            ``applied``. It never changes which account wins.
 
     Returns:
         A :class:`Selection`. **This function does not raise on routing failure** --
@@ -164,8 +170,16 @@ def select_account(
         raise ValueError(
             f"unknown capability {capability!r} (known: fast, standard, premium, frontier)"
         )
+    if effort is not None:
+        from .capability import EFFORTS
+
+        if capability is None:
+            raise ValueError("effort needs a capability")
+        if effort not in EFFORTS:
+            raise ValueError(f"unknown effort {effort!r} (known: {', '.join(EFFORTS)})")
     args = SimpleNamespace(
         capability=capability,
+        effort=effort,
         model=model,
         # argparse declares --only/--exclude with action="append", so _split_list
         # expects an ITERABLE OF STRINGS. Handing it one joined string makes it
