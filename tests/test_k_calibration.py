@@ -27,6 +27,8 @@ is responsible.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from quota_router.history import estimate_weekly_to_session
@@ -562,6 +564,51 @@ def test_a_configured_k_round_trips_from_toml(tmp_path) -> None:
     )
     cfg = load_config(env={}, explicit_path=path)
     assert cfg.accounts["claude_c"].weekly_to_session == pytest.approx(9.8)
+
+
+def test_a_configured_k_reaches_a_real_pick(tmp_path) -> None:
+    """The test above hands ``plan_for`` a ``Config``; ``pick`` never does.
+
+    ``pick`` hands the scorer ``Config.engine_cfg()``, a plain mapping with no
+    ``accounts`` key, so ``plan_for`` found no account and every pick used the default
+    6.25. The live ``claude_c = 9.8`` was ignored by routing from the commit that added
+    it, while ``status`` stamped 9.8 on the same account's waste rows.
+
+    Two identical accounts, one configured to 9.8. The weekly pool is untouched, so the
+    PSE at risk is ``k - absorbable`` and the absorbable term is the same for both: the
+    scores must differ by exactly 9.8 - 6.25.
+    """
+    from quota_router import cli
+    from tests.test_cli import FIVE_HOURS, _NO_CONFIG_FILES, account, run, window
+
+    path = tmp_path / "config.toml"
+    path.write_text("[accounts.claude_c]\nweekly_to_session = 9.8\n", encoding="utf-8")
+    env = {
+        "HOME": str(tmp_path / "home"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "PATH": "/usr/bin:/bin",
+    }
+
+    def fresh(account_id):
+        return account(
+            account_id,
+            window("5h", 0.0, length_s=FIVE_HOURS, resets_in_s=3600),
+            window("7d", 0.0, resets_in_s=3 * 24 * 3600),
+        )
+
+    code, out, err = run(
+        ["pick", "--config", str(path), "--dry-run", "--json"],
+        env,
+        snapshots=(fresh("claude_b"), fresh("claude_c")),
+        cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    payload = json.loads(out)
+    scores = {row["account"]: row["score"] for row in payload["ranked"]}
+
+    assert scores["claude_c"] - scores["claude_b"] == pytest.approx(9.8 - 6.25), scores
+    assert payload["decision"]["account"] == "claude_c"
 
 
 def test_a_k_below_one_is_rejected_rather_than_quietly_scoring(tmp_path) -> None:

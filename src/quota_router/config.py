@@ -707,6 +707,13 @@ class Config:
             # Read by the selection layer, the single place the preference is applied,
             # so pick, exec, the library and both launchers all rank the same way.
             "deprioritized_accounts": list(self.deprioritized_accounts()),
+            # Read by scoring.plan_for. Without it every pick scored every account with
+            # the default k, and a calibrated weekly_to_session changed only status.
+            "accounts": {
+                account_id: {"weekly_to_session": account.weekly_to_session}
+                for account_id, account in self.accounts.items()
+                if account.weekly_to_session is not None
+            },
         }
 
     def tier_override_warnings(self) -> tuple[str, ...]:
