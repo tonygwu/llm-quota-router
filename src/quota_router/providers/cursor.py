@@ -22,8 +22,9 @@ has `status|whoami` and `about`, and neither reports quota. These are their comp
     }
 
 No window, no percentage, no reset time, anywhere. So this adapter reports an
-**unobservable** account, exactly as :mod:`quota_router.providers.antigravity` does:
-no windows and ``confidence=0.0``. Inventing a number here would be how a router
+**unobservable** account, as :mod:`quota_router.providers.antigravity` did before agy
+gained a ``/usage`` command (and still does when that read fails): no windows and
+``confidence=0.0``. Inventing a number here would be how a router
 silently sends every call to an exhausted account.
 
 Identity is read from ``~/.cursor/cli-config.json`` (``authInfo.email``) rather than by

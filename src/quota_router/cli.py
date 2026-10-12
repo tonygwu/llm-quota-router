@@ -196,6 +196,7 @@ def _load_oracle() -> tuple[Callable[..., Any] | None, str | None]:
                 env=kwargs.get("env"),
                 run=kwargs.get("run"),
                 timeout_s=kwargs.get("timeout_s"),
+                allow_slow_reads=bool(kwargs.get("allow_slow_reads")),
             )
             return collect(adapters, kwargs["now_s"])
 
@@ -216,6 +217,7 @@ def _configure_adapters(
     env: Mapping[str, str] | None,
     run: Callable[..., Any] | None,
     timeout_s: float | None,
+    allow_slow_reads: bool = False,
 ) -> tuple[Any, ...]:
     """Rebuild the providers layer's standard adapters with this run's settings.
 
@@ -237,6 +239,12 @@ def _configure_adapters(
     declares that name, so :func:`_supported_kwargs` dropped it without a word and the
     adapters fell back to the builtin ``~/.claude*`` directories. An operator who
     declared an account beyond those builtins got it silently ignored.
+
+    ``allow_slow_reads`` is true for ``status`` alone. It lets the Antigravity adapter
+    spawn ``agy -p /usage``, which takes about 4s: more than the 3s ``cl`` and ``cdx``
+    give a whole pick. Every other command serves that adapter's cached reading. The
+    ``--timeout-ms`` oracle budget does not shorten that read: it bounds the pick path,
+    and this read is never on it.
     """
     live_cls = getattr(providers, "ClaudeOAuthAdapter", None)
     cursor_cls = getattr(providers, "CursorAdapter", None)
@@ -246,6 +254,7 @@ def _configure_adapters(
     from_policy = getattr(providers, "claude_configs_from_policy", None)
     codex_from_policy = getattr(providers, "codex_accounts_from_policy", None)
     ids_for_provider = getattr(providers, "account_ids_for_provider", None)
+    plans_for_provider = getattr(providers, "accounts_for_provider", None)
 
     claude_configs: tuple[Any, ...] | None = None
     if config is not None and callable(from_policy):
@@ -264,6 +273,12 @@ def _configure_adapters(
         cursor_accounts = ids_for_provider(config, PROVIDER_CURSOR) or None
         antigravity_accounts = ids_for_provider(config, PROVIDER_ANTIGRAVITY) or None
 
+    # The Antigravity pools' launch plans: one /usage read per Google account, made the
+    # way `exec` would reach that account.
+    antigravity_plans: tuple[Any, ...] | None = None
+    if config is not None and callable(plans_for_provider):
+        antigravity_plans = tuple(plans_for_provider(config, PROVIDER_ANTIGRAVITY)) or None
+
     out: list[Any] = []
 
     for adapter in adapters:
@@ -279,6 +294,8 @@ def _configure_adapters(
             settings["account_ids"] = cursor_accounts
         elif antigravity_cls is not None and cls is antigravity_cls:
             settings["account_ids"] = antigravity_accounts
+            settings["accounts"] = antigravity_plans
+            settings["live"] = allow_slow_reads
         elif codex_cls is not None and cls is codex_cls:
             settings["codex_accounts"] = codex_accounts
         elif codex_live_cls is not None and cls is codex_live_cls:
@@ -480,12 +497,17 @@ def _fetch_snapshots(
     now_s: float,
     warnings: list[str],
     degraded: list[dict[str, Any]],
+    *,
+    slow_reads: bool = False,
 ) -> tuple[AccountSnapshot, ...]:
     """Read ground truth, falling back to the history cache, then to nothing.
 
     Three tiers, each strictly worse than the last and each *reported*: a live oracle
     read; the most recent history record replayed as ``source="cache"``; or an empty set,
     which routes on config alone and says so.
+
+    ``slow_reads`` lets a source that takes seconds read live (``status`` only); see
+    :func:`_configure_adapters`.
     """
     loader = deps.load_snapshots
     if loader is not None:
@@ -498,6 +520,7 @@ def _fetch_snapshots(
             "run": deps.run,
             "runner": deps.run,
             "accounts": config.enabled_accounts(),
+            "allow_slow_reads": slow_reads,
         }
         try:
             result = loader(**_supported_kwargs(loader, candidates))
@@ -1216,9 +1239,11 @@ UNKNOWN_DEADLINE_COOLDOWN_S: Final[float] = 3600.0
 def _fallback_only(prepared: Prepared, ctx: CapabilityContext, warnings: list[str]) -> Decision:
     """Let an ``unmetered = "fallback"`` account serve, only when nothing measured can.
 
-    Its quota is invisible, so it never competes with a measured account. It is
-    eligible only when no measured account fits and ``report-failure`` has not put it
-    in cooldown.
+    This governs such an account only while its snapshot has no windows. Its quota is
+    then invisible, so it never competes with a measured account: it is eligible only
+    when no measured account fits and ``report-failure`` has not put it in cooldown.
+    Once its source reports windows (an Antigravity pool read through agy's ``/usage``
+    since 2026-10-12), it is scored like any other account and is not touched here.
     """
     config = prepared.config
     decision = prepared.decision
@@ -1348,7 +1373,11 @@ def _prepare(
                 f"`{_PROG} exec` unsets it for the child process"
             )
 
-    snapshots = _fetch_snapshots(config, deps, env, now_s, warnings, degraded)
+    # Only `status` may wait on a slow live read: the launchd poller runs it, nobody is
+    # waiting, and it keeps the cache that every pick then reads.
+    snapshots = _fetch_snapshots(
+        config, deps, env, now_s, warnings, degraded, slow_reads=event == "status"
+    )
 
     for snapshot in snapshots:
         # An account the router could not read is degraded data, not merely an
@@ -2861,9 +2890,8 @@ def _cmd_launch_plan(
     """How to launch ONE NAMED account. No routing, no measurement, no reservation.
 
     This is the command a consumer calls when it already knows which account it
-    wants and only needs to be told how to reach it -- which is the whole of the
-    Antigravity case, because both Antigravity pools report confidence 0.0 and there
-    is no headroom to route on. Asking `pick --only <id>` instead would book a
+    wants and only needs to be told how to reach it -- for example an Antigravity
+    pool pinned by a caller. Asking `pick --only <id>` instead would book a
     reservation and could still answer with a different account, or none.
 
     It reads the config and nothing else: no Keychain, no network, no history. So it

@@ -79,18 +79,37 @@ each one differs, and it never pretends otherwise:
 | `claude` | many, one config directory each | **yes**, real windows | vendor usage endpoint, statusline cache |
 | `codex` | many, one `CODEX_HOME` each | **yes**, real windows | `codex app-server` rate-limit read; session transcript tails as fallback |
 | `cursor` | many, one API key each | **no** | `~/.cursor/cli-config.json`, identity only |
-| `antigravity` | two pools behind one binary, **opt-in** | **no** | nothing; failure-learned deadlines only |
+| `antigravity` | two pools per Google account, **opt-in** | **yes**, real windows (read by `status` only) | `agy -p "/usage" --output-format json`; failure-learned deadlines too |
 
 "Usage readable: no" is a statement about the vendor, not a gap to be filled by
 estimating. Cursor's CLI has `status` and `about`, and neither reports a quota
-figure; Antigravity exposes nothing at all. Those accounts carry no windows and
-`confidence=0.0`, so they are routable but never scored as if measured.
-`quotapick status` lists them under **not measurable**, with the reason, rather
-than giving them a table row that would read as "measured, and empty".
+figure. Such accounts carry no windows and `confidence=0.0`, so they are routable
+but never scored as if measured. `quotapick status` lists them under **not
+measurable**, with the reason, rather than giving them a table row that would read
+as "measured, and empty".
 
-Antigravity is the one provider that is **not** configured by default. It
-publishes no quota anywhere, so declare the pools if you want them; `AGY_MODEL`
-is the pool selector, and a value containing `claude` means the Claude pool:
+Antigravity was in that position until 2026-10-12: agy exposed no usage command and
+wrote no quota anywhere on disk. agy 1.3.3 answers `/usage` headlessly, in about 4s,
+with no agent turn and no tokens spent. One call reports both pools of one Google
+account: the `Gemini Models` group maps to the Gemini pool and `Claude and GPT
+models` to the Claude pool, each with a weekly and a 5-hour window. The router reads
+it strictly. A response is used only when agy exits 0 with `status: SUCCESS`,
+`command.name: usage` and `num_turns: 0`; an unknown group or window is a warning,
+and the affected pool gets no windows, never a guess. The response names no account,
+so which Google account answered rests on the launch recipe and your
+`identity_email`, not on anything the router can check.
+
+That read takes longer than the 3s `cl` and `cdx` give a whole pick, so only
+`quotapick status` makes it, which the launchd poller runs every 120s. It is reused
+for 120s, and every other command serves it from the usage cache with its age
+(`source: cache`), or reports no reading when the cache is missing, older than 5h,
+made with a different launch recipe, or recorded a failed read. A pool without a
+reading behaves exactly as before: no windows, `confidence=0.0`.
+
+Antigravity is the one provider that is **not** configured by default, because
+reaching each Google account needs a launch recipe only you can state. Declare the
+pools if you want them; `AGY_MODEL` is the pool selector, and a value containing
+`claude` means the Claude pool:
 
 ```toml
 # ~/.config/quota-router/config.toml
@@ -154,8 +173,9 @@ $ quotapick launch-plan antigravity_claude_b --json
 
 `launch-plan` reads config and nothing else — no Keychain, no network, no usage
 oracle — so it still answers when every oracle is down, and it books no
-reservation. Use it rather than `pick --only <id>`: both Antigravity pools carry
-`confidence=0.0`, so `pick` has nothing to rank them on and declines them.
+reservation. Use it rather than `pick --only <id>` when you have already chosen the
+pool: `pick` books a reservation, and it declines a pool that has no `/usage`
+reading. The router's own `/usage` read is built from this same recipe.
 
 The recipe has **three** parts, and the same three now appear in `exec` on every
 `pick --json` payload. A consumer that applies only `env` is correct for every
@@ -921,8 +941,10 @@ Python: `select_account(capability="premium")` sets `Selection.capability` and
 
 #### Antigravity pools as a last resort
 
-Antigravity publishes no usage reading, so by default a pool never wins. Marking one lets a
-capability request use it only when no measured account can serve:
+A pool with a `/usage` reading is measured, and is scored like any other account; this
+section does not apply to it. A pool WITHOUT a reading (its read failed, or `status` has not
+run yet) has no windows, so by default it never wins. Marking one lets a capability request
+use it, while it has no reading, only when no measured account can serve:
 
 ```toml
 [accounts.antigravity_gemini]
@@ -935,7 +957,8 @@ its Claude label.
 
 It is then ranked first with `fits: true` and a warning that its quota is unmeasured. It
 never competes with a measured account, a caller's `--min-remaining` keeps it out (an
-unknown figure cannot meet a floor), and without `--capability` nothing changes.
+unknown figure cannot meet a floor), and without `--capability` nothing changes. Once its
+`/usage` reading returns, it competes normally again.
 
 When its call fails, tell the router:
 
@@ -946,8 +969,10 @@ quotapick report-failure antigravity_gemini --text "Individual quota reached. ..
 The text goes through the same classifier the rest of the package uses. An account-wide
 exhaustion keeps the pool out of capability picks until the reset the message names, or
 for an hour when it names none; a transient failure or a limit on one model class records
-nothing. Only `unmetered = "fallback"` accounts are accepted: a measured account already has
-live readings, and a second, failure-learned source could disagree with them.
+nothing. Only `unmetered = "fallback"` accounts are accepted: an account that is always
+measured already has live readings, and a second, failure-learned source could disagree
+with them. An Antigravity pool marked `fallback` is still accepted while it is measured,
+because its `/usage` reading can lag a quota error by up to one poll interval.
 
 ### Preferring one account over another for a while
 

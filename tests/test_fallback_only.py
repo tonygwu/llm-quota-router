@@ -24,7 +24,7 @@ from tests.test_capability import (  # noqa: F401 - fixtures
     home,
 )
 from tests.test_capability_pick import _claude, _codex, _fleet, _rows
-from tests.test_cli import NOW, _NO_CONFIG_FILES, run
+from tests.test_cli import FIVE_HOURS, NOW, _NO_CONFIG_FILES, account, run, window
 
 AGY_QUOTA = "Individual quota reached. Your quota will refresh. Resets in 25m54s"
 NO_DEADLINE = "You've reached your usage limit"
@@ -163,6 +163,40 @@ def test_a_claude_flavour_fallback_waits_while_a_measured_account_fits(
     assert _rows(payload, "excluded")["antigravity_claude"]["reason"] == (
         "fallback-only: used only when no measured account can serve premium"
     )
+
+
+def _measured_pool(account_id, used):
+    """An Antigravity pool as the /usage reader reports it: 5h and 7d, tier unknown."""
+    return account(
+        account_id,
+        window("5h", used, length_s=FIVE_HOURS, resets_in_s=3600),
+        window("7d", used, resets_in_s=300_000),
+        tier="unknown",
+    )
+
+
+def test_a_measured_fallback_pool_competes_like_any_measured_account(env, fallback):
+    """`unmetered = "fallback"` governs a pool only while it has no reading.
+
+    With windows, the pool is scored like any other account: it is ranked with its own
+    score while measured accounts fit, and it wins on that score when they are spent,
+    with no fallback-only warning.
+    """
+    measured = _measured_pool("antigravity_gemini", 0.05)
+    payload = _pick(env, fallback, "--capability", "standard",
+                    snapshots=_fleet(antigravity_gemini=measured))
+    row = _rows(payload)["antigravity_gemini"]
+    assert row["score"] > 0 and row["eligible"] and row["fits"], row
+    assert "antigravity_gemini" not in _rows(payload, "excluded")
+    assert not any("fallback-only" in w for w in payload["warnings"])
+
+    spent = {s.id: s for s in _spent()}
+    spent["antigravity_gemini"] = measured
+    payload = _pick(env, fallback, "--capability", "standard",
+                    snapshots=tuple(spent.values()))
+    assert payload["decision"]["account"] == "antigravity_gemini"
+    assert payload["decision"]["fits"] is True
+    assert not any("fallback-only" in w for w in payload["warnings"])
 
 
 def test_frontier_has_no_antigravity_fallback(env, fallback):

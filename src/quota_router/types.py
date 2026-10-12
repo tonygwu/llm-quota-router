@@ -949,10 +949,10 @@ def unreadable_reason(snapshot: AccountSnapshot) -> str | None:
     window -- which is a data-shape complaint, not the truth. An unread account's
     remaining quota is UNKNOWN: not zero, not full, and never silently absent.
 
-    ``confidence`` alone cannot be the test: the Antigravity pools publish no windows at
-    ``confidence=0.0`` by design and are perfectly routable, so ``available=False`` with
-    nothing measured is what separates "we could not look" from "there is nothing to
-    look at".
+    ``confidence`` alone cannot be the test: a Cursor account, or an Antigravity pool
+    whose ``/usage`` read failed, reports no windows at ``confidence=0.0`` and is still
+    routable, so ``available=False`` with nothing measured is what separates "we could
+    not look" from "there is nothing to look at".
 
     It lives HERE, in the value layer, rather than beside either caller. The CLI's policy
     pass and the pure layer's eligibility pass are separate filters that share exactly

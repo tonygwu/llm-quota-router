@@ -1882,9 +1882,10 @@ def test_a_second_antigravity_account_reaches_the_adapter(tmp_path: Path) -> Non
 def test_antigravity_is_opt_in_and_absent_from_the_builtin_fleet(env, tmp_path):
     """Nothing ships an Antigravity pool: not the config defaults, not the adapter set.
 
-    The two pools publish no quota at all -- no API, no cache, no file on disk -- so
-    shipping them on put two rows in `status` that could never carry a number, and two
-    candidates `pick` could only ever choose blind. Opt-in is about that missing quota
+    When this was decided the two pools published no quota at all, so shipping them on
+    put two rows in `status` that could never carry a number. agy now answers `/usage`,
+    but reaching each Google account still takes a launch recipe only the operator can
+    state, so the pools stay opt-in. Opt-in is about that missing quota
     signal, NOT about a missing account seam: a second Antigravity account is reachable,
     through `macos_user`, and is reported as soon as the config declares it.
     """

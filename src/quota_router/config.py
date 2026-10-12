@@ -350,9 +350,10 @@ class AccountConfig:
     weekly_reset: WeeklyReset | None = None
     manual_rate_per_day: float | None = None
     deprioritize: bool = False
-    #: ``"fallback"`` marks an account whose quota no source can measure (Antigravity)
-    #: as usable by a capability request only when no measured account can serve it.
-    #: Unset (the default) keeps today's behaviour: a window-less account never wins.
+    #: ``"fallback"`` marks an account as usable by a capability request only when no
+    #: measured account can serve it, and only while its own snapshot has no windows.
+    #: An Antigravity pool with a ``/usage`` reading competes normally; one whose read
+    #: failed falls back to this. Unset (the default): a window-less account never wins.
     unmetered: str | None = None
 
     def __post_init__(self) -> None:
@@ -843,12 +844,12 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             # Cursor has no per-account config directory. A second Cursor account is
             # declared with its own CURSOR_API_KEY in this table's `env` overlay.
             "cursor": {},
-            # Antigravity is deliberately NOT here. Its two pools publish no quota at
-            # all -- no API, no cache, no file on disk -- and the `agy` CLI has no
-            # account seam either, so a second Antigravity subscription is invisible to
-            # this router and to itself. Shipping the pools on by default put two rows
-            # in `status` that could never carry a number, and two candidates that
-            # `pick` could only choose blind. An operator who wants them declares them:
+            # Antigravity is deliberately NOT here. When this was decided its pools
+            # published no quota at all, so shipping them on by default put two rows in
+            # `status` that could never carry a number. agy now answers `/usage` (read
+            # by `status`, see providers/antigravity.py), but a pool is still reached
+            # through a launch recipe only the operator can state: a second Google
+            # account is a second macOS user (`macos_user`). Declare the pools:
             #
             #     [accounts.antigravity_gemini]
             #     provider = "antigravity"

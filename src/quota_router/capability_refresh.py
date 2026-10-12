@@ -28,7 +28,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping, Sequence
 
 from . import capability as cap
+from .providers.antigravity import MACOS_USER_AGY_BINARY, AgyMissing, agy_argv_env  # noqa: F401
 from .providers.claude_cli_config import _config_file_candidates, _identity_and_tier
 from .providers.codex_app_server import CodexAppServerAdapter, ModelListFailed
 from .providers.codex_sessions import CodexAccountConfig
@@ -52,9 +52,8 @@ AGY_TIMEOUT_S: Final[float] = 20.0
 #: Oldest ``models_cache.json`` accepted when ``model/list`` fails, and the catalog age
 #: past which a Claude resolution carries a warning.
 STALE_SOURCE_S: Final[float] = 72 * 3600.0
-#: The binary the macOS-user wrapper allowlists. Used only when such an account sets no
-#: ``command``; the wrapper refuses anything else, loudly.
-MACOS_USER_AGY_BINARY: Final[str] = "/usr/local/bin/agy"
+#: ``MACOS_USER_AGY_BINARY`` is imported above from the Antigravity adapter, which owns
+#: the launch recipe for both agy reads (``agy models`` here, ``/usage`` there).
 
 
 class ReadFailed(Exception):
@@ -305,20 +304,11 @@ def read_codex_listing(
 
 
 def _agy_argv_env(account: Any, env: Mapping[str, str]) -> tuple[list[str], dict[str, str]]:
-    child = dict(env)
-    child.update(account.exec_env())
-    for name in account.launch_unset_env:
-        child.pop(name, None)
-    prefix = list(account.launch_argv_prefix)
-    if prefix:
-        binary = account.command or MACOS_USER_AGY_BINARY
-    else:
-        binary = shutil.which(account.exec_command, path=env.get("PATH")) or ""
-        if not binary:
-            raise ReadFailed(
-                "agy_missing", f"{account.exec_command!r} is not on PATH ({env.get('PATH')})"
-            )
-    return [*prefix, binary, "models"], child
+    """``agy models`` with the account's whole launch recipe; shared with the usage read."""
+    try:
+        return agy_argv_env(account, ("models",), env)
+    except AgyMissing as exc:
+        raise ReadFailed("agy_missing", str(exc)) from exc
 
 
 def read_agy_listing(

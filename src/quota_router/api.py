@@ -22,8 +22,9 @@ and dropping ``exec_unset_env`` leaves an inherited ``HOME`` pointing at the wro
 profile directory. Both failures return a perfectly good answer from the wrong place.
 
 **For an account you have already chosen, use ``quotapick launch-plan <id>``.** It
-answers from config alone, with no routing and no reservation. The Antigravity pools
-publish no quota at all, so ``pick`` cannot rank them and will decline them.
+answers from config alone, with no routing and no reservation. An Antigravity pool is
+ranked only while ``quotapick status`` keeps its ``/usage`` reading fresh; without a
+reading it has nothing to rank on, and ``pick`` declines it.
 
 **Mapping the provider to a binary is the caller's job.** ``exec_env`` is an
 environment overlay, not a command. The router says *which account*; it has no

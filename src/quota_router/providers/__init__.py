@@ -13,7 +13,7 @@ runner is injectable), never invent data.
 | :class:`CodexAppServerAdapter` | ``codex app-server`` rate-limit read (live)      |
 | :class:`CodexSessionsAdapter` | ``$CODEX_HOME/sessions/**/*.jsonl`` tails         |
 | :class:`CursorAdapter`        | ``~/.cursor/cli-config.json`` identity only        |
-| :class:`AntigravityAdapter`   | nothing observable; failure-learned deadline only |
+| :class:`AntigravityAdapter`   | ``agy -p /usage`` (``status`` only), else cache   |
 +-------------------------------+---------------------------------------------------+
 
 :func:`collect_snapshots` runs a set of adapters and reconciles the duplicates the two
@@ -86,6 +86,7 @@ __all__ = [
     "CodexSessionsAdapter",
     "CursorAdapter",
     "account_ids_for_provider",
+    "accounts_for_provider",
     "AntigravityAdapter",
     "SOURCE_RANK",
     "build_default_adapters",
@@ -186,12 +187,12 @@ def claude_configs_from_policy(
     return tuple(resolved)
 
 
-def account_ids_for_provider(config: Any, provider: str) -> tuple[str, ...]:
-    """Ids of every enabled account the policy assigns to ``provider``, in config order.
+def accounts_for_provider(config: Any, provider: str) -> tuple[Any, ...]:
+    """Every enabled policy account object assigned to ``provider``, in config order.
 
-    The Claude adapters need whole ``ClaudeAccountConfig`` objects, because a Claude
-    account is a directory to be read. A Cursor account is just an id plus an exec
-    environment, so its adapter needs only the names.
+    The Antigravity adapter needs the objects, not the ids: an Antigravity pool is read
+    by running agy the way the account is launched, and the launch plan lives on the
+    object (``exec_env()``, ``launch_argv_prefix``, ``launch_unset_env``, ``command``).
 
     ``config`` is duck-typed the same way :func:`claude_configs_from_policy` duck-types
     it, so this module still never imports the policy layer. An absent or broken policy
@@ -204,15 +205,25 @@ def account_ids_for_provider(config: Any, provider: str) -> tuple[str, ...]:
         accounts = list(accounts_fn())
     except Exception:  # pragma: no cover - a broken policy object is not our failure mode
         return ()
-    out: list[str] = []
+    out: list[Any] = []
     for account in accounts:
         account_id = getattr(account, "id", None)
         if not isinstance(account_id, str) or not account_id:
             continue
         resolved = getattr(account, "provider", "") or provider_for_account_id(account_id)
         if resolved == provider:
-            out.append(account_id)
+            out.append(account)
     return tuple(out)
+
+
+def account_ids_for_provider(config: Any, provider: str) -> tuple[str, ...]:
+    """Ids of every enabled account the policy assigns to ``provider``, in config order.
+
+    The Claude adapters need whole ``ClaudeAccountConfig`` objects, because a Claude
+    account is a directory to be read. A Cursor account is just an id plus an exec
+    environment, so its adapter needs only the names.
+    """
+    return tuple(account.id for account in accounts_for_provider(config, provider))
 
 
 def codex_accounts_from_policy(
@@ -273,18 +284,22 @@ def build_default_adapters(
     runner: Runner | None = None,
     timeout_s: float = 10.0,
     home: Path | str | None = None,
+    allow_slow_reads: bool = False,
 ) -> tuple[ProviderAdapter, ...]:
-    """The standard adapter set, in preference order (live read first, guesses last)."""
+    """The standard adapter set, in preference order (live read first, guesses last).
+
+    ``allow_slow_reads`` lets the Antigravity adapter spawn ``agy -p /usage`` (about 4s).
+    Leave it off on any path with a deadline; the adapter then serves its cache.
+    """
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
     codex_accounts = codex_accounts_from_policy(config, env=env, home=home) or None
     cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
-    # Antigravity is opt-in, unlike every other adapter here. The others read something
-    # real -- a usage endpoint, a statusline cache, session transcripts, a signed-in
-    # identity -- so running them costs a local file read and yields a fact. Antigravity
-    # publishes nothing at all, so an unconditional adapter only ever manufactures rows
-    # that say "unmeasurable", and rows that say nothing are how a fleet listing stops
-    # being read. It runs when, and only when, the operator's config names its pools.
-    antigravity_accounts = account_ids_for_provider(config, PROVIDER_ANTIGRAVITY)
+    # Antigravity is opt-in, unlike every other adapter here. Until 2026-10-12 it
+    # published nothing at all, so an unconditional adapter only manufactured rows that
+    # said "unmeasurable", and rows that say nothing are how a fleet listing stops being
+    # read. It now reads agy's /usage, but a pool still exists only where the operator
+    # declares it: the launch plan that reaches its Google account lives in the config.
+    antigravity_accounts = accounts_for_provider(config, PROVIDER_ANTIGRAVITY)
     adapters: list[ProviderAdapter] = [
         ClaudeOAuthAdapter(
             runner=runner, timeout_s=timeout_s, env=env, home=home, configs=claude_configs
@@ -297,7 +312,9 @@ def build_default_adapters(
         CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
     ]
     if antigravity_accounts:
-        adapters.append(AntigravityAdapter(env=env, account_ids=antigravity_accounts))
+        adapters.append(
+            AntigravityAdapter(env=env, accounts=antigravity_accounts, live=allow_slow_reads)
+        )
     return tuple(adapters)
 
 
@@ -412,6 +429,7 @@ def load_snapshots(
     timeout_s: float = 10.0,
     accounts: Iterable[Any] | None = None,
     home: Path | str | None = None,
+    allow_slow_reads: bool = False,
 ) -> tuple[list[AccountSnapshot], list[str]]:
     """Read the world once: the standard adapters, merged, with warnings.
 
@@ -429,10 +447,13 @@ def load_snapshots(
         accounts: Restrict the result to these accounts -- either ids or objects with an
             ``id``. Defaults to whatever the adapters found.
         home: ``$HOME`` override for the default config/cache locations.
+        allow_slow_reads: Let a source that takes seconds read live (``agy -p /usage``).
+            Off by default, so a library caller with a deadline never waits on one.
     """
     moment = now_s if now_s is not None else time.time()
     adapters = build_default_adapters(
-        config=config, env=env, runner=runner, timeout_s=timeout_s, home=home
+        config=config, env=env, runner=runner, timeout_s=timeout_s, home=home,
+        allow_slow_reads=allow_slow_reads,
     )
     snapshots, warnings = collect_snapshots(adapters, moment)
 

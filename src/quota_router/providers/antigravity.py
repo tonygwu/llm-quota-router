@@ -1,66 +1,168 @@
-"""Antigravity source: there isn't one.
+"""Antigravity source: ``agy -p "/usage" --output-format json``.
 
-Verified on the operator's machine: ``agy`` exposes no usage/quota subcommand and writes
-no quota fields anywhere on disk. There is no oracle to read, no cache to tail, no
-percentage to parse. Pretending otherwise -- assuming "probably half full", or deriving a
-number from call counts -- would be inventing data, and inventing data is how a router
-silently sends every call to an exhausted pool.
+HISTORY
+-------
+Until 2026-10-12 this module was titled "there isn't one". Verified on the operator's
+machine then: ``agy`` exposed no usage subcommand and wrote no quota fields anywhere on
+disk, so the adapter reported every pool as **unobservable** -- no windows,
+``confidence=0.0`` -- and the only signal it offered was a failure-learned deadline (see
+below). That was the honest answer at the time, and it stays the answer whenever the read
+described here fails: inventing a number ("probably half full", or one derived from call
+counts) is how a router silently sends every call to an exhausted pool. Capability picks
+could therefore use the pools only as ``unmetered = "fallback"``, and over two weeks the
+router never chose one through routing while the Antigravity app showed them nearly
+unused.
 
-So this adapter reports exactly what is true: an **unobservable** account. Its snapshot
-carries no windows and ``confidence=0.0``. The only real signal it can offer is
-*failure-learned*: when a call to an Antigravity pool comes back with a quota error,
+THE SOURCE
+----------
+agy 1.3.3 answers the ``/usage`` slash command headlessly. Measured 2026-10-12: about
+3.5-4.5 s, exit 0, ``num_turns: 0`` and ``usage.total_tokens: 0``, so no agent turn runs
+and no quota is spent. The structured answer is ``command.data.groups[]``, one group per
+quota pool, each with a ``weekly`` and a ``5h`` bucket carrying ``remaining_fraction``
+and ``reset_time``. ``tests/fixtures/agy_usage_raw.json`` is one raw response, verbatim.
+An unstarted 5-hour window slides (its reset is now + 5 h); the weekly reset stays fixed.
+
+One call describes BOTH pools of one Google account. The configured pools are therefore
+grouped by how they are launched (the ``launch-plan`` recipe: ``argv_prefix``, the
+binary, ``unset_env``, and the environment overlay without ``AGY_MODEL``), each group is
+read once, and its groups are mapped to its pools:
+
+* ``"Gemini Models"`` -> the pool whose ``AGY_MODEL`` does not contain "claude";
+* ``"Claude and GPT models"`` -> the pool whose ``AGY_MODEL`` contains "claude".
+
+That is the selector rule the config documents and
+:func:`quota_router.capability.antigravity_flavour` implements, used here unchanged.
+
+STRICT, NEVER GUESSED
+---------------------
+A response is accepted only when the process exits 0, the output is a JSON object,
+``status == "SUCCESS"``, ``command.name == "usage"`` and ``num_turns == 0``. Anything
+else gives no windows to any pool of that account and a warning that names the cause. An
+unknown or nameless group is a warning that names it and maps to no pool. A pool whose
+group is missing, or appears twice, gets no windows. A bucket with an unknown ``window``,
+a duplicate window, a ``remaining_fraction`` outside ``[0, 1]`` or an unparseable
+``reset_time`` makes that pool's whole reading unusable: dropping only the strange
+bucket would make the pool look healthier than it is.
+
+IDENTITY IS THE RECIPE, NOT THE RESPONSE
+----------------------------------------
+The response carries no account identity at all. Which Google account answered is
+guaranteed by the launch recipe (the macOS user, through ``macos_user`` and the
+``agy-as-user`` wrapper) plus the ``identity_email`` the operator declares, and it is
+NOT verified from the response. The cache records the recipe that produced each reading
+and refuses to serve a reading made under a different one.
+
+NEVER ON THE PICK PATH
+----------------------
+``cl`` and ``cdx`` cap a whole pick at 3 s and this read takes about 4 s. The adapter
+therefore spawns agy only when constructed with ``live=True``, which the CLI does for
+``status`` alone (the launchd poller runs it every 120 s). Every other command serves
+the last reading from the per-account usage cache the Claude reader already keeps
+(:func:`~quota_router.providers.claude_oauth.usage_cache_path`, same record shape, same
+120 s reuse window and 5 h stale bound), reported as ``source="cache"`` with its age. A
+live read is ``source="live"``. ``QUOTA_ROUTER_USAGE_OFFLINE`` keeps even ``status``
+from spawning. A failed live read is written to the cache too, so ``pick`` reports the
+same failure ``status`` saw instead of serving the reading before it.
+
+Each live read has its own timeout (:data:`DEFAULT_USAGE_TIMEOUT_S`). The child starts
+in its own session and the whole process group is signalled on timeout, because the
+second account's agy runs as a grandchild under ``sudo``.
+
+FAILURE-LEARNED DEADLINES
+-------------------------
+Unchanged. When a call to a pool comes back with a quota error,
 :mod:`quota_router.failure_text` extracts a deadline (``"Individual quota reached. ...
 Resets in 25m54s"``) and whoever persists that hands it back here as
-``exhausted_until``. Until that deadline passes, the account is marked unavailable; after
-it passes, the account is routable again -- still unobservable, still confidence zero.
+``exhausted_until``. Until that deadline passes the pool is marked unavailable, measured
+or not.
 
-Two Antigravity pools sit behind the one CLI (``antigravity_gemini`` and
-``antigravity_claude``, selected by ``AGY_MODEL``), and they exhaust independently, so
-each gets its own snapshot and its own deadline.
-
-Those two are the DEFAULT pair, not a fixed set: this adapter reports on whatever pools
-the operator's config declares, and the CLI has handed it that list since 0.1.4. A second
-Google account is therefore reported here too, but it is NOT reached by a second ``HOME``.
-``agy`` keeps one Keychain item per macOS USER, so every ``HOME`` under one user serves
-the SAME Google account -- measured 2026-09-10, where 567 grades believed to span two
-accounts had all come from one. A second account is a second macOS user, named by
-``macos_user``. Read the README section "A second Antigravity account is a second macOS
-user", and ask ``quotapick launch-plan <id> --json`` for the recipe rather than
-rebuilding it: the recipe has three parts (``env``, ``argv_prefix``, ``unset_env``) and
-applying only ``env`` returns a good answer from the wrong account.
+A SECOND GOOGLE ACCOUNT IS A SECOND MACOS USER
+----------------------------------------------
+This adapter reports on whatever pools the operator's config declares. A second Google
+account is NOT reached by a second ``HOME``: ``agy`` keeps one Keychain item per macOS
+USER, so every ``HOME`` under one user serves the SAME Google account -- measured
+2026-09-10, where 567 grades believed to span two accounts had all come from one. A
+second account is a second macOS user, named by ``macos_user``. Read the README section
+"A second Antigravity account is a second macOS user". The argv here is built from the
+account's own launch-plan properties by :func:`agy_argv_env`, the same function the
+capability refresher uses, never rebuilt by hand: the recipe has three parts (``env``,
+``argv_prefix``, ``unset_env``) and applying only ``env`` returns a good answer from the
+wrong account.
 """
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import shutil
-from collections.abc import Callable, Iterable, Mapping
+import subprocess
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from ..capability import antigravity_flavour
 from ..types import (
     ACCOUNT_ANTIGRAVITY_CLAUDE,
     ACCOUNT_ANTIGRAVITY_GEMINI,
     SOURCE_ASSUMED,
+    SOURCE_CACHE,
+    SOURCE_LIVE,
     TIER_UNKNOWN,
+    WINDOW_KEY_5H,
+    WINDOW_KEY_7D,
     AccountSnapshot,
+    Window,
+    normalize_tier,
 )
-from .base import ProviderAdapter, parse_timestamp, read_json_file
+from .base import (
+    FIVE_HOUR_S,
+    SEVEN_DAY_S,
+    ProviderAdapter,
+    parse_iso8601,
+    parse_timestamp,
+    read_json_file,
+)
+from .claude_oauth import (
+    DEFAULT_USAGE_STALE_MAX_S,
+    DEFAULT_USAGE_TTL_S,
+    USAGE_OFFLINE_ENV,
+    _read_usage_cache,
+    _write_usage_cache,
+    usage_cache_path,
+)
+from .codex_app_server import _stop
 
 __all__ = [
     "ANTIGRAVITY_BINARY",
     "ANTIGRAVITY_ACCOUNT_IDS",
     "ANTIGRAVITY_STATE_ENV",
+    "BUCKET_WINDOWS",
+    "DEFAULT_USAGE_TIMEOUT_S",
+    "GROUP_FOR_FLAVOUR",
+    "MACOS_USER_AGY_BINARY",
+    "USAGE_ARGS",
+    "AgyCompleted",
+    "AgyMissing",
     "AntigravityAdapter",
+    "UsageRejected",
+    "agy_argv_env",
+    "default_run_agy",
+    "launch_key",
+    "map_usage",
 ]
 
-#: The CLI the executor spawns for these pools. Never invoked here -- its mere presence
-#: is the only thing this adapter checks, and ``shutil.which`` is a PATH lookup, not a
-#: process.
+#: The CLI the executor spawns for these pools, for the calling macOS user.
 ANTIGRAVITY_BINARY: Final[str] = "agy"
 
-#: The two pools behind that one binary.
+#: The binary the macOS-user wrapper allowlists. Used only when such an account sets no
+#: ``command``; the wrapper refuses anything else, loudly.
+MACOS_USER_AGY_BINARY: Final[str] = "/usr/local/bin/agy"
+
+#: The two default pools behind that one binary.
 ANTIGRAVITY_ACCOUNT_IDS: Final[tuple[str, ...]] = (
     ACCOUNT_ANTIGRAVITY_GEMINI,
     ACCOUNT_ANTIGRAVITY_CLAUDE,
@@ -71,11 +173,308 @@ ANTIGRAVITY_ACCOUNT_IDS: Final[tuple[str, ...]] = (
 #: or ISO-8601. Unset means "no learned state", not an error.
 ANTIGRAVITY_STATE_ENV: Final[str] = "QUOTA_ROUTER_ANTIGRAVITY_STATE"
 
-#: Confidence for an account with no observable quota at all. Not "low" -- *none*.
+#: What follows the binary to ask for the usage table instead of running a prompt.
+USAGE_ARGS: Final[tuple[str, ...]] = ("-p", "/usage", "--output-format", "json")
+
+#: Budget for one Google account's whole read, process start included. Measured on
+#: 2026-10-12: 3.6-6.1 s for one account alone, and 5.7-12.9 s for the second account
+#: (through ``sudo``) when both accounts read at once, as ``status`` does. A first cap of
+#: 10 s timed that read out in a live ``status`` run. This is about 2.3 times the slowest
+#: observed read. Never on the pick path, so the 3 s launcher cap does not bound it; the
+#: 120 s poll interval does.
+DEFAULT_USAGE_TIMEOUT_S: Final[float] = 30.0
+
+#: The environment variable that selects a pool behind one Google account.
+POOL_SELECTOR_ENV: Final[str] = "AGY_MODEL"
+
+#: Pool flavour (:func:`~quota_router.capability.antigravity_flavour`) -> the group name
+#: ``/usage`` reports for it. Matched exactly; anything else is a warning.
+GROUP_FOR_FLAVOUR: Final[Mapping[str, str]] = {
+    "gemini": "Gemini Models",
+    "claude": "Claude and GPT models",
+}
+
+#: Bucket ``window`` -> (window key, window length). Anything else is a warning.
+BUCKET_WINDOWS: Final[Mapping[str, tuple[str, float]]] = {
+    "weekly": (WINDOW_KEY_7D, SEVEN_DAY_S),
+    "5h": (WINDOW_KEY_5H, FIVE_HOUR_S),
+}
+
+#: Confidence for a pool with no reading at all. Not "low" -- *none*.
 UNOBSERVABLE_CONFIDENCE: Final[float] = 0.0
+#: Confidence for a pool read from the vendor's own answer, live or cached. Age is
+#: carried by the windows' ``observed_at_s``, which the staleness checks already read.
+MEASURED_CONFIDENCE: Final[float] = 1.0
+
+_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_OUTPUT_TAIL_CHARS: Final[int] = 300
 
 #: Type of the injected deadline source: a mapping or a callable per account id.
 ExhaustedUntil = Mapping[str, Any] | Callable[[str], Any]
+
+
+# ======================================================================================
+# Launching agy the way the account is launched
+# ======================================================================================
+
+
+class AgyMissing(Exception):
+    """The calling user's ``agy`` is not on PATH."""
+
+
+def agy_argv_env(
+    account: Any,
+    args: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """``(argv, child_env)`` that run agy with ``args`` as ``account`` is launched.
+
+    Built from the account's own launch-plan properties (``exec_env()``,
+    ``launch_argv_prefix``, ``launch_unset_env``, ``command``), all three parts of the
+    recipe, so the call reaches the same Google account ``exec`` would. ``account`` is
+    duck-typed like the policy layer's ``AccountConfig``.
+
+    Raises:
+        AgyMissing: the account is launched by the calling user and its binary is not
+            on ``env``'s PATH.
+    """
+    child = dict(env)
+    child.update(account.exec_env())
+    for name in account.launch_unset_env:
+        child.pop(name, None)
+    prefix = list(account.launch_argv_prefix)
+    if prefix:
+        binary = account.command or MACOS_USER_AGY_BINARY
+    else:
+        resolve = which or (lambda name: shutil.which(name, path=env.get("PATH")))
+        binary = resolve(account.exec_command) or ""
+        if not binary:
+            raise AgyMissing(f"{account.exec_command!r} is not on PATH ({env.get('PATH')})")
+    return [*prefix, binary, *args], child
+
+
+def launch_key(account: Any) -> list[Any]:
+    """What selects the Google account an Antigravity pool draws on, as plain JSON.
+
+    Two pools with the same key are two pools of ONE Google account, so one ``/usage``
+    call serves both. Everything in the launch recipe except the pool selector counts:
+    an overlay variable this module does not understand might select something, and
+    reading it twice costs one more read, while merging it could cost a wrong account.
+    """
+    prefix = list(account.launch_argv_prefix)
+    binary = (account.command or MACOS_USER_AGY_BINARY) if prefix else account.exec_command
+    overlay = {
+        str(key): str(value)
+        for key, value in account.exec_env().items()
+        if key != POOL_SELECTOR_ENV
+    }
+    return [
+        [str(part) for part in prefix],
+        str(binary),
+        sorted(str(name) for name in account.launch_unset_env),
+        [[key, overlay[key]] for key in sorted(overlay)],
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class AgyCompleted:
+    """What one agy process produced."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+#: Signature of the injected agy runner: ``(argv, env, timeout_s) -> AgyCompleted``,
+#: raising :class:`subprocess.TimeoutExpired` when the budget runs out.
+AgyRunner = Callable[[Sequence[str], Mapping[str, str], float], AgyCompleted]
+
+
+def default_run_agy(
+    argv: Sequence[str], env: Mapping[str, str], timeout_s: float
+) -> AgyCompleted:
+    """Run agy in its own session; on timeout, end its whole process group and re-raise.
+
+    ``subprocess.run`` kills only the direct child. For the second Google account that
+    child is ``sudo``, and agy is its grandchild, so the group is signalled instead, with
+    the same stop routine the Codex app-server reader uses (SIGTERM, a short grace, then
+    SIGKILL). ``sudo`` relays the SIGTERM to the command it runs.
+    """
+    process = subprocess.Popen(  # noqa: S603 - argv is built here, never a shell string
+        list(argv),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+        start_new_session=True,
+        close_fds=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s)
+    except BaseException:  # the timeout, and anything else that abandons the child
+        _stop(process)
+        raise
+    return AgyCompleted(
+        returncode=process.returncode,
+        stdout=stdout.decode("utf-8", errors="replace"),
+        stderr=stderr.decode("utf-8", errors="replace"),
+    )
+
+
+# ======================================================================================
+# Parsing the /usage answer
+# ======================================================================================
+
+
+class UsageRejected(Exception):
+    """The answer is not a usable ``/usage`` reading; the message is the cause."""
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def usage_groups(payload: Any) -> list[Any]:
+    """The ``command.data.groups`` list, after the identity and shape checks.
+
+    Raises :class:`UsageRejected` unless this is the ``/usage`` command's own answer:
+    ``status == "SUCCESS"``, ``command.name == "usage"`` and ``num_turns == 0``. A
+    nonzero turn count means agy ran a model turn, whose text could look like a usage
+    table without being one.
+    """
+    if not isinstance(payload, Mapping):
+        raise UsageRejected("the response is not a JSON object")
+    status = payload.get("status")
+    if status != "SUCCESS":
+        raise UsageRejected(f"status is {status!r}, not 'SUCCESS'")
+    command = payload.get("command")
+    name = command.get("name") if isinstance(command, Mapping) else None
+    if name != "usage":
+        raise UsageRejected(f"command.name is {name!r}, not 'usage'")
+    turns = payload.get("num_turns")
+    if not (_is_int(turns) and turns == 0):
+        raise UsageRejected(
+            f"num_turns is {turns!r}, not 0, so agy did not answer the /usage command itself"
+        )
+    data = command.get("data")
+    groups = data.get("groups") if isinstance(data, Mapping) else None
+    if not isinstance(groups, list) or not groups:
+        raise UsageRejected("command.data.groups is missing or empty")
+    return groups
+
+
+def _group_windows(name: str, group: Mapping[str, Any], observed_at_s: float) -> tuple[Window, ...]:
+    """Every bucket of one group as a window, or :class:`UsageRejected`."""
+    buckets = group.get("buckets")
+    if not isinstance(buckets, list) or not buckets:
+        raise UsageRejected(f"group {name!r} has no buckets")
+    windows: list[Window] = []
+    seen: set[str] = set()
+    for index, bucket in enumerate(buckets):
+        if not isinstance(bucket, Mapping):
+            raise UsageRejected(f"group {name!r} bucket #{index} is not an object")
+        label = bucket.get("id", f"#{index}")
+        kind = bucket.get("window")
+        if kind not in BUCKET_WINDOWS:
+            raise UsageRejected(
+                f"group {name!r} bucket {label!r} has unknown window {kind!r} "
+                f"(known: {', '.join(sorted(BUCKET_WINDOWS))})"
+            )
+        key, length_s = BUCKET_WINDOWS[kind]
+        if key in seen:
+            raise UsageRejected(f"group {name!r} reports window {kind!r} twice")
+        seen.add(key)
+        remaining = bucket.get("remaining_fraction")
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+            or not 0.0 <= float(remaining) <= 1.0
+        ):
+            raise UsageRejected(
+                f"group {name!r} bucket {label!r} remaining_fraction is not in [0, 1]: "
+                f"{remaining!r}"
+            )
+        resets_at_s = parse_iso8601(bucket.get("reset_time"))
+        if resets_at_s is None:
+            raise UsageRejected(
+                f"group {name!r} bucket {label!r} reset_time is not a timestamp: "
+                f"{bucket.get('reset_time')!r}"
+            )
+        windows.append(
+            Window(
+                key=key,
+                used_fraction=1.0 - float(remaining),
+                length_s=length_s,
+                resets_at_s=resets_at_s,
+                observed_at_s=observed_at_s,
+            )
+        )
+    return tuple(windows)
+
+
+def map_usage(
+    payload: Any, pools: Sequence[tuple[str, str]], observed_at_s: float
+) -> tuple[dict[str, tuple[Window, ...]], list[str]]:
+    """Map one ``/usage`` answer onto the pools of one Google account.
+
+    Args:
+        payload: The parsed JSON answer.
+        pools: ``(account_id, flavour)`` for every pool of that account.
+        observed_at_s: When the answer was read.
+
+    Returns:
+        ``(windows by account id, warnings)``. A pool absent from the mapping gets no
+        windows, and a warning says why.
+
+    Raises:
+        UsageRejected: the answer as a whole is not a ``/usage`` reading.
+    """
+    groups = usage_groups(payload)
+    ids = ", ".join(account_id for account_id, _flavour in pools)
+    known = set(GROUP_FOR_FLAVOUR.values())
+    warnings: list[str] = []
+    by_name: dict[str, list[Mapping[str, Any]]] = {}
+    for index, group in enumerate(groups):
+        if not isinstance(group, Mapping):
+            warnings.append(f"{ids}: /usage group #{index} is not an object; it maps to no pool")
+            continue
+        name = group.get("name")
+        if not isinstance(name, str) or not name.strip():
+            warnings.append(f"{ids}: /usage group #{index} has no name; it maps to no pool")
+            continue
+        by_name.setdefault(name, []).append(group)
+        if name not in known:
+            warnings.append(f"{ids}: /usage reported an unknown group {name!r}; it maps to no pool")
+
+    out: dict[str, tuple[Window, ...]] = {}
+    for account_id, flavour in pools:
+        expected = GROUP_FOR_FLAVOUR[flavour]
+        found = by_name.get(expected, [])
+        if not found:
+            warnings.append(
+                f"{account_id}: /usage reported no {expected!r} group "
+                f"(it reported {sorted(by_name)!r}); no windows"
+            )
+            continue
+        if len(found) > 1:
+            warnings.append(
+                f"{account_id}: /usage reported the {expected!r} group {len(found)} times; "
+                f"no windows"
+            )
+            continue
+        try:
+            out[account_id] = _group_windows(expected, found[0], observed_at_s)
+        except UsageRejected as exc:
+            warnings.append(f"{account_id}: {exc}; no windows")
+    return out, warnings
+
+
+# ======================================================================================
+# The adapter
+# ======================================================================================
 
 
 def _format_deadline(epoch_s: float) -> str:
@@ -90,48 +489,111 @@ def _format_deadline(epoch_s: float) -> str:
         return str(epoch_s)
 
 
+@dataclass(frozen=True, slots=True)
+class _Pool:
+    account: Any
+    flavour: str
+    key: list[Any]
+
+    @property
+    def id(self) -> str:
+        return str(self.account.id)
+
+
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What one pool's windows came from, for the note."""
+
+    windows: tuple[Window, ...]
+    source: str
+    observed_at_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Cached:
+    """One pool's cache record, judged."""
+
+    response: Any | None
+    fetched_at_s: float | None
+    error: str | None
+    problem: str | None  # why the record cannot be served at all
+
+
 class AntigravityAdapter(ProviderAdapter):
-    """Report the Antigravity pools as unobservable, plus any failure-learned deadline.
+    """Each Antigravity pool's quota from agy's ``/usage``, plus failure-learned deadlines.
 
     Args:
-        account_ids: Pools to report on.
+        account_ids: Pools to report on when no launch plans are given. Such pools are
+            reported but never read: there is no recipe to read them with.
+        accounts: The policy layer's account objects (duck-typed ``AccountConfig``),
+            one per pool. Their launch plans decide how each Google account is read.
+            When given, they also decide which pools are reported.
+        live: Spawn agy for a reading older than ``ttl_s``. Only ``status`` sets it.
+            Without it, the adapter serves the cache and starts no process.
+        timeout_s: Budget for one Google account's read.
+        ttl_s: How long a live reading is reused before ``live`` reads again.
+        stale_max_s: Oldest cached reading served when not reading live.
+        run_agy: Injected agy runner; defaults to :func:`default_run_agy`.
         exhausted_until: Failure-learned deadlines -- a mapping ``account_id -> epoch/ISO``
             or a callable taking an account id. Values in the past (or ``None``) mean
             "not known to be exhausted".
         state_path: Explicit path to the JSON deadline file; otherwise
             :data:`ANTIGRAVITY_STATE_ENV` is consulted, and if that is unset no file is
             read at all.
-        which: Injected ``shutil.which`` for the binary-presence check.
-        env: Environment mapping, injected for tests.
+        which: Injected PATH lookup, for the binary-presence check and the argv.
+        env: Environment mapping, injected for tests; also the child's environment.
     """
 
     name = "antigravity"
+    default_timeout_s: float = DEFAULT_USAGE_TIMEOUT_S
 
     def __init__(
         self,
         *,
         account_ids: Iterable[str] = ANTIGRAVITY_ACCOUNT_IDS,
+        accounts: Iterable[Any] | None = None,
+        live: bool = False,
+        timeout_s: float = DEFAULT_USAGE_TIMEOUT_S,
+        ttl_s: float = DEFAULT_USAGE_TTL_S,
+        stale_max_s: float = DEFAULT_USAGE_STALE_MAX_S,
+        run_agy: AgyRunner | None = None,
         exhausted_until: ExhaustedUntil | None = None,
         state_path: Path | str | None = None,
         binary: str = ANTIGRAVITY_BINARY,
         which: Callable[[str], str | None] | None = None,
         env: Mapping[str, str] | None = None,
     ) -> None:
-        self._account_ids = tuple(account_ids)
+        self._accounts = tuple(accounts) if accounts is not None else None
+        if self._accounts:
+            self._account_ids = tuple(str(account.id) for account in self._accounts)
+        else:
+            self._account_ids = tuple(account_ids)
+        self._live = bool(live)
+        self.timeout_s = float(timeout_s)
+        self._ttl_s = float(ttl_s)
+        self._stale_max_s = float(stale_max_s)
+        self._run_agy = run_agy
         self._exhausted_until = exhausted_until
         self._state_path = state_path
         self._binary = binary
-        self._which = which if which is not None else shutil.which
+        self._which = which
         self._env = env
         self.warnings: tuple[str, ...] = ()
+
+    def _environ(self) -> Mapping[str, str]:
+        return os.environ if self._env is None else self._env
+
+    def _resolve(self, name: str) -> str | None:
+        if self._which is not None:
+            return self._which(name)
+        return shutil.which(name, path=self._environ().get("PATH"))
 
     # -- deadline resolution -------------------------------------------------------------
 
     def _state_file(self) -> Path | None:
         if self._state_path is not None:
             return Path(os.path.expanduser(str(self._state_path)))
-        env = self._env if self._env is not None else os.environ
-        raw = env.get(ANTIGRAVITY_STATE_ENV)
+        raw = self._environ().get(ANTIGRAVITY_STATE_ENV)
         if raw and raw.strip():
             return Path(os.path.expanduser(raw.strip()))
         return None
@@ -165,50 +627,245 @@ class AntigravityAdapter(ProviderAdapter):
 
         return merged
 
+    # -- grouping and the cache ----------------------------------------------------------
+
+    def _groups(self, warnings: list[str]) -> list[list[_Pool]]:
+        """The configured pools, grouped by Google account, in config order."""
+        groups: dict[str, list[_Pool]] = {}
+        for account in self._accounts or ():
+            try:
+                pool = _Pool(account=account, flavour=antigravity_flavour(account),
+                             key=launch_key(account))
+            except Exception as exc:  # noqa: BLE001 - a malformed account must not raise
+                warnings.append(
+                    f"{getattr(account, 'id', account)}: no launch plan to read /usage with "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                continue
+            groups.setdefault(json.dumps(pool.key), []).append(pool)
+        for pools in groups.values():
+            flavours = [pool.flavour for pool in pools]
+            for flavour in sorted(set(flavours)):
+                same = [pool.id for pool in pools if pool.flavour == flavour]
+                if len(same) > 1:
+                    warnings.append(
+                        f"{', '.join(same)}: these pools draw on the SAME {flavour} pool of one "
+                        f"Google account (same launch recipe), so each shows the same reading"
+                    )
+        return list(groups.values())
+
+    def _cache_path(self, account_id: str) -> Path:
+        return usage_cache_path(account_id, self._env)
+
+    def _cached(self, pool: _Pool) -> _Cached:
+        payload, fetched_at_s, _not_before = _read_usage_cache(self._cache_path(pool.id))
+        if payload is None or fetched_at_s is None:
+            return _Cached(None, None, None, "no cached /usage reading")
+        if not isinstance(payload, Mapping) or payload.get("launch") != pool.key:
+            return _Cached(
+                None, fetched_at_s, None,
+                "the cached /usage reading was made with a different launch recipe",
+            )
+        error = payload.get("error")
+        if isinstance(error, str) and error:
+            return _Cached(None, fetched_at_s, error, None)
+        if payload.get("response") is None:
+            return _Cached(None, fetched_at_s, None, "the cached /usage record holds no response")
+        return _Cached(payload.get("response"), fetched_at_s, None, None)
+
+    def _write(self, pools: Sequence[_Pool], fetched_at_s: float, response: Any, error: str | None) -> None:
+        for pool in pools:
+            _write_usage_cache(
+                self._cache_path(pool.id),
+                {"launch": pool.key, "response": response, "error": error},
+                fetched_at_s,
+            )
+
+    # -- reading -------------------------------------------------------------------------
+
+    def _read_live(self, pools: Sequence[_Pool]) -> tuple[Any | None, str | None]:
+        """One ``/usage`` call for one Google account: ``(response, None)`` or ``(None, cause)``."""
+        try:
+            argv, child = agy_argv_env(pools[0].account, USAGE_ARGS, self._environ(),
+                                       which=self._resolve)
+        except AgyMissing as exc:
+            return None, str(exc)
+        runner = self._run_agy if self._run_agy is not None else default_run_agy
+        try:
+            done = runner(argv, child, self.timeout_s)
+        except subprocess.TimeoutExpired:
+            return None, (
+                f"{' '.join(argv)} timed out after {self.timeout_s:g}s; its process group "
+                f"was stopped"
+            )
+        except OSError as exc:
+            return None, f"could not run {' '.join(argv)}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - an adapter never raises
+            return None, f"{' '.join(argv)}: {type(exc).__name__}: {exc}"
+        if done.returncode != 0:
+            tail = (done.stderr or done.stdout or "").strip()[-_OUTPUT_TAIL_CHARS:]
+            return None, f"{' '.join(argv)} exited {done.returncode}" + (f": {tail}" if tail else "")
+        try:
+            response = json.loads(done.stdout)
+        except ValueError:
+            return None, (
+                f"{' '.join(argv)} output is not JSON: "
+                f"{(done.stdout or '').strip()[:_OUTPUT_TAIL_CHARS]!r}"
+            )
+        try:
+            usage_groups(response)
+        except UsageRejected as exc:
+            return None, str(exc)
+        return response, None
+
+    def _readings(self, now_s: float, warnings: list[str]) -> dict[str, _Reading]:
+        groups = self._groups(warnings)
+        offline = (self._environ().get(USAGE_OFFLINE_ENV) or "").strip().lower() in _TRUTHY
+        live = self._live and not offline
+
+        cached = {pool.id: self._cached(pool) for pools in groups for pool in pools}
+
+        def fresh(pool: _Pool) -> bool:
+            record = cached[pool.id]
+            return (
+                record.response is not None
+                and record.fetched_at_s is not None
+                and now_s - record.fetched_at_s < self._ttl_s
+            )
+
+        to_read = [pools for pools in groups if live and not all(fresh(p) for p in pools)]
+        results: list[tuple[Any | None, str | None]] = []
+        if to_read:
+            with ThreadPoolExecutor(
+                max_workers=len(to_read), thread_name_prefix="agy-usage"
+            ) as executor:
+                results = list(executor.map(self._read_live, to_read))
+
+        readings: dict[str, _Reading] = {}
+        for pools, (response, error) in zip(to_read, results):
+            ids = ", ".join(pool.id for pool in pools)
+            self._write(pools, now_s, response, error)
+            if error is not None:
+                warnings.append(f"{ids}: no /usage reading: {error}")
+                continue
+            self._map(response, pools, now_s, SOURCE_LIVE, readings, warnings)
+
+        read_ids = {pool.id for pools in to_read for pool in pools}
+        for pools in groups:
+            served: dict[float, list[_Pool]] = {}
+            for pool in pools:
+                if pool.id in read_ids:
+                    continue
+                record = cached[pool.id]
+                if record.problem is not None:
+                    hint = "" if live else "; `quotapick status` reads one (the poller runs it every 120s)"
+                    warnings.append(f"{pool.id}: {record.problem}{hint}")
+                    continue
+                assert record.fetched_at_s is not None
+                age_s = now_s - record.fetched_at_s
+                if record.error is not None:
+                    warnings.append(
+                        f"{pool.id}: the last /usage read, {age_s:.0f}s ago, failed: {record.error}"
+                    )
+                    continue
+                if age_s >= self._stale_max_s:
+                    warnings.append(
+                        f"{pool.id}: the cached /usage reading is {age_s:.0f}s old, past the "
+                        f"{self._stale_max_s:.0f}s bound; not served"
+                    )
+                    continue
+                served.setdefault(record.fetched_at_s, []).append(pool)
+            for fetched_at_s, same in served.items():
+                self._map(cached[same[0].id].response, same, fetched_at_s, SOURCE_CACHE,
+                          readings, warnings)
+        return readings
+
+    @staticmethod
+    def _map(
+        response: Any,
+        pools: Sequence[_Pool],
+        observed_at_s: float,
+        source: str,
+        readings: dict[str, _Reading],
+        warnings: list[str],
+    ) -> None:
+        try:
+            mapped, notes = map_usage(response, [(p.id, p.flavour) for p in pools], observed_at_s)
+        except UsageRejected as exc:
+            warnings.append(f"{', '.join(p.id for p in pools)}: no /usage reading: {exc}")
+            return
+        warnings.extend(notes)
+        for account_id, windows in mapped.items():
+            readings[account_id] = _Reading(windows, source, observed_at_s)
+
     # -- protocol -------------------------------------------------------------------------
 
     def snapshot(self, now_s: float) -> list[AccountSnapshot]:
-        """One unobservable snapshot per pool. Never raises."""
+        """One snapshot per pool, measured where ``/usage`` could be read. Never raises."""
         warnings: list[str] = []
         deadlines = self._deadlines()
-        installed = self._which(self._binary) is not None
+        installed = self._resolve(self._binary) is not None
         if not installed:
             warnings.append(f"antigravity: {self._binary} not on PATH; pools marked unavailable")
+
+        try:
+            readings = self._readings(now_s, warnings) if self._accounts else {}
+        except Exception as exc:  # noqa: BLE001 - an adapter never raises
+            warnings.append(f"antigravity: /usage read failed: {type(exc).__name__}: {exc}")
+            readings = {}
+        policy = {str(account.id): account for account in self._accounts or ()}
 
         snapshots: list[AccountSnapshot] = []
         for account_id in self._account_ids:
             deadline = deadlines.get(account_id)
             exhausted = deadline is not None and deadline > now_s
+            reading = readings.get(account_id)
+            account = policy.get(account_id)
 
-            if not installed:
-                note = f"{self._binary} not installed"
-            elif exhausted:
-                note = (
-                    f"no usage API; failure-learned exhaustion until "
-                    f"{_format_deadline(float(deadline))}"
+            parts: list[str] = []
+            if reading is not None:
+                age_s = now_s - reading.observed_at_s
+                parts.append(
+                    "agy /usage, live"
+                    if reading.source == SOURCE_LIVE
+                    else f"agy /usage, cached reading {age_s:.0f}s old"
                 )
-            elif deadline is not None:
-                note = (
-                    f"no usage API; last learned exhaustion expired at "
-                    f"{_format_deadline(float(deadline))}"
+                declared = getattr(account, "identity_email", None)
+                parts.append(
+                    "account from the launch recipe"
+                    + (f" (declared {declared})" if declared else "")
+                    + ", not verified from the response"
                 )
+            elif account is None:
+                parts.append("no launch plan; usage not read")
             else:
-                note = "no usage API; unobservable, no failure-learned deadline"
+                parts.append("no /usage reading; unmeasured")
+            if not installed:
+                parts.append(f"{self._binary} not installed")
+            if exhausted:
+                parts.append(f"failure-learned exhaustion until {_format_deadline(float(deadline))}")
+            elif deadline is not None:
+                parts.append(
+                    f"last learned exhaustion expired at {_format_deadline(float(deadline))}"
+                )
 
+            tier = normalize_tier(getattr(account, "tier", None)) if account is not None else TIER_UNKNOWN
             try:
                 snapshots.append(
                     AccountSnapshot(
                         id=account_id,
-                        windows=(),
-                        tier=TIER_UNKNOWN,
-                        source=SOURCE_ASSUMED,
-                        confidence=UNOBSERVABLE_CONFIDENCE,
+                        windows=reading.windows if reading is not None else (),
+                        tier=tier,
+                        source=reading.source if reading is not None else SOURCE_ASSUMED,
+                        confidence=(
+                            MEASURED_CONFIDENCE if reading is not None else UNOBSERVABLE_CONFIDENCE
+                        ),
                         available=installed and not exhausted,
-                        note=note,
+                        note="; ".join(parts),
                     )
                 )
             except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
                 warnings.append(f"antigravity: {account_id} rejected ({exc})")
 
-        self.warnings = tuple(warnings)
+        self.warnings = tuple(dict.fromkeys(warnings))
         return snapshots
