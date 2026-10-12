@@ -23,11 +23,19 @@ retained history for rows the series is missing. Resets that happened while noth
 watching are written as `observed: false` with no remainder, so any total reads as a
 lower bound rather than as an average over a hole.
 
+Rows carry `kind` since version 2: a provider's one-off early reset is reported as
+*forfeited*, apart from the waste total, because routing cannot plan for a boundary
+nobody published. See the README section "An early reset is not waste".
+
 **What is still open, in the order it blocks publishing:**
 
-1. **No data yet.** The first row appears at the first reset after the poller next runs.
-   One full weekly cycle across the fleet is the minimum the publishing bar asks for.
-   Nothing can shorten this but waiting.
+1. **Data exists now; the figure needs a decision.** As of 2026-10-12, every account
+   that publishes usage windows has rows covering eight weekly cycles: 44 scheduled
+   resets with 54.68 PSE expired unused (a lower bound, because 6 were missed), and 12
+   early resets in 8 events with 37.06 PSE forfeited. The Antigravity pools had no
+   readable windows until the `/usage` adapter, so their series starts when that ships.
+   Two codex_b "missed" rows come from synthetic test data that a working checkout wrote
+   into the live history on 2026-09-15. They carry no PSE.
 2. **`--backfill` cannot reach backwards very far.** It reads `history.jsonl`, whose own
    rotation caps retention at 30 days, and history is currently only hours deep after the
    pruning incident. So the series effectively starts now.

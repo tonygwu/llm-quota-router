@@ -70,10 +70,11 @@ def account(
     tier="max_20x",
     capacity=1.0,
     source="live",
+    provider="claude",
 ):
     return {
         "id": account_id,
-        "provider": "claude",
+        "provider": provider,
         "windows": list(windows),
         "tier": tier,
         "capacity": capacity,
@@ -102,7 +103,15 @@ def hrecord(t, *accounts, event="status", chosen=None):
 
 
 def weekly_reading(
-    t, *, used, resets_at_s, account_id="claude", tier="max_20x", capacity=1.0, source="live"
+    t,
+    *,
+    used,
+    resets_at_s,
+    account_id="claude",
+    tier="max_20x",
+    capacity=1.0,
+    source="live",
+    provider="claude",
 ):
     """One poll of one account carrying only its account-wide weekly window."""
     return hrecord(
@@ -113,7 +122,21 @@ def weekly_reading(
             tier=tier,
             capacity=capacity,
             source=source,
+            provider=provider,
         ),
+    )
+
+
+def codex_reading(t, *, used, resets_at_s, account_id="codex", source="live"):
+    """A Codex weekly reading. Codex opens a fresh window at ``now + 7d``."""
+    return weekly_reading(
+        t,
+        used=used,
+        resets_at_s=resets_at_s,
+        account_id=account_id,
+        tier="pro",
+        source=source,
+        provider="codex",
     )
 
 
@@ -204,6 +227,10 @@ def test_a_weekly_reset_is_recorded_with_the_remainder_that_expired(env):
     assert row.observation_gap_s == pytest.approx(469.0)
     assert row.k == pytest.approx(6.25)
     assert row.tier == "max_20x"
+    assert row.kind == "scheduled"
+    assert row.scheduled_reset_at_s == reset_at
+    assert row.first_observed_after_s == reset_at + 600.0
+    assert row.provider == "claude"
 
 
 def test_the_same_remainder_on_a_smaller_plan_is_less_lost_work(env):
@@ -516,6 +543,106 @@ def test_an_unreadable_account_does_not_become_a_blind_reading(env):
     assert rows[0].last_observed_at_s == reset_at - 600.0
 
 
+def test_a_reading_taken_after_its_own_window_closed_is_not_a_measurement(env):
+    """A stale source can report a window whose boundary has already passed.
+
+    Live on 2026-09-14, the Codex transcript fallback reported codex_b's window as 3%
+    used, four days AFTER that window had ended. The old detector paired it with the
+    next reading and wrote a 97% remainder with an observation gap of zero: a perfect
+    measurement of a moment nobody watched. The reset happened unobserved, so it is
+    recorded as missed.
+    """
+    boundary = T0 + SEVEN_DAYS
+    stale_at = boundary + 4 * 86400.0
+    after = stale_at + 7 * 3600.0
+    records = [
+        codex_reading(stale_at, used=0.03, resets_at_s=boundary, account_id="codex_b"),
+        codex_reading(after, used=0.0, resets_at_s=after + SEVEN_DAYS, account_id="codex_b"),
+    ]
+
+    rows = waste.detect_resets(records).records
+
+    first = rows[0]
+    assert first.reset_at_s == boundary
+    assert first.observed is False
+    assert first.remaining_fraction is None
+    assert first.wasted_pse is None
+    assert first.observation_gap_s is None
+    assert "after" in (first.reason or "")
+
+
+# ======================================================================================
+# Early resets: a window the provider rolled over before its published boundary
+# ======================================================================================
+
+
+def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):
+    """Live on 2026-10-11, both Codex accounts reset three days ahead of schedule.
+
+    The old detector keyed the row on the boundary that never came. It wrote a reset
+    time three days in the future and an observation gap of 72 hours, for a remainder
+    actually read 134 seconds before the reset.
+    """
+    scheduled = T0 + SEVEN_DAYS
+    seen_before = scheduled - 3 * 86400.0
+    seen_after = seen_before + 134.0
+    records = [
+        codex_reading(seen_before, used=0.24, resets_at_s=scheduled),
+        codex_reading(seen_after, used=0.0, resets_at_s=seen_after + SEVEN_DAYS + 1.0),
+    ]
+
+    detection = waste.detect_resets(records)
+
+    assert len(detection.records) == 1
+    row = detection.records[0]
+    assert row.kind == "early"
+    assert row.observed is True
+    assert row.scheduled_reset_at_s == scheduled
+    assert seen_before <= row.reset_at_s <= seen_after
+    assert row.observation_gap_s <= 134.0
+    assert row.last_observed_at_s == seen_before
+    assert row.first_observed_after_s == seen_after
+    assert row.remaining_fraction == pytest.approx(0.76)
+    assert row.wasted_pse == pytest.approx(0.76 * 6.25)
+    assert row.provider == "codex"
+
+
+def test_an_early_reset_in_the_first_half_of_a_week_is_not_lost(env):
+    """A rollover moves the boundary by a full window only when it happens on schedule.
+
+    An early reset two days into a week moves it by two days, and the old detector
+    refused that pair as incoherent and wrote nothing. Live, that lost codex's half of
+    the 2026-09-26 reset that codex_b's row recorded.
+    """
+    scheduled = T0 + SEVEN_DAYS
+    seen_before = T0 + 2 * 86400.0
+    seen_after = seen_before + 128.0
+    records = [
+        codex_reading(seen_before, used=0.04, resets_at_s=scheduled),
+        codex_reading(seen_after, used=0.0, resets_at_s=seen_after + SEVEN_DAYS + 2.0),
+    ]
+
+    detection = waste.detect_resets(records)
+
+    assert [row.kind for row in detection.records] == ["early"]
+    assert detection.records[0].scheduled_reset_at_s == scheduled
+    assert not any("incoherent" in w for w in detection.warnings), detection.warnings
+
+
+def test_a_reset_seen_shortly_after_its_boundary_is_scheduled_not_early(env):
+    """The poll that first sees a new window lands after the boundary, never before."""
+    reset_at = T0 + SEVEN_DAYS
+    records = [
+        codex_reading(reset_at - 30.0, used=0.87, resets_at_s=reset_at),
+        codex_reading(reset_at + 90.0, used=0.0, resets_at_s=reset_at + 90.0 + SEVEN_DAYS),
+    ]
+
+    rows = waste.detect_resets(records).records
+
+    assert [row.kind for row in rows] == ["scheduled"]
+    assert rows[0].reset_at_s == reset_at
+
+
 # ======================================================================================
 # The file: append-only, idempotent, never shortened
 # ======================================================================================
@@ -652,6 +779,125 @@ def test_a_corrupt_line_does_not_hide_the_good_ones(env, tmp_path):
     assert warnings == () or all(isinstance(w, str) for w in warnings)
 
 
+def _v1_line(account_id, reset_at_s, *, remaining, wasted, last_observed_at_s):
+    """A row exactly as the version-1 writer put it on disk, with no ``kind``."""
+    return json.dumps(
+        {
+            "v": 1,
+            "account": account_id,
+            "window": "7d",
+            "scoped": False,
+            "reset_at": _iso(reset_at_s),
+            "reset_at_s": reset_at_s,
+            "observed": True,
+            "remaining_fraction": remaining,
+            "wasted_pse": wasted,
+            "last_observed_at": _iso(last_observed_at_s),
+            "last_observed_at_s": last_observed_at_s,
+            "observation_gap_s": max(0.0, reset_at_s - last_observed_at_s),
+            "tier": "pro",
+            "tier_scale": 1.0,
+            "k": 6.25,
+            "source": "live",
+            "signals": ["resets_at_advanced", "used_fraction_dropped"],
+            "reason": None,
+        }
+    )
+
+
+def test_a_version_2_row_supersedes_the_version_1_row_that_misdated_it(env, tmp_path):
+    """The live file holds seven version-1 rows keyed on boundaries that never came.
+
+    The file may not be rewritten, so the correction is appended. Both rows describe
+    the window that ended early, so they share an identity. The reader keeps the newer
+    version, and the old row is neither counted twice nor counted as waste.
+    """
+    path = tmp_path / "waste.jsonl"
+    scheduled = T0 + SEVEN_DAYS
+    seen_before = scheduled - 3 * 86400.0
+    seen_after = seen_before + 134.0
+    path.write_text(
+        _v1_line("codex", scheduled, remaining=0.76, wasted=4.75, last_observed_at_s=seen_before)
+        + "\n",
+        encoding="utf-8",
+    )
+    original = path.read_text(encoding="utf-8")
+    history = [
+        codex_reading(seen_before, used=0.24, resets_at_s=scheduled),
+        codex_reading(seen_after, used=0.0, resets_at_s=seen_after + SEVEN_DAYS + 1.0),
+    ]
+
+    first = waste.update_from_history(history, path=path)
+    second = waste.update_from_history(history, path=path)
+
+    assert first.appended == 1
+    assert second.appended == 0
+    assert path.read_text(encoding="utf-8").startswith(original)
+    rows, _ = waste.read_records(path=path)
+    assert len(rows) == 2
+    current = waste.current_records(rows)
+    assert [(row.version, row.kind) for row in current] == [(2, "early")]
+    summary = waste.summarize(rows)
+    assert summary["totals"]["wasted_pse"] == pytest.approx(0.0)
+    assert summary["totals"]["resets"] == 0
+    assert summary["early_totals"]["forfeited_pse"] == pytest.approx(4.75)
+
+
+def test_a_scheduled_version_1_row_is_reread_into_version_2_once(env, tmp_path):
+    """A row history still covers is re-derived, so it gains a ``kind``."""
+    path = tmp_path / "waste.jsonl"
+    reset_at = T0 + SEVEN_DAYS
+    path.write_text(
+        _v1_line(
+            "claude", reset_at, remaining=0.55, wasted=3.4375, last_observed_at_s=reset_at - 600.0
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    history = [
+        weekly_reading(reset_at - 600.0, used=0.45, resets_at_s=reset_at),
+        weekly_reading(reset_at + 600.0, used=0.01, resets_at_s=reset_at + SEVEN_DAYS),
+    ]
+
+    assert waste.update_from_history(history, path=path).appended == 1
+    assert waste.update_from_history(history, path=path).appended == 0
+
+    rows, _ = waste.read_records(path=path)
+    summary = waste.summarize(rows)
+    assert summary["totals"]["resets"] == 1
+    assert summary["totals"]["unclassified"] == 0
+    assert summary["totals"]["wasted_pse"] == pytest.approx(3.4375)
+
+
+def test_a_version_1_row_history_no_longer_covers_is_kept_and_said_to_be_unchecked(
+    env, tmp_path
+):
+    """History rotates at 30 days, so the oldest rows can never be re-derived.
+
+    They stay in the total, because they were scheduled resets as far as anyone can
+    tell. The report counts them, so a reader knows how much of the total predates
+    early-reset detection.
+    """
+    path = tmp_path / "waste.jsonl"
+    reset_at = T0 + SEVEN_DAYS
+    path.write_text(
+        _v1_line(
+            "claude", reset_at, remaining=0.55, wasted=3.4375, last_observed_at_s=reset_at - 600.0
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rows, _ = waste.read_records(path=path)
+    summary = waste.summarize(rows)
+
+    assert rows[0].version == 1
+    assert rows[0].kind is None
+    assert summary["totals"]["resets"] == 1
+    assert summary["totals"]["unclassified"] == 1
+    assert summary["totals"]["wasted_pse"] == pytest.approx(3.4375)
+
+
 # ======================================================================================
 # Reporting
 # ======================================================================================
@@ -704,6 +950,77 @@ def test_scoped_sub_caps_are_reported_but_never_added_to_the_total(env, tmp_path
 
     assert summary["totals"]["wasted_pse"] == pytest.approx(3.4375)
     assert summary["scoped_totals"]["wasted_pse"] == pytest.approx(0.10 * 0.5 * 6.25)
+
+
+def _early_pair(account_id, seen_before, *, used, scheduled):
+    """Two Codex polls 134 s apart, across an early reset."""
+    seen_after = seen_before + 134.0
+    return [
+        codex_reading(seen_before, used=used, resets_at_s=scheduled, account_id=account_id),
+        codex_reading(
+            seen_after, used=0.0, resets_at_s=seen_after + SEVEN_DAYS, account_id=account_id
+        ),
+    ]
+
+
+def test_early_resets_are_reported_outside_the_waste_total(env, tmp_path):
+    """An early reset hands over a full fresh window days ahead of schedule.
+
+    Its remainder is forfeited, but the account gains more than it lost, and routing
+    cannot plan for a boundary the provider did not publish. Adding it to the waste
+    total would charge the router for the provider's gift.
+    """
+    path = tmp_path / "waste.jsonl"
+    reset_at = T0 + SEVEN_DAYS
+    waste.update_from_history(
+        [
+            weekly_reading(reset_at - 600.0, used=0.45, resets_at_s=reset_at),
+            weekly_reading(reset_at + 600.0, used=0.01, resets_at_s=reset_at + SEVEN_DAYS),
+            *_early_pair("codex", reset_at - 3 * 86400.0, used=0.24, scheduled=reset_at),
+        ],
+        path=path,
+    )
+
+    summary = waste.summarize(waste.read_records(path=path)[0])
+
+    assert summary["totals"]["wasted_pse"] == pytest.approx(3.4375)
+    assert summary["totals"]["resets"] == 1
+    assert summary["early_totals"]["resets"] == 1
+    assert summary["early_totals"]["forfeited_pse"] == pytest.approx(0.76 * 6.25)
+    assert summary["accounts"]["codex"]["7d"]["early"] == 1
+    assert summary["accounts"]["codex"]["7d"]["wasted_pse"] == pytest.approx(0.0)
+
+
+def test_early_resets_on_several_accounts_at_once_are_one_event(env, tmp_path):
+    """The signature of a one-off reset the provider grants to everyone.
+
+    Live, codex and codex_b reset inside the same two-minute poll gap on 2026-10-02,
+    10-07 and 10-11. An account resetting early on its own is a different event,
+    because something specific to that account caused it.
+    """
+    path = tmp_path / "waste.jsonl"
+    scheduled = T0 + SEVEN_DAYS
+    shared = scheduled - 3 * 86400.0
+    alone = scheduled + 2 * 86400.0
+    waste.update_from_history(
+        [
+            *_early_pair("codex", shared, used=0.24, scheduled=scheduled),
+            *_early_pair("codex_b", shared, used=0.17, scheduled=scheduled + 5000.0),
+            *_early_pair(
+                "codex", alone, used=0.30, scheduled=shared + 134.0 + SEVEN_DAYS
+            ),
+        ],
+        path=path,
+    )
+
+    events = waste.summarize(waste.read_records(path=path)[0])["early_events"]
+
+    assert [(event["accounts"], event["shared"]) for event in events] == [
+        (["codex", "codex_b"], True),
+        (["codex"], False),
+    ]
+    assert events[0]["provider"] == "codex"
+    assert events[0]["forfeited_pse"] == pytest.approx((0.76 + 0.83) * 6.25)
 
 
 # ======================================================================================
@@ -818,6 +1135,31 @@ def test_the_waste_command_reports_observed_and_missed(env, tmp_path):
     assert payload["totals"]["observed"] == 1
     assert payload["totals"]["missed"] == 1
     assert payload["totals"]["wasted_pse"] == pytest.approx(3.4375)
+
+
+def test_the_waste_command_lists_early_resets_apart_from_the_total(env, tmp_path):
+    scheduled = T0 + SEVEN_DAYS
+    shared = scheduled - 3 * 86400.0
+    waste.update_from_history(
+        [
+            *_early_pair("codex", shared, used=0.24, scheduled=scheduled),
+            *_early_pair("codex_b", shared, used=0.17, scheduled=scheduled + 5000.0),
+        ],
+        env=env,
+    )
+
+    code, out, _ = _run(["waste"], env, [], scheduled)
+    assert code == cli.EXIT_OK
+    assert "0.00 PSE expired unused" in out
+    assert "early reset" in out.lower()
+    assert "codex, codex_b" in out
+    assert "at once" in out
+
+    code, out, _ = _run(["waste", "--json"], env, [], scheduled)
+    payload = json.loads(out)
+    assert payload["totals"]["wasted_pse"] == pytest.approx(0.0)
+    assert payload["early_totals"]["forfeited_pse"] == pytest.approx((0.76 + 0.83) * 6.25)
+    assert payload["early_events"][0]["accounts"] == ["codex", "codex_b"]
 
 
 def test_the_waste_command_says_so_when_there_is_nothing_yet(env):

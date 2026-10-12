@@ -2411,6 +2411,7 @@ def _cmd_waste(
                 "generated_at": _iso(now_s),
                 "path": str(path),
                 "records": len(records),
+                "superseded": len(records) - len(waste_mod.current_records(records)),
                 **summary,
                 "warnings": list(dict.fromkeys(warnings)),
             },
@@ -2428,9 +2429,15 @@ def _cmd_waste(
             stderr.write(f"! {warning}\n")
         return EXIT_OK
 
-    stdout.write(f"{len(records)} reset(s) recorded in {path}\n\n")
+    current = waste_mod.current_records(records)
+    superseded = len(records) - len(current)
+    stdout.write(
+        f"{len(current)} reset(s) recorded in {path}"
+        + (f" ({superseded} older row(s) superseded by a newer version)" if superseded else "")
+        + "\n\n"
+    )
     stdout.write(f"{'account':<12}{'window':<10}{'resets':>7}{'observed':>10}"
-                 f"{'missed':>8}{'wasted PSE':>12}{'worst gap':>11}\n")
+                 f"{'missed':>8}{'wasted PSE':>12}{'worst gap':>11}{'early':>7}\n")
     for account_id in sorted(summary["accounts"]):
         for key in sorted(summary["accounts"][account_id]):
             row = summary["accounts"][account_id][key]
@@ -2438,17 +2445,25 @@ def _cmd_waste(
             stdout.write(
                 f"{account_id:<12}{key:<10}{row['resets']:>7}{row['observed']:>10}"
                 f"{row['missed']:>8}{row['wasted_pse']:>12.2f}"
-                f"{(explain_mod.format_duration(gap) if gap is not None else '-'):>11}\n"
+                f"{(explain_mod.format_duration(gap) if gap is not None else '-'):>11}"
+                f"{row['early']:>7}\n"
             )
 
     stdout.write(
         f"\n{totals['wasted_pse']:.2f} PSE expired unused across {totals['resets']} "
-        f"weekly reset(s) -- {totals['observed']} observed, {totals['missed']} missed.\n"
+        f"scheduled weekly reset(s) -- {totals['observed']} observed, "
+        f"{totals['missed']} missed.\n"
     )
     if totals["missed"]:
         stdout.write(
             "A missed reset has no remainder and is counted, never averaged over: its "
             "quota is gone and unmeasured, so the total above is a LOWER bound.\n"
+        )
+    if totals["unclassified"]:
+        stdout.write(
+            f"{totals['unclassified']} of those resets were recorded before early resets "
+            f"were told apart, and history no longer reaches them to check. They are "
+            f"counted as scheduled.\n"
         )
     if scoped["resets"]:
         stdout.write(
@@ -2456,6 +2471,35 @@ def _cmd_waste(
             f"{scoped['resets']} reset(s). Listed, not added -- that budget is a slice "
             f"of the same weekly pool and is already inside the total above.\n"
         )
+
+    early = summary["early_totals"]
+    events = summary["early_events"]
+    if early["resets"]:
+        stdout.write(
+            f"\nEarly resets, kept out of the total above: {early['resets']} across "
+            f"{len(events)} event(s), {early['forfeited_pse']:.2f} PSE forfeited.\n"
+            f"The provider rolled these windows over before their published boundary "
+            f"and opened a fresh one. Several accounts at once points to a one-off "
+            f"reset the provider granted to everyone.\n\n"
+        )
+        stdout.write(f"  {'reset between (UTC)':<36}{'accounts':<24}{'early by':>14}"
+                     f"{'forfeited':>11}\n")
+        for event in events:
+            low = explain_mod.format_duration(event["min_early_by_s"])
+            high = explain_mod.format_duration(event["max_early_by_s"])
+            when = (
+                f"{event['reset_not_before'][:16].replace('T', ' ')} - "
+                f"{event['reset_not_after'][11:16]}"
+                if event["reset_not_before"][:10] == event["reset_not_after"][:10]
+                else f"{event['reset_not_before'][:16]} - {event['reset_not_after'][:16]}"
+            )
+            accounts = ", ".join(event["accounts"])
+            stdout.write(
+                f"  {when:<36}{accounts:<24}{(low if low == high else f'{low}-{high}'):>14}"
+                f"{event['forfeited_pse']:>11.2f}"
+                f"{'  ' + str(len(event['accounts'])) + ' accounts at once' if event['shared'] else ''}"
+                f"\n"
+            )
     for warning in dict.fromkeys(warnings):
         stderr.write(f"! {warning}\n")
     return EXIT_OK

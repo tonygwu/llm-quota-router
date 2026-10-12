@@ -1097,12 +1097,17 @@ quotapick waste --backfill # re-scan retained history for resets not yet recorde
 ```
 
 ```
-account     window     resets  observed  missed  wasted PSE  worst gap
-claude      7d              4         2       2        6.56       7.0d
-claude      fable           4         2       2        3.50       7.0d
-claude_c    7d              1         1       0        0.58       3.0d
+account     window     resets  observed  missed  wasted PSE  worst gap  early
+claude      7d              4         2       2        6.56       7.0d      0
+claude      fable           4         2       2        3.50       7.0d      0
+codex       7d              3         3       0        0.81      17.3h      2
 
-7.14 PSE expired unused across 5 weekly reset(s) -- 3 observed, 2 missed.
+7.37 PSE expired unused across 7 scheduled weekly reset(s) -- 5 observed, 2 missed.
+
+Early resets, kept out of the total above: 2 across 1 event(s), 9.94 PSE forfeited.
+
+  reset between (UTC)                 accounts                      early by  forfeited
+  2026-10-11 03:57 - 03:59            codex, codex_b               3.0d-3.1d       9.94  2 accounts at once
 ```
 
 One line per window reset per account, written by `quotapick status` — which the poller
@@ -1123,8 +1128,10 @@ Five things the record does deliberately:
   answer into a series meant to outlive the question.
 - **`k` on every row**, because it is calibrated per account and will change. A series
   computed under one `k` must not be silently reinterpreted under a later one.
-- **Idempotent on `(account, window, reset_at)`.** The reset instant identifies the
-  occurrence, so re-running — or `--backfill` over a longer history — cannot double-count.
+- **Idempotent on the window that ended.** A row's identity is the account, the
+  window, and the boundary that window had published, so re-running — or `--backfill`
+  over a longer history — cannot double-count.
+- **`kind`: `scheduled` or `early`.** See the next section.
 - **Never rotated, never pruned, no clock that could shorten it.** That is the
   requirement, not an oversight; ~400 rows a year is a few hundred KB for the life of the
   project. History pruning trusted a caller-supplied clock and one ad-hoc probe with a
@@ -1158,6 +1165,43 @@ divergence is indistinguishable from an arithmetic bug six months later.
 `--backfill` reaches back only as far as `history.jsonl` still goes, which its own
 rotation caps at 30 days. It recovers a gap in the waste series; it cannot recover one in
 history.
+
+### An early reset is not waste
+
+Providers sometimes roll every window over ahead of schedule as a one-off. OpenAI did
+it to Codex on 2026-09-26, 10-02, 10-07 and 10-11. Each time, both Codex accounts reset
+in the same two-minute gap between polls, days before their published boundaries. The
+remainder is forfeited at that moment, but a full fresh window replaces it early. And
+routing cannot plan for a boundary that nobody published. So a reset whose new window
+was already visible more than an hour before the old boundary is recorded with
+`kind: "early"` and reported apart from the waste total, as *forfeited*. Its `reset_at`
+is when it actually happened, bounded by `last_observed_at` and
+`first_observed_after_at`, and `scheduled_reset_at` keeps the boundary that never came.
+
+The report groups early resets of one provider whose poll gaps overlap into one event.
+Several accounts in one event is the signature of a one-off reset the provider granted
+to everyone, because only the provider can move separate subscriptions at once. One
+account alone claims nothing more: the others may have been idle, unread, or not yet
+set up.
+
+The one-hour line is measured, not picked. From 2026-09-12 to 10-12, no scheduled
+rollover was seen before its boundary, and every early one was seen at least 19.8 hours
+before it.
+
+Two related defects are fixed in the same version. An early reset in the first half of
+a week moves the boundary by less than half a window, so it was refused as incoherent
+and never recorded. Now a used fraction that drops while a fresh window opens between
+two polls also counts as a rollover. A sliding window never matches, because its used
+fraction never drops. And a reading taken *after* its own window's boundary comes from
+a stale source, so the reset it precedes is recorded as missed. Before, that reading
+was paired with a gap of zero, as a perfect measurement.
+
+**Version 1 rows are corrected by appending, never by rewriting.** Version 1 keyed an
+early reset on the boundary that never came. That row and the version-2 row for the
+same window share an identity, and the reader keeps the higher version. The writer
+appends a version-2 row once for every reset that history still covers. A version-1 row
+older than history stays in the total with no `kind`, and the report counts it as
+unclassified.
 
 ## Design notes
 

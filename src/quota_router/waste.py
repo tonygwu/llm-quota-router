@@ -50,6 +50,41 @@ resets happened and their remainders are unrecoverable. They are written as rows
 ``observed: false`` and no remainder, so a report can say "12 resets observed, 2 missed"
 instead of quietly averaging over a hole. Interpolating them would produce exactly the
 silent gap this whole measurement exists to avoid.
+
+AN EARLY RESET IS NOT WASTE
+---------------------------
+Providers sometimes roll every window over ahead of schedule as a one-off. OpenAI did
+it to Codex on 2026-09-26, 10-02, 10-07 and 10-11, and both Codex accounts reset inside
+the same two-minute poll gap each time. The remainder at that moment is forfeited, but
+a full fresh window replaces it days early, and routing cannot plan for a boundary the
+provider never published. So every row carries ``kind``:
+
+* ``scheduled`` -- the window ran to the boundary the provider had published. Its
+  remainder is the waste this project is judged on.
+* ``early`` -- the window rolled over while its published boundary was still more
+  than :data:`EARLY_RESET_MIN_S` away. ``reset_at`` is when it actually happened,
+  bounded by the readings either side; ``scheduled_reset_at`` is the boundary that
+  never came. Its remainder is reported as *forfeited*, outside the waste total.
+
+Version 1 of this file had no ``kind`` and keyed an early reset on the boundary that
+never came, so a row could carry a reset time days in the future and an observation
+gap of three days for a remainder read two minutes before the reset. It also missed
+early resets in the first half of a week entirely, because the boundary then moves by
+less than half a window.
+
+VERSIONS, AND CORRECTING A FILE THAT MAY NOT BE REWRITTEN
+---------------------------------------------------------
+A row's identity is the window that ended: the account, the window key, and the
+boundary that window had published (``scheduled_reset_at``, which equals ``reset_at``
+for a scheduled reset). A version-1 row has the same identity as the version-2 row
+for the same window, even when version 1 misdated it.
+
+The correction is therefore appended, never written over. The writer appends a
+version-2 row for every reset that history still covers, once, and
+:func:`current_records` keeps the highest version of each identity. A version-1 row
+that history no longer reaches keeps ``kind: None`` and is reported as
+*unclassified*: still in the total, and counted, so a reader can see how much of the
+total predates early-reset detection.
 """
 
 from __future__ import annotations
@@ -74,19 +109,38 @@ from .types import (
 
 __all__ = [
     "WASTE_VERSION",
+    "KIND_SCHEDULED",
+    "KIND_EARLY",
+    "EARLY_RESET_MIN_S",
     "ResetRecord",
     "Detection",
     "WasteWrite",
     "waste_path",
     "detect_resets",
     "read_records",
+    "current_records",
     "append_records",
     "update_from_history",
     "summarize",
 ]
 
-#: Record schema version (``v`` on every line).
-WASTE_VERSION: Final[int] = 1
+#: Record schema version (``v`` on every line). Version 2 added ``kind``,
+#: ``scheduled_reset_at``, ``first_observed_after_at`` and ``provider``.
+WASTE_VERSION: Final[int] = 2
+
+#: The window ran to the boundary the provider had published.
+KIND_SCHEDULED: Final[str] = "scheduled"
+
+#: The window rolled over before its published boundary. See the module docstring.
+KIND_EARLY: Final[str] = "early"
+
+#: How far ahead of its published boundary a new window must already be visible for
+#: the rollover to count as early. A poll sees a scheduled rollover only after the
+#: boundary, so the margin only has to clear clock skew between the provider and this
+#: machine, which is seconds. Measured on the operator's fleet from 2026-09-12 to
+#: 10-12: no scheduled rollover was seen before its boundary, and every early one was
+#: seen at least 19.8 hours before it. One hour sits far from both.
+EARLY_RESET_MIN_S: Final[float] = 3600.0
 
 #: A reset instant that moves by less than this is serialization jitter, not movement.
 #: Live, the scoped and account-wide weekly rows of one payload disagree by microseconds
@@ -186,13 +240,21 @@ class ResetRecord:
     """One window reset of one account, and what it cost.
 
     Args:
-        reset_at_s: The instant the window rolled over. This -- with the account and
-            window -- is the identity of the occurrence, which is what makes appending
-            idempotent: re-running over the same history can never double-count.
+        reset_at_s: The instant the window rolled over. For an early reset this is the
+            best bound the readings allow, between ``last_observed_at_s`` and
+            ``first_observed_after_s``.
+        scheduled_reset_at_s: The boundary the ending window had published. This --
+            with the account and window -- is the identity of the occurrence, which is
+            what makes appending idempotent: re-running over the same history can never
+            double-count. ``None`` only on a version-1 row, whose ``reset_at_s`` was
+            always that boundary.
+        kind: :data:`KIND_SCHEDULED` or :data:`KIND_EARLY`. ``None`` only on a
+            version-1 row, written before early resets were told apart.
         observed: ``True`` when a reading exists from before this reset, so the
             remainder is measured. ``False`` when the reset happened while nothing was
             looking; then every remainder field is ``None``, because there is no honest
             number and a guessed one would be indistinguishable from a measured one.
+            A missed reset is inferred at a published boundary, so it is ``scheduled``.
         scoped: ``True`` for a model-scoped sub-cap (Fable). Its PSE is a *slice of the
             same weekly pool* as the account-wide row, so it is reported separately and
             never added into a fleet total.
@@ -200,6 +262,10 @@ class ResetRecord:
             thresholded -- see the module docstring.
         k: The weekly:session ratio the PSE figure was computed with, so a later
             recalibration cannot silently reinterpret an older row.
+        first_observed_after_s: The first reading that showed the new window.
+        provider: The account's provider, so a report can find early resets that
+            several accounts of one provider shared.
+        version: The schema version the row was written under.
     """
 
     account: str
@@ -217,29 +283,53 @@ class ResetRecord:
     source: str | None = None
     signals: tuple[str, ...] = ()
     reason: str | None = None
+    kind: str | None = KIND_SCHEDULED
+    scheduled_reset_at_s: float | None = None
+    first_observed_after_s: float | None = None
+    provider: str | None = None
+    version: int = WASTE_VERSION
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "signals", tuple(self.signals))
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        """Identity of the occurrence, used for idempotent appends.
+    def boundary_s(self) -> float:
+        """The boundary the ending window had published."""
+        if self.scheduled_reset_at_s is not None:
+            return self.scheduled_reset_at_s
+        return self.reset_at_s
 
-        The reset instant is rendered to a whole-second ISO string rather than compared
-        as a float: the vendor's timestamps arrive with sub-second jitter across
-        payloads, and two floats that differ in the seventh decimal are the same reset.
+    @property
+    def key(self) -> tuple[str, str, str]:
+        """Identity of the occurrence, used for idempotent appends and supersession.
+
+        It names the window that ended, by the boundary that window published, and not
+        the instant the rollover happened. The boundary is a value the provider wrote
+        down. The instant of an early reset is a bound derived from two polls. And a
+        version-1 row, which misdated an early reset at its boundary, must share an
+        identity with the version-2 row that corrects it.
+
+        The boundary is rendered to a whole-second ISO string rather than compared as a
+        float: the vendor's timestamps arrive with sub-second jitter across payloads,
+        and two floats that differ in the seventh decimal are the same reset.
         """
-        return (self.account, self.window, _iso(self.reset_at_s))
+        return (self.account, self.window, _iso(self.boundary_s))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping (plain types only)."""
         return {
-            "v": WASTE_VERSION,
+            "v": self.version,
             "account": self.account,
+            "provider": self.provider,
             "window": self.window,
             "scoped": self.scoped,
+            "kind": self.kind,
             "reset_at": _iso(self.reset_at_s),
             "reset_at_s": self.reset_at_s,
+            "scheduled_reset_at": (
+                None if self.scheduled_reset_at_s is None else _iso(self.scheduled_reset_at_s)
+            ),
+            "scheduled_reset_at_s": self.scheduled_reset_at_s,
             "observed": self.observed,
             "remaining_fraction": self.remaining_fraction,
             "wasted_pse": self.wasted_pse,
@@ -247,6 +337,12 @@ class ResetRecord:
                 None if self.last_observed_at_s is None else _iso(self.last_observed_at_s)
             ),
             "last_observed_at_s": self.last_observed_at_s,
+            "first_observed_after_at": (
+                None
+                if self.first_observed_after_s is None
+                else _iso(self.first_observed_after_s)
+            ),
+            "first_observed_after_s": self.first_observed_after_s,
             "observation_gap_s": self.observation_gap_s,
             "tier": self.tier,
             "tier_scale": self.tier_scale,
@@ -280,6 +376,17 @@ def record_from_dict(data: Mapping[str, Any]) -> ResetRecord | None:
             return None
         return float(value)
 
+    def _optional_str(name: str) -> str | None:
+        value = data.get(name)
+        return value if isinstance(value, str) else None
+
+    # A line with no ``v`` predates the field, and only version 1 ever lacked it.
+    raw_version = data.get("v")
+    version = (
+        raw_version
+        if isinstance(raw_version, int) and not isinstance(raw_version, bool)
+        else 1
+    )
     signals = data.get("signals")
     return ResetRecord(
         account=account,
@@ -291,14 +398,19 @@ def record_from_dict(data: Mapping[str, Any]) -> ResetRecord | None:
         wasted_pse=_optional_float("wasted_pse"),
         last_observed_at_s=_optional_float("last_observed_at_s"),
         observation_gap_s=_optional_float("observation_gap_s"),
-        tier=data.get("tier") if isinstance(data.get("tier"), str) else None,
+        tier=_optional_str("tier"),
         tier_scale=_optional_float("tier_scale"),
         k=_optional_float("k"),
-        source=data.get("source") if isinstance(data.get("source"), str) else None,
+        source=_optional_str("source"),
         signals=tuple(s for s in signals if isinstance(s, str))
         if isinstance(signals, Sequence) and not isinstance(signals, str)
         else (),
-        reason=data.get("reason") if isinstance(data.get("reason"), str) else None,
+        reason=_optional_str("reason"),
+        kind=_optional_str("kind"),
+        scheduled_reset_at_s=_optional_float("scheduled_reset_at_s"),
+        first_observed_after_s=_optional_float("first_observed_after_s"),
+        provider=_optional_str("provider"),
+        version=version,
     )
 
 
@@ -338,6 +450,7 @@ class _Reading:
     tier: str
     tier_scale: float
     source: str
+    provider: str | None
     windows: Mapping[str, _WindowReading]
 
 
@@ -435,6 +548,11 @@ def _series(records: Iterable[Mapping[str, Any]]) -> dict[str, list[_Reading]]:
                     tier=tier,
                     tier_scale=tier_scale,
                     source=str(entry.get("source") or "unknown"),
+                    provider=(
+                        entry.get("provider")
+                        if isinstance(entry.get("provider"), str)
+                        else None
+                    ),
                     windows=windows,
                 )
             )
@@ -532,6 +650,44 @@ def _wasted_for(
     )
 
 
+def _observed_record(
+    account_id: str,
+    key: str,
+    window: _WindowReading,
+    before: _Reading,
+    after: _Reading,
+    stocks: Stocks | None,
+    plan: Plan,
+    *,
+    reset_at_s: float,
+    kind: str,
+    signals: Sequence[str],
+) -> ResetRecord:
+    """A reset with a reading on each side, so its remainder is measured."""
+    wasted, reason = _wasted_for(window, stocks, plan, before.tier_scale)
+    return ResetRecord(
+        account=account_id,
+        window=key,
+        reset_at_s=reset_at_s,
+        scheduled_reset_at_s=window.resets_at_s,
+        observed=True,
+        scoped=window.scoped,
+        remaining_fraction=round(max(0.0, 1.0 - window.used), _ROUND_PLACES),
+        wasted_pse=None if wasted is None else round(wasted, _ROUND_PLACES),
+        last_observed_at_s=before.observed_at_s,
+        first_observed_after_s=after.observed_at_s,
+        observation_gap_s=max(0.0, reset_at_s - before.observed_at_s),
+        tier=before.tier,
+        tier_scale=before.tier_scale,
+        k=plan.weekly_to_session,
+        source=before.source,
+        signals=tuple(signals),
+        reason=reason,
+        kind=kind,
+        provider=before.provider,
+    )
+
+
 def detect_resets(
     records: Iterable[Mapping[str, Any]], *, plans: Mapping[str, Plan] | None = None
 ) -> Detection:
@@ -540,6 +696,13 @@ def detect_resets(
     A reset shows up two ways -- the used fraction dropping, and ``resets_at`` moving
     forward -- and ``resets_at`` is the one that carries the *instant*, so it is the
     trigger. The drop is recorded as a corroborating signal when it is also present.
+
+    A rollover is recognized two ways. The boundary may move by at least half a window,
+    which no drift can do. Or the used fraction may drop while a fresh window opens
+    between the two readings: the new boundary sits one window length after a moment
+    the two polls bracket. The second form is how an early reset in the first half of a
+    week looks. A sliding window opens a fresh window on every poll too, but its used
+    fraction never drops, so it never matches.
 
     Args:
         records: History records (see :func:`quota_router.history.iter_records`).
@@ -569,8 +732,19 @@ def detect_resets(
                         f"refusing to record a reset from data that disagrees with itself"
                     )
                     continue
-                if jump < MIN_RESET_JUMP_FRACTION * window.length_s:
-                    if later.used < window.used - USED_QUANTUM:
+                dropped = later.used < window.used - USED_QUANTUM
+                fresh_start_s = later.resets_at_s - later.length_s
+                opened_between = (
+                    before.observed_at_s - RESET_JITTER_S
+                    <= fresh_start_s
+                    <= after.observed_at_s + RESET_JITTER_S
+                )
+                rolled_early_in_week = jump > RESET_JITTER_S and dropped and opened_between
+                if (
+                    jump < MIN_RESET_JUMP_FRACTION * window.length_s
+                    and not rolled_early_in_week
+                ):
+                    if dropped:
                         warnings.append(
                             f"{account_id}/{key}: incoherent pair -- used fell "
                             f"{window.used:.0%} -> {later.used:.0%} but the reset time "
@@ -590,35 +764,79 @@ def detect_resets(
                     continue
 
                 signals = ["resets_at_advanced"]
-                if later.used < window.used - USED_QUANTUM:
+                if dropped:
                     signals.append("used_fraction_dropped")
 
-                wasted, reason = _wasted_for(window, stocks, plan, before.tier_scale)
-                found.append(
-                    ResetRecord(
-                        account=account_id,
-                        window=key,
-                        reset_at_s=window.resets_at_s,
-                        observed=True,
-                        scoped=window.scoped,
-                        remaining_fraction=round(
-                            max(0.0, 1.0 - window.used), _ROUND_PLACES
-                        ),
-                        wasted_pse=(
-                            None if wasted is None else round(wasted, _ROUND_PLACES)
-                        ),
-                        last_observed_at_s=before.observed_at_s,
-                        observation_gap_s=max(
-                            0.0, window.resets_at_s - before.observed_at_s
-                        ),
-                        tier=before.tier,
-                        tier_scale=before.tier_scale,
-                        k=plan.weekly_to_session,
-                        source=before.source,
-                        signals=tuple(signals),
-                        reason=reason,
+                if before.observed_at_s > window.resets_at_s + RESET_JITTER_S:
+                    # The last reading was taken after its own window had already
+                    # closed, so the source was serving a stale value. The reset
+                    # happened with nothing current watching, and pairing the stale
+                    # value with a zero gap would pass it off as a perfect measurement.
+                    found.append(
+                        ResetRecord(
+                            account=account_id,
+                            window=key,
+                            reset_at_s=window.resets_at_s,
+                            scheduled_reset_at_s=window.resets_at_s,
+                            observed=False,
+                            scoped=window.scoped,
+                            tier=before.tier,
+                            tier_scale=before.tier_scale,
+                            k=plan.weekly_to_session,
+                            source=before.source,
+                            signals=tuple(signals),
+                            reason=(
+                                f"unobserved: the last reading before this reset was "
+                                f"taken at {_iso(before.observed_at_s)}, after the "
+                                f"window's own boundary at {_iso(window.resets_at_s)}, "
+                                f"so its {before.source} source was serving a stale "
+                                f"value and the remainder at the reset is unknown"
+                            ),
+                            kind=KIND_SCHEDULED,
+                            provider=before.provider,
+                        )
                     )
-                )
+                elif window.resets_at_s - after.observed_at_s > EARLY_RESET_MIN_S:
+                    # Early: the new window was already visible while the old boundary
+                    # was still more than EARLY_RESET_MIN_S away. The fresh window's
+                    # own start is the provider's account of the instant; the two polls
+                    # bound it, and win when it falls outside them.
+                    reset_at_s = min(
+                        max(fresh_start_s, before.observed_at_s), after.observed_at_s
+                    )
+                    found.append(
+                        _observed_record(
+                            account_id,
+                            key,
+                            window,
+                            before,
+                            after,
+                            stocks,
+                            plan,
+                            reset_at_s=reset_at_s,
+                            kind=KIND_EARLY,
+                            signals=signals,
+                        )
+                    )
+                    # No missed resets to enumerate. The old boundary was still in the
+                    # future at the second poll, so the two polls are less than one
+                    # window apart and cannot hide a second rollover.
+                    continue
+                else:
+                    found.append(
+                        _observed_record(
+                            account_id,
+                            key,
+                            window,
+                            before,
+                            after,
+                            stocks,
+                            plan,
+                            reset_at_s=window.resets_at_s,
+                            kind=KIND_SCHEDULED,
+                            signals=signals,
+                        )
+                    )
 
                 # How many resets fit in the jump. Anchored to ``later`` rather than to
                 # ``before``, because ``later.resets_at_s`` is a value the vendor
@@ -636,16 +854,20 @@ def detect_resets(
                         f"the {emitted} most recent and cut {missed - emitted}"
                     )
                 for index in range(emitted, 0, -1):
+                    missed_at_s = later.resets_at_s - index * window.length_s
                     found.append(
                         ResetRecord(
                             account=account_id,
                             window=key,
-                            reset_at_s=later.resets_at_s - index * window.length_s,
+                            reset_at_s=missed_at_s,
+                            scheduled_reset_at_s=missed_at_s,
                             observed=False,
                             scoped=window.scoped,
                             tier=before.tier,
                             tier_scale=before.tier_scale,
                             k=plan.weekly_to_session,
+                            kind=KIND_SCHEDULED,
+                            provider=before.provider,
                             signals=("resets_at_advanced",),
                             reason=(
                                 f"unobserved: the reset time jumped "
@@ -725,6 +947,21 @@ def read_records(
     return tuple(rows), warnings
 
 
+def current_records(records: Iterable[ResetRecord]) -> tuple[ResetRecord, ...]:
+    """One row per occurrence: the highest schema version's account of it.
+
+    Every line stays on disk. A later version's row for the same window supersedes an
+    earlier one only in what is read, which is how a file that may never be rewritten
+    is corrected. Rows keep the position of the first line for their occurrence.
+    """
+    best: dict[tuple[str, str, str], ResetRecord] = {}
+    for record in records:
+        held = best.get(record.key)
+        if held is None or record.version > held.version:
+            best[record.key] = record
+    return tuple(best.values())
+
+
 def append_records(
     records: Iterable[ResetRecord],
     *,
@@ -733,9 +970,11 @@ def append_records(
 ) -> WasteWrite:
     """Append rows the file does not already have, and nothing else.
 
-    Idempotent on ``(account, window, reset_at)``: the reset instant uniquely identifies
-    the occurrence, so re-running the detector over the same history -- or over a longer
-    history that contains it -- can never double-count.
+    Idempotent on :attr:`ResetRecord.key`, the window that ended, so re-running the
+    detector over the same history -- or over a longer history that contains it -- can
+    never double-count. Only a row of the current version counts as "already have": an
+    occurrence recorded by an older writer is appended once more under the current
+    version, and :func:`current_records` reads the newer one.
 
     There is deliberately no ``max_bytes``, no ``keep_days``, and no way to pass a clock
     that could shorten the series. See the module docstring for the incident that made
@@ -743,7 +982,7 @@ def append_records(
     """
     target = Path(path) if path is not None else waste_path(env)
     existing, warnings = read_records(target)
-    seen = {record.key for record in existing}
+    seen = {record.key for record in existing if record.version >= WASTE_VERSION}
 
     fresh: list[ResetRecord] = []
     skipped = 0
@@ -821,13 +1060,20 @@ def _blank_bucket() -> dict[str, Any]:
         "resets": 0,
         "observed": 0,
         "missed": 0,
+        "unclassified": 0,
         "wasted_pse": 0.0,
         "max_observation_gap_s": None,
     }
 
 
+def _blank_early_bucket() -> dict[str, Any]:
+    return {"resets": 0, "forfeited_pse": 0.0}
+
+
 def _absorb(bucket: dict[str, Any], record: ResetRecord) -> None:
     bucket["resets"] += 1
+    if record.kind is None:
+        bucket["unclassified"] += 1
     if record.observed:
         bucket["observed"] += 1
         if record.wasted_pse is not None:
@@ -843,31 +1089,136 @@ def _absorb(bucket: dict[str, Any], record: ResetRecord) -> None:
         bucket["missed"] += 1
 
 
+def _absorb_early(bucket: dict[str, Any], record: ResetRecord) -> None:
+    bucket["resets"] += 1
+    if record.wasted_pse is not None:
+        bucket["forfeited_pse"] += record.wasted_pse
+
+
+def _early_events(records: Sequence[ResetRecord]) -> list[dict[str, Any]]:
+    """Early account-wide resets, grouped into events by provider and time.
+
+    Two early resets are one event when they share a provider and the poll gaps that
+    bracket them overlap. Several accounts in one event is the signature of a one-off
+    reset the provider granted to everyone: the operator's accounts are separate
+    subscriptions, and only the provider can move them all at once. One account on its
+    own may have had something specific happen to it, or the other accounts may have
+    been idle, unread, or not yet set up, so a one-account event claims nothing more.
+    """
+    rows = sorted(
+        (
+            record
+            for record in records
+            if record.kind == KIND_EARLY and not record.scoped
+        ),
+        key=lambda record: (record.reset_at_s, record.account),
+    )
+    events: list[dict[str, Any]] = []
+    for record in rows:
+        low = (
+            record.last_observed_at_s
+            if record.last_observed_at_s is not None
+            else record.reset_at_s
+        )
+        high = (
+            record.first_observed_after_s
+            if record.first_observed_after_s is not None
+            else record.reset_at_s
+        )
+        early_by_s = record.boundary_s - record.reset_at_s
+        event = next(
+            (
+                candidate
+                for candidate in events
+                if candidate["provider"] == record.provider
+                and record.provider is not None
+                and low <= candidate["_high"] + RESET_JITTER_S
+                and high >= candidate["_low"] - RESET_JITTER_S
+            ),
+            None,
+        )
+        if event is None:
+            event = {
+                "provider": record.provider,
+                "accounts": [],
+                "_low": low,
+                "_high": high,
+                "early_by_s": [early_by_s, early_by_s],
+                "forfeited_pse": 0.0,
+            }
+            events.append(event)
+        if record.account not in event["accounts"]:
+            event["accounts"].append(record.account)
+        event["_low"] = min(event["_low"], low)
+        event["_high"] = max(event["_high"], high)
+        event["early_by_s"] = [
+            min(event["early_by_s"][0], early_by_s),
+            max(event["early_by_s"][1], early_by_s),
+        ]
+        if record.wasted_pse is not None:
+            event["forfeited_pse"] += record.wasted_pse
+
+    return [
+        {
+            "provider": event["provider"],
+            "accounts": sorted(event["accounts"]),
+            "shared": len(event["accounts"]) > 1,
+            "reset_not_before": _iso(event["_low"]),
+            "reset_not_before_s": event["_low"],
+            "reset_not_after": _iso(event["_high"]),
+            "reset_not_after_s": event["_high"],
+            "min_early_by_s": event["early_by_s"][0],
+            "max_early_by_s": event["early_by_s"][1],
+            "forfeited_pse": event["forfeited_pse"],
+        }
+        for event in events
+    ]
+
+
 def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
     """Per account per window, what expired unused, with totals in PSE.
+
+    Reads :func:`current_records`, so a corrected occurrence counts once.
 
     Scoped sub-caps are totalled **separately**. A Fable PSE is a weekly PSE seen a
     second time through a narrower window -- adding the two would double-count the same
     lost work, which is the same coupling mistake :mod:`quota_router.pse` exists to
     prevent on the routing side.
+
+    Early resets are totalled separately as well, as *forfeited* rather than wasted,
+    and grouped into ``early_events``. See the module docstring for why. A version-1 row
+    with no ``kind`` stays in the waste total and is counted as ``unclassified``.
     """
+    current = current_records(records)
     accounts: dict[str, dict[str, dict[str, Any]]] = {}
     totals = _blank_bucket()
     scoped_totals = _blank_bucket()
+    early_totals = _blank_early_bucket()
+    early_scoped_totals = _blank_early_bucket()
     span: list[float] = []
 
-    for record in records:
+    for record in current:
         bucket = accounts.setdefault(record.account, {}).setdefault(
-            record.window, {**_blank_bucket(), "scoped": record.scoped}
+            record.window,
+            {**_blank_bucket(), "early": 0, "forfeited_pse": 0.0, "scoped": record.scoped},
         )
-        _absorb(bucket, record)
-        _absorb(scoped_totals if record.scoped else totals, record)
+        if record.kind == KIND_EARLY:
+            bucket["early"] += 1
+            if record.wasted_pse is not None:
+                bucket["forfeited_pse"] += record.wasted_pse
+            _absorb_early(early_scoped_totals if record.scoped else early_totals, record)
+        else:
+            _absorb(bucket, record)
+            _absorb(scoped_totals if record.scoped else totals, record)
         span.append(record.reset_at_s)
 
     return {
         "accounts": accounts,
         "totals": totals,
         "scoped_totals": scoped_totals,
+        "early_totals": early_totals,
+        "early_scoped_totals": early_scoped_totals,
+        "early_events": _early_events(current),
         "first_reset_at_s": min(span) if span else None,
         "last_reset_at_s": max(span) if span else None,
     }
