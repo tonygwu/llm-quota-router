@@ -49,7 +49,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -676,13 +676,19 @@ def _partition_candidates(
     snapshots: Sequence[AccountSnapshot],
     model_class: str | None,
     now_s: float,
+    *,
+    capability_only: Collection[str] = (),
 ) -> Partition:
     """Split snapshots into routable candidates and CLI-level exclusions.
 
     Exclusions here are *policy* (disabled, ``--only``/``--exclude``, unavailable, below
-    ``--min-remaining``), not scoring. They are reported with reasons rather than dropped,
-    because "why was claude_c not even considered?" is the second question every operator
-    asks.
+    ``--min-remaining``, capability-only), not scoring. They are reported with reasons
+    rather than dropped, because "why was claude_c not even considered?" is the second
+    question every operator asks.
+
+    Args:
+        capability_only: Accounts this pick may not return, because they serve
+            capability picks only. See :func:`_capability_only_ids`.
     """
     candidates: list[AccountSnapshot] = []
     excluded: list[ScoreBreakdown] = []
@@ -695,6 +701,11 @@ def _partition_candidates(
         policy_reject = True
         if account is not None and not account.enabled:
             reason = "disabled by configuration or --only/--exclude"
+        elif snapshot.id in capability_only:
+            reason = (
+                'unmetered = "fallback": serves capability picks only, so a pick without '
+                "--capability returns it only when --only names it"
+            )
         elif not snapshot.available:
             # An unread account gets a reason that says so in as many words. The bare
             # note ("acct@example.com: access token expired") reads as an aside next to
@@ -751,6 +762,29 @@ def _partition_candidates(
         candidates=tuple(candidates),
         excluded=tuple(excluded),
         fallback_pool=tuple(fallback_pool),
+    )
+
+
+def _capability_only_ids(
+    config: Config, capability: str | None, only: Sequence[str] | None
+) -> frozenset[str]:
+    """Accounts a pick without ``--capability`` may not return, unless ``--only`` names them.
+
+    ``unmetered = "fallback"`` declares an account for capability picks only. Its
+    callers launch work through the plan a capability pick hands back, model included.
+    A plain pick's callers instead assume the provider they asked for: until the
+    Antigravity ``/usage`` reader, a plain pick never returned one of these pools,
+    because it had no windows, and an audit of the operator's repos on 2026-10-12 found
+    four call sites that would mishandle one. A reading makes the pool compete inside
+    capability picks (:func:`_fallback_only` steps aside) and leaves this rule alone.
+    """
+    if capability:
+        return frozenset()
+    named = set(only or ())
+    return frozenset(
+        account.id
+        for account in config.enabled_accounts()
+        if account.unmetered == "fallback" and account.id not in named
     )
 
 
@@ -1479,7 +1513,15 @@ def _prepare(
     adjusted = tuple(adjusted_list)
     for entry in blind:
         warnings.append(f"{entry['account']}: {entry['reason']}")
-    partition = _partition_candidates(config, adjusted, model.model_class, now_s)
+    partition = _partition_candidates(
+        config,
+        adjusted,
+        model.model_class,
+        now_s,
+        capability_only=_capability_only_ids(
+            config, capability, _split_list(getattr(args, "only", None))
+        ),
+    )
 
     prepared = Prepared(
         config=config,

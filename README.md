@@ -956,9 +956,19 @@ A Claude-flavour pool takes the same line and then serves `premium` and `standar
 its Claude label.
 
 It is then ranked first with `fits: true` and a warning that its quota is unmeasured. It
-never competes with a measured account, a caller's `--min-remaining` keeps it out (an
-unknown figure cannot meet a floor), and without `--capability` nothing changes. Once its
-`/usage` reading returns, it competes normally again.
+never competes with a measured account, and a caller's `--min-remaining` keeps it out (an
+unknown figure cannot meet a floor). Once its `/usage` reading returns, it competes
+normally again.
+
+**A `fallback` account serves capability picks only, measured or not.** A pick without
+`--capability` never returns it unless `--only` names it. A capability pick hands back a
+launch plan for the account's own provider and model. A plain pick's callers instead
+assume the provider they asked about. Before the `/usage` reader, a plain pick never
+returned an Antigravity pool, because the pool had no windows. An audit of the
+operator's repos on 2026-10-12 found four call sites that would mishandle one: one ran
+`claude` on the default account while recording the Antigravity id, and one billed the
+Gemini pool for a pick made on the Claude pool. A pinned harness that names the pool
+with `--only` still gets it.
 
 When its call fails, tell the router:
 

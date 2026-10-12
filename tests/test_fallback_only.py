@@ -101,7 +101,9 @@ def test_without_a_capability_a_fallback_account_behaves_as_today(env, fallback)
     payload = _pick(env, fallback, snapshots=_spent())
     assert payload["decision"]["fits"] is False
     excluded = _rows(payload, "excluded")
-    assert excluded["antigravity_gemini"]["reason"] == "no usage windows in snapshot"
+    # Excluded before scoring now, as capability-only, measured or not; it used to fall
+    # out at scoring with "no usage windows in snapshot". Either way it is not returned.
+    assert "serves capability picks only" in excluded["antigravity_gemini"]["reason"]
 
 
 def test_a_caller_floor_keeps_the_fallback_out(env, fallback):
@@ -197,6 +199,38 @@ def test_a_measured_fallback_pool_competes_like_any_measured_account(env, fallba
     assert payload["decision"]["account"] == "antigravity_gemini"
     assert payload["decision"]["fits"] is True
     assert not any("fallback-only" in w for w in payload["warnings"])
+
+
+def test_a_plain_pick_never_returns_a_fallback_pool_even_once_it_is_measured(env, fallback):
+    """`unmetered = "fallback"` declares a pool for capability picks only.
+
+    Before the /usage reader, a plain pick never returned an Antigravity pool, because
+    the pool had no windows. Callers were written against that. On 2026-10-12, an audit
+    of the operator's repos found four call sites that would mishandle one: one ran
+    `claude` on the default account while recording the Antigravity id, and another
+    billed the Gemini pool for a pick the router made on the Claude pool. So the reading
+    widens what a capability pick may use and leaves what a plain pick may return as it
+    was.
+    """
+    spent = {s.id: s for s in _spent()}
+    spent["antigravity_gemini"] = _measured_pool("antigravity_gemini", 0.05)
+
+    payload = _pick(env, fallback, snapshots=tuple(spent.values()))
+
+    assert payload["decision"]["account"] != "antigravity_gemini"
+    reason = _rows(payload, "excluded")["antigravity_gemini"]["reason"]
+    assert "capability" in reason and "--only" in reason, reason
+
+
+def test_a_plain_pick_returns_a_fallback_pool_its_caller_names(env, fallback):
+    """A pinned harness names the pool with --only, and that stays a direct route."""
+    measured = _measured_pool("antigravity_gemini", 0.05)
+
+    payload = _pick(env, fallback, "--only", "antigravity_gemini",
+                    snapshots=_fleet(antigravity_gemini=measured))
+
+    assert payload["decision"]["account"] == "antigravity_gemini"
+    assert payload["decision"]["fits"] is True
 
 
 def test_frontier_has_no_antigravity_fallback(env, fallback):
