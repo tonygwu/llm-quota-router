@@ -250,3 +250,34 @@ def report_failure(
         loaded, account, text, env=environ,
         now_s=float(now_s) if now_s is not None else time.time(),
     )
+
+
+def run_call(
+    request: Mapping[str, Any],
+    *,
+    env: Mapping[str, str] | None = None,
+    now_s: float | None = None,
+    deps: Any = None,
+    cwd: str | None = None,
+    config: str | None = None,
+) -> dict[str, Any]:
+    """Execute one tool-less call; the same response ``quotapick run`` prints.
+
+    Raises ``ValueError`` (``quota_router.run.BadRequest``) for a request or config the
+    router refuses before spending anything.
+    """
+    from . import cli as _cli
+    from . import run as run_mod
+
+    parsed = run_mod.parse_request(request)
+    now = float(now_s) if now_s is not None else time.time()
+    payload = run_mod.execute(
+        parsed,
+        env=env if env is not None else {},
+        now_s=now,
+        deps=_cli.Deps.resolve(deps),
+        cwd=cwd,
+        config_path=config,
+    )
+    payload["generated_at"] = _cli._iso(now)
+    return payload

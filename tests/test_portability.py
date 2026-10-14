@@ -207,18 +207,45 @@ def test_pure_modules_do_not_import_the_impure_layers() -> None:
 def test_scoring_and_select_are_importable_without_the_oracle_layer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The real proof of portability: import them with the provider layer un-importable."""
-    for name in list(sys.modules):
-        if name.startswith("quota_router.providers"):
-            monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.setitem(sys.modules, "quota_router.providers", None)
+    """The real proof of portability: import them with the provider layer un-importable.
 
+    Re-importing replaces modules in ``sys.modules`` *and* rebinds attributes on the
+    ``quota_router`` package, and it can pull in modules that were not loaded before.
+    Every one of those is put back exactly as it was afterwards; a leaked copy of
+    ``types`` makes the CLI read every later decision as malformed (its ``Decision`` is
+    a different class), which is how this test once broke the next CLI test file.
+    """
     import importlib
+    import types as pytypes
 
-    for name in ("quota_router.types", "quota_router.scoring", "quota_router.select"):
-        monkeypatch.delitem(sys.modules, name, raising=False)
-    for name in ("quota_router.types", "quota_router.scoring", "quota_router.select"):
-        importlib.import_module(name)
+    import quota_router
+
+    def ours(name: str) -> bool:
+        return name == "quota_router" or name.startswith("quota_router.")
+
+    saved_modules = {k: v for k, v in sys.modules.items() if ours(k)}
+    saved_attrs = {
+        k: v for k, v in vars(quota_router).items() if isinstance(v, pytypes.ModuleType)
+    }
+    try:
+        for name in list(sys.modules):
+            if name.startswith("quota_router.providers"):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.setitem(sys.modules, "quota_router.providers", None)
+        for name in ("quota_router.types", "quota_router.scoring", "quota_router.select"):
+            sys.modules.pop(name, None)
+        for name in ("quota_router.types", "quota_router.scoring", "quota_router.select"):
+            importlib.import_module(name)
+    finally:
+        monkeypatch.undo()
+        for name in [k for k in sys.modules if ours(k)]:
+            del sys.modules[name]
+        sys.modules.update(saved_modules)
+        for name, value in list(vars(quota_router).items()):
+            if isinstance(value, pytypes.ModuleType) and name not in saved_attrs:
+                delattr(quota_router, name)
+        for name, value in saved_attrs.items():
+            setattr(quota_router, name, value)
 
 
 # ======================================================================================

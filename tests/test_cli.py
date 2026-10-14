@@ -161,13 +161,14 @@ def env(tmp_path) -> dict[str, str]:
     }
 
 
-def run(argv, env, *, snapshots=None, deps=None, now_s=NOW, cwd=None):
+def run(argv, env, *, snapshots=None, deps=None, now_s=NOW, cwd=None, stdin=""):
     """Call ``main()`` and return ``(exit_code, stdout, stderr)``."""
     if deps is None:
         deps = cli.Deps(load_snapshots=lambda **kw: (list(snapshots or ()), []))
     out, err = io.StringIO(), io.StringIO()
     code = main_code = cli.main(
-        argv, env=env, stdout=out, stderr=err, now_s=now_s, deps=deps, cwd=cwd
+        argv, env=env, stdout=out, stderr=err, now_s=now_s, deps=deps, cwd=cwd,
+        stdin=io.StringIO(stdin),
     )
     return main_code, out.getvalue(), err.getvalue()
 

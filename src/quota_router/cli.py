@@ -965,6 +965,9 @@ def _build_joint(
     model: mc.ModelResolution,
     capability_ctx: "CapabilityContext | None",
     warnings: list[str],
+    *,
+    objective_override: str | None = None,
+    stream: str = "other",
 ) -> tuple[Any, dict[str, Any] | None]:
     """The joint objective's context, or why the decision falls back to ``own_waste``.
 
@@ -974,11 +977,12 @@ def _build_joint(
     when ``joint`` was asked for, and the ``fallback`` field either way.
     """
     engine = config.engine
-    if engine.objective == "own_waste" and not engine.shadow:
+    wanted_objective = objective_override or engine.objective
+    if wanted_objective == "own_waste" and not engine.shadow:
         return None, None
     job_pse = getattr(args, "job_pse", None) or engine.default_job_pse
     report: dict[str, Any] = {
-        "configured": engine.objective,
+        "configured": wanted_objective,
         "used": "own_waste",
         "fallback": None,
         "shadow": engine.shadow,
@@ -1084,11 +1088,11 @@ def _build_joint(
         horizon_s=engine.horizon_s,
         step_s=engine.step_s,
         job_pse=job_pse,
-        stream=joint_mod.STREAM_OTHER,
+        stream=stream,
         fable_ids=fable_ids,
         tie_fraction=engine.tie_fraction,
     )
-    report["used"] = "joint" if engine.objective == "joint" else "own_waste"
+    report["used"] = "joint" if wanted_objective == "joint" else "own_waste"
     return context, report
 
 
@@ -1552,8 +1556,15 @@ def _prepare(
     *,
     event: str,
     write_state: bool,
+    objective: str | None = None,
+    job_stream: str = "other",
 ) -> Prepared:
-    """Config -> oracle -> history -> state -> pileup -> filter -> decide."""
+    """Config -> oracle -> history -> state -> pileup -> filter -> decide.
+
+    ``objective`` overrides ``[engine] objective`` for this call (``run`` ranks by the
+    joint projection whatever ``pick`` defaults to); ``job_stream`` says which demand
+    stream the job belongs to.
+    """
     config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
     base_config = config
     config = config.with_overrides(
@@ -1717,7 +1728,7 @@ def _prepare(
         ),
     )
 
-    joint_ctx, objective = _build_joint(
+    joint_ctx, objective_report = _build_joint(
         config,
         base_config,
         fleet,
@@ -1729,6 +1740,8 @@ def _prepare(
         model,
         capability_ctx,
         warnings,
+        objective_override=objective,
+        stream=job_stream,
     )
 
     prepared = Prepared(
@@ -1746,7 +1759,7 @@ def _prepare(
         degraded=tuple(degraded),
         capability=capability_ctx,
         joint=joint_ctx,
-        objective=objective,
+        objective=objective_report,
     )
 
     records_a_pick = bool(write_state and not getattr(args, "dry_run", False))
@@ -1758,13 +1771,13 @@ def _prepare(
     )
     prepared.decision = decision
     prepared.from_fallback = bool(fallback_flag)
-    if objective is not None:
-        objective["shadow_chosen"] = _shadow_choice(prepared, deps) if objective.get(
+    if objective_report is not None:
+        objective_report["shadow_chosen"] = _shadow_choice(prepared, deps) if objective_report.get(
             "shadow"
         ) else None
         if prepared.from_fallback:
             # The exhausted fallback orders by earliest reset; no objective ranked it.
-            objective["used"] = None
+            objective_report["used"] = None
     if capability_ctx is not None:
         decision = _fallback_only(prepared, capability_ctx, warnings)
         prepared.decision = decision
@@ -3225,6 +3238,11 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
+    subparsers.add_parser(
+        "run",
+        parents=[common],
+        help="execute one tool-less call from a JSON request on stdin; print what served it",
+    )
     credits_parser = subparsers.add_parser(
         "credits",
         parents=[common],
@@ -4097,6 +4115,43 @@ def _cmd_credits(
     return EXIT_OK
 
 
+def _cmd_run(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Execute one tool-less call from a JSON request on stdin; print the response.
+
+    Exit 0 whenever the request parsed, whatever the outcome (the response says it);
+    exit 2 for a request or config the router refuses before spending anything.
+    """
+    from . import run as run_mod
+
+    raw = (getattr(args, "stdin", None) or sys.stdin).read()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        _dump_json(run_mod.bad_request_payload(f"request is not JSON: {exc}"), stdout)
+        return EXIT_USAGE
+    try:
+        request = run_mod.parse_request(data)
+        payload = run_mod.execute(
+            request, env=env, now_s=now_s, deps=deps, cwd=cwd,
+            config_path=getattr(args, "config", None),
+        )
+    except run_mod.BadRequest as exc:
+        request_id = data.get("request_id") if isinstance(data, Mapping) else None
+        _dump_json(run_mod.bad_request_payload(str(exc), request_id), stdout)
+        return EXIT_USAGE
+    payload["generated_at"] = _iso(now_s)
+    _dump_json(payload, stdout)
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -4107,6 +4162,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "forecast": _cmd_forecast,
     "replay": _cmd_replay,
     "credits": _cmd_credits,
+    "run": _cmd_run,
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,
@@ -4129,6 +4185,7 @@ def main(
     *,
     deps: Deps | None = None,
     cwd: str | None = None,
+    stdin: TextIO | None = None,
 ) -> int:
     """Run the CLI and return an exit code.
 
@@ -4155,6 +4212,8 @@ def main(
         with contextlib.redirect_stdout(out):
             parser.print_help()
         return EXIT_USAGE
+    # Only `run` reads stdin (its request); injected like stdout so a test never blocks.
+    args.stdin = sys.stdin if stdin is None else stdin
 
     try:
         resolved_now = _parse_now(getattr(args, "now", None))
