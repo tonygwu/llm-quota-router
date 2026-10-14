@@ -168,6 +168,31 @@ to `own_waste` and carry no five-hour cap.
 
 ---
 
+## 4. The joint projection cannot move work across providers
+
+The projection and the replay keep provider groups apart: Claude work stays on Claude
+accounts. That makes #3's stall figure an upper bound for work that could have run on
+another provider, and it leaves two cheap sources of quota undervalued. Measured
+2026-10-14:
+
+- Codex: both accounts at about 10% of their week with 128h to go. Since the waste
+  series began labelling resets, the two accounts logged 14 early resets against 4
+  scheduled. Whatever is left at an early reset is forfeited, so Codex quota is more
+  perishable than its published deadline says.
+- Antigravity: every pool at 0-8% of its week.
+
+`pick --capability` already ranks all three providers together and skips a Claude
+account whose five-hour window is spent, so capability-routed clients can spill today.
+Interactive `cl` and work pinned to a Claude model cannot.
+
+**What would close it:** (a) a measured exchange rate between providers' PSE units
+(Codex and Antigravity use the default k and capacity 1.0, which nothing calibrates);
+(b) a capability stream in the projection that any provider group can serve at that
+rate; (c) an early-reset hazard per provider, measured from `waste.jsonl`, that brings
+the effective deadline forward. Then re-run the replay gate with cross-provider routing.
+
+---
+
 ## Closed
 
 - **Pileup reservations double-counted once the endpoint caught up.** A claim existed
