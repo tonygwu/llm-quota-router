@@ -100,6 +100,37 @@ the counterfactual says.
   Closes when the refresher passes `--log-file /dev/stderr`, refuses a listing whose
   log names another address, and a test pins it.
 
+- **A Claude plan that lapses without `plan_ends` keeps getting routed to.** Nothing the
+  router reads names the plan: the usage endpoint carries percentages and deadlines, and
+  the tier comes from a file Claude Code rewrites only when it runs. A lapsed account
+  whose usage read still returns low percentages looks like a fresh pool, and a session
+  that fails without spending keeps it looking fresh. `plan_ends` covers an announced
+  end; this covers the unannounced one, such as a trial that ends. Evidence from
+  2026-10-14: `GET /api/oauth/profile` with the existing access token (read-only, no
+  `anthropic-beta` header needed) returns `account.has_claude_max`,
+  `account.has_claude_pro`, `organization.organization_type`, `rate_limit_tier` and
+  `subscription_status`. Two working Max accounts read `active` and `trialing`. A
+  cancellation changed none of these fields before the paid period ended, and claude.ai
+  refuses to authorize Claude Code for a free account, so no free-plan response can be
+  captured in advance. Proposed rule: read the profile at most once per 15 minutes per
+  account, failures included; exclude the account, keeping its windows and naming the
+  observed values, only when a well-formed profile shows no paid flag or a status other
+  than `active` or `trialing`; when the read fails or the shape is unfamiliar, keep
+  routing on usage and say so in the note; offline mode applies the cached verdict.
+  Closes when that rule ships with tests, and a real lapsed account's profile and usage
+  responses are captured as fixtures.
+
+- **The switch test compares pace, not quota at stake.** Stickiness keeps the incumbent
+  unless a challenger's tightest-window slack clears `incumbent x 1.15 + 0.02`. On
+  2026-10-14 an account with about 5 PSE at risk of expiring (its plan was ending) lost
+  that test for about 1.5 hours to an incumbent with about 1 PSE at risk, because its
+  five-hour window had just opened and a fresh window's slack is near zero. Pace bounds
+  thrashing, so this may be the right trade; it is surfaced here as a design choice,
+  not filed as a defect. Related: confidence shrinkage pulls stale accounts toward the
+  field mean score, so one large score raises every stale account's score with it.
+  Closes when the operator decides whether a large difference in quota at stake should
+  be able to override the pace margin, and a test pins whichever rule is chosen.
+
 - **Antigravity read failures leave no durable cause.** `--log-file /dev/stderr` replaces
   agy's own per-run log file, which held the only record of why a `/usage` read failed
   (sign-in stall, eligibility stall, eligibility 503). The cause now reaches only the
