@@ -757,6 +757,173 @@ def _build_engine(raw: Any, warnings: list[str]) -> EngineConfig:
     )
 
 
+#: Providers a credit pool may name. Anthropic is the only vendor whose subscription
+#: credits a CLI can spend (2026-10-14: OpenAI bundles none; Google's need a prepaid
+#: balance and bill a card past it).
+CREDIT_POOL_PROVIDERS: Final[tuple[str, ...]] = ("anthropic_api",)
+CREDIT_RENEWALS: Final[tuple[str, ...]] = ("monthly", "none")
+
+#: Prefixes a credit pool id may not take: ``types.provider_for_account_id`` maps an id to
+#: a provider by prefix, so ``claude_api`` would read as a Claude subscription.
+_RESERVED_ID_PREFIXES: Final[tuple[str, ...]] = ("claude", "codex", "cursor", "antigravity")
+
+_CREDIT_POOL_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "provider",
+        "keychain_service",
+        "linked_account",
+        "grant_usd",
+        "expires",
+        "renewal",
+        "card_on_file",
+        "hard_cap_usd",
+        "admission_margin",
+        "max_usd_per_call",
+        "enabled",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CreditPoolConfig:
+    """Prepaid API credit in one vendor org, reachable only through ``quotapick run``.
+
+    Args:
+        keychain_service: The Keychain item holding the org's API key. Never the key.
+        linked_account: The subscription account whose plan grants these credits. Its
+            ``plan_ends`` stops renewal; credits already granted keep their expiry.
+        grant_usd: What one grant adds.
+        expires_s: When the current grant expires (the Console shows a UTC date).
+        renewal: ``monthly`` (a new grant each billing cycle) or ``none``.
+        card_on_file: Whether the org can charge a card past its credits. With one, a
+            hard cap is required, or the router could spend real money.
+        hard_cap_usd: Spend ceiling the router enforces when a card is on file.
+        admission_margin: A call starts on this pool only if the balance covers its
+            expected cost times this.
+        max_usd_per_call: Per-call budget passed to the CLI.
+    """
+
+    id: str
+    provider: str
+    keychain_service: str
+    linked_account: str
+    grant_usd: float
+    expires_s: float
+    renewal: str
+    card_on_file: bool
+    hard_cap_usd: float | None = None
+    admission_margin: float = 1.5
+    max_usd_per_call: float = 10.0
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "keychain_service": self.keychain_service,
+            "linked_account": self.linked_account,
+            "grant_usd": self.grant_usd,
+            "expires_s": self.expires_s,
+            "renewal": self.renewal,
+            "card_on_file": self.card_on_file,
+            "hard_cap_usd": self.hard_cap_usd,
+            "admission_margin": self.admission_margin,
+            "max_usd_per_call": self.max_usd_per_call,
+            "enabled": self.enabled,
+        }
+
+
+def _looks_like_a_key(value: str) -> bool:
+    return value.startswith("sk-") or len(value) > 100
+
+
+def _build_credit_pools(
+    raw: Any,
+    accounts: Mapping[str, AccountConfig],
+    engine: EngineConfig,
+    warnings: list[str],
+) -> dict[str, CreditPoolConfig]:
+    table = _as_table(raw, "credit_pools")
+    pools: dict[str, CreditPoolConfig] = {}
+    for pool_id, body_raw in table.items():
+        section = f"credit_pools.{pool_id}"
+        body = _as_table(body_raw, section)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{2,40}", pool_id):
+            raise ConfigError(f"[{section}] id must be lowercase letters, digits and _")
+        if any(pool_id == p or pool_id.startswith(p + "_") for p in _RESERVED_ID_PREFIXES):
+            raise ConfigError(
+                f"[{section}] id must not start with a provider name "
+                f"({', '.join(_RESERVED_ID_PREFIXES)}): ids map to providers by prefix, so "
+                f"{pool_id!r} would read as a subscription account; try 'anthropic_api_<x>'"
+            )
+        if pool_id in accounts:
+            raise ConfigError(f"[{section}] id collides with account {pool_id!r}")
+        for key in sorted(set(body) - _CREDIT_POOL_KEYS):
+            warnings.append(
+                f"unknown key [{section}] {key} ignored "
+                f"(known: {', '.join(sorted(_CREDIT_POOL_KEYS))})"
+            )
+        for key in ("provider", "keychain_service", "linked_account", "grant_usd",
+                    "expires", "renewal", "card_on_file"):
+            if key not in body:
+                raise ConfigError(f"[{section}] {key} is required")
+        provider = _as_str(body["provider"], section, "provider")
+        if provider not in CREDIT_POOL_PROVIDERS:
+            raise ConfigError(
+                f"[{section}] provider must be one of {', '.join(CREDIT_POOL_PROVIDERS)}; "
+                f"got {provider!r}"
+            )
+        service = _as_str(body["keychain_service"], section, "keychain_service")
+        if not service or _looks_like_a_key(service):
+            raise ConfigError(
+                f"[{section}] keychain_service looks like a key, not the name of a Keychain "
+                f"item; store the key in the Keychain and name the item here"
+            )
+        linked = _as_str(body["linked_account"], section, "linked_account")
+        if linked not in accounts:
+            raise ConfigError(f"[{section}] linked_account {linked!r} is not a configured account")
+        renewal = _as_str(body["renewal"], section, "renewal")
+        if renewal not in CREDIT_RENEWALS:
+            raise ConfigError(
+                f"[{section}] renewal must be one of {', '.join(CREDIT_RENEWALS)}; got {renewal!r}"
+            )
+        card = _as_bool(body["card_on_file"], section, "card_on_file")
+        hard_cap = (
+            _as_number(body["hard_cap_usd"], section, "hard_cap_usd", minimum=1e-9)
+            if "hard_cap_usd" in body
+            else None
+        )
+        if card and hard_cap is None:
+            raise ConfigError(
+                f"[{section}] card_on_file = true needs hard_cap_usd: without one the router "
+                f"could spend past the credits onto the card"
+            )
+        pools[pool_id] = CreditPoolConfig(
+            id=pool_id,
+            provider=provider,
+            keychain_service=service,
+            linked_account=linked,
+            grant_usd=_as_number(body["grant_usd"], section, "grant_usd", minimum=1e-9),
+            expires_s=_as_instant(body["expires"], section, "expires"),
+            renewal=renewal,
+            card_on_file=card,
+            hard_cap_usd=hard_cap,
+            admission_margin=_as_number(
+                body.get("admission_margin", 1.5), section, "admission_margin", minimum=1.0
+            ),
+            max_usd_per_call=_as_number(
+                body.get("max_usd_per_call", 10.0), section, "max_usd_per_call", minimum=1e-9
+            ),
+            enabled=_as_bool(body.get("enabled", True), section, "enabled"),
+        )
+    if pools and engine.usd_per_pse is None:
+        raise ConfigError(
+            "[engine] usd_per_pse is required once a credit pool is configured: it puts "
+            "dollars of credit and PSE of subscription quota in one unit (305 was measured "
+            "on 2026-10-14)"
+        )
+    return pools
+
+
 @dataclass(frozen=True, slots=True)
 class ExecConfig:
     """Provider -> binary, for ``quotapick exec``."""
@@ -790,6 +957,7 @@ class Config:
     oracle: OracleConfig = field(default_factory=OracleConfig)
     exec: ExecConfig = field(default_factory=ExecConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
+    credit_pools: Mapping[str, CreditPoolConfig] = field(default_factory=dict)
     #: Model to fall back to when the requested one is exhausted on every account.
     #:
     #: Read by ``cl`` only, and **opt-in**: unset means "tell me and start anyway",
@@ -1013,6 +1181,7 @@ class Config:
                 "use_cache_on_failure": self.oracle.use_cache_on_failure,
             },
             "engine": self.engine.to_dict(),
+            "credit_pools": {k: v.to_dict() for k, v in self.credit_pools.items()},
             "sources": list(self.sources),
             "warnings": list(self.warnings),
         }
@@ -1085,6 +1254,8 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
         # Empty here: EngineConfig holds the defaults, and _build_engine reports unknown
         # keys. Listed so that an [engine] table is a known section.
         "engine": {},
+        # Empty here: pools are operator-declared, each tied to a linked account.
+        "credit_pools": {},
         # Empty here: the defaults live in quota_router.capability, and an operator's
         # [capabilities.<name>] rows are validated and merged over them.
         "capabilities": {},
@@ -1377,8 +1548,10 @@ def _build(
     exec_raw = _as_table(merged.get("exec", {}), "exec")
     model_raw = _as_table(merged.get("model_classes", {}), "model_classes")
 
+    accounts = _build_accounts(merged.get("accounts", {}), env, warnings)
+    engine = _build_engine(merged.get("engine", {}), warnings)
     return Config(
-        accounts=_build_accounts(merged.get("accounts", {}), env, warnings),
+        accounts=accounts,
         tiers=_as_float_table(merged.get("tiers", {}), "tiers"),
         providers=_as_float_table(merged.get("providers", {}), "providers"),
         model_multipliers=_as_float_table(
@@ -1482,7 +1655,8 @@ def _build(
             or dict(PROVIDER_CONFIG_DIR_ENV),
         ),
         capabilities=_build_capabilities(merged.get("capabilities")),
-        engine=_build_engine(merged.get("engine", {}), warnings),
+        engine=engine,
+        credit_pools=_build_credit_pools(merged.get("credit_pools", {}), accounts, engine, warnings),
         fallback_model=(
             _as_str(merged["fallback_model"], "", "fallback_model") or None
             if merged.get("fallback_model") is not None

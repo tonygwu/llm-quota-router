@@ -129,6 +129,24 @@ def test_pick_is_byte_identical_with_objective_own_waste_explicit(env, tmp_path)
     _assert_golden("pick_real_capture", payload)
 
 
+def test_pick_is_byte_identical_when_a_credit_pool_is_configured(env, tmp_path):
+    """A credit pool is reachable only through `quotapick run`; pick must not see it."""
+    _write_engine(
+        env,
+        "usd_per_pse = 305\n\n"
+        "[credit_pools.anthropic_api_d]\n"
+        'provider = "anthropic_api"\n'
+        'keychain_service = "anthropic-api-key-claude-d"\n'
+        'linked_account = "claude_d"\n'
+        "grant_usd = 200\n"
+        'expires = "2026-10-19T00:00:00Z"\n'
+        'renewal = "monthly"\n'
+        "card_on_file = false",
+    )
+    payload = _pick(["pick", "--dry-run"], env, tmp_path, snapshots=real_capture())
+    _assert_golden("pick_real_capture", payload)
+
+
 def test_status_is_byte_identical_with_objective_own_waste_explicit(env, tmp_path):
     _write_engine(env, 'objective = "own_waste"')
     code, out, err = run(

@@ -2398,6 +2398,13 @@ def _cmd_status(
             "degraded": list(prepared.degraded),
             "warnings": list(dict.fromkeys(prepared.warnings)),
         }
+        pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s)
+        if pools:
+            # Additive, and only when [credit_pools] is configured.
+            payload["credit_pools"] = pools
+            payload["warnings"] = payload["warnings"] + [
+                n for n in pool_notes if n not in payload["warnings"]
+            ]
         _dump_json(payload, stdout)
         return EXIT_OK
 
@@ -2407,6 +2414,11 @@ def _cmd_status(
         _write_status_verbose(prepared, now_s, model_class, stdout)
     else:
         _write_status_compact(prepared, now_s, model_class, stdout)
+    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s)
+    if pools:
+        stdout.write("\n" + _credit_pool_table(pools, now_s))
+    for note in pool_notes:
+        stderr.write(f"! {note}\n")
 
     _flush(stdout)
     for warning in live_warnings:
@@ -3213,6 +3225,21 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
+    credits_parser = subparsers.add_parser(
+        "credits",
+        parents=[common],
+        help="show API credit pool balances, or record the Console figure",
+    )
+    credits_actions = credits_parser.add_subparsers(dest="credits_action")
+    set_parser = credits_actions.add_parser("set", help="record the balance the Console shows")
+    set_parser.add_argument("pool")
+    set_parser.add_argument("--remaining", type=float, required=True, metavar="USD")
+    set_parser.add_argument("--expires", default=None, metavar="ISO",
+                            help="e.g. 2026-10-19T00:00:00Z (the Console shows UTC dates)")
+    grant_parser = credits_actions.add_parser("grant", help="record a new grant")
+    grant_parser.add_argument("pool")
+    grant_parser.add_argument("--amount", type=float, required=True, metavar="USD")
+    grant_parser.add_argument("--expires", required=True, metavar="ISO")
     replay_parser = subparsers.add_parser(
         "replay",
         parents=[common],
@@ -3952,6 +3979,124 @@ def _cmd_replay(
     return EXIT_OK
 
 
+def _credit_pool_rows(
+    config: Config, env: Mapping[str, str], now_s: float
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Each configured credit pool's balance, from the ledger; empty without pools."""
+    if not config.credit_pools:
+        return [], []
+    from . import credits as credits_mod
+
+    lines, problems = credits_mod.read(env)
+    plan_ends = config.plan_ends()
+    usd_per_pse = config.engine.usd_per_pse or 0.0
+    rows = []
+    for pool in config.credit_pools.values():
+        bal = credits_mod.balance(
+            pool, lines, now_s=now_s, plan_end_s=plan_ends.get(pool.linked_account)
+        )
+        rows.append(
+            {
+                "id": pool.id,
+                "provider": pool.provider,
+                "linked_account": pool.linked_account,
+                "enabled": pool.enabled,
+                "remaining_usd": bal.remaining_usd,
+                "grant_usd": bal.grant_usd,
+                "remaining_pse": bal.remaining_usd / usd_per_pse if usd_per_pse else None,
+                "held_usd": bal.held_usd,
+                "expires": _iso(bal.expires_s),
+                "expires_s": bal.expires_s,
+                "source": bal.source,
+                "confidence": bal.confidence,
+                "exhausted": bal.exhausted,
+                "expired": bal.expired,
+                "available": bal.available and pool.enabled,
+                "note": bal.note,
+            }
+        )
+    return rows, list(problems)
+
+
+def _credit_pool_table(rows: Sequence[Mapping[str, Any]], now_s: float) -> str:
+    lines = [
+        "API credit pools (reachable only through `quotapick run`):",
+        f"{'pool':<20} {'linked':<10} {'left':>9} {'of':>7} {'PSE':>6}  "
+        f"{'expires':<26} {'source':<9} note",
+    ]
+    for row in rows:
+        days = (row["expires_s"] - now_s) / 86400.0
+        pse = f"{row['remaining_pse']:.3f}" if row["remaining_pse"] is not None else "-"
+        lines.append(
+            f"{row['id']:<20} {row['linked_account']:<10} "
+            f"{'$' + format(row['remaining_usd'], '.2f'):>9} "
+            f"{'$' + format(row['grant_usd'], '.0f'):>7} {pse:>6}  "
+            f"{row['expires'] + f' ({days:.1f}d)':<26} {row['source']:<9} {row['note']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_credits(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Show credit pool balances, or record what the Console says.
+
+    ``credits set POOL --remaining USD [--expires ISO]`` records a checkpoint;
+    ``credits grant POOL --amount USD --expires ISO`` records a new grant.
+    """
+    from . import credits as credits_mod
+    from .config import _as_instant
+
+    config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    action = getattr(args, "credits_action", None)
+    if action in ("set", "grant"):
+        pool_id = args.pool
+        if pool_id not in config.credit_pools:
+            known = ", ".join(sorted(config.credit_pools)) or "none configured"
+            stderr.write(f"{_PROG} credits: unknown pool {pool_id!r} (known: {known})\n")
+            return EXIT_USAGE
+        try:
+            expires = (
+                _as_instant(args.expires, "", "--expires") if args.expires is not None else None
+            )
+        except ConfigError as exc:
+            stderr.write(f"{_PROG} credits: {exc}\n")
+            return EXIT_USAGE
+        amount = args.remaining if action == "set" else args.amount
+        if amount is None or not amount >= 0:
+            stderr.write(f"{_PROG} credits: the amount must be zero or more\n")
+            return EXIT_USAGE
+        if action == "grant" and expires is None:
+            stderr.write(f"{_PROG} credits grant: --expires is required\n")
+            return EXIT_USAGE
+        line: dict[str, Any] = {"t": now_s, "pool": pool_id, "type":
+                                "checkpoint" if action == "set" else "grant",
+                                "source": "operator"}
+        line["remaining_usd" if action == "set" else "usd"] = float(amount)
+        if expires is not None:
+            line["expires_s"] = expires
+        credits_mod.append(env, line)
+
+    rows, notes = _credit_pool_rows(config, env, now_s)
+    if getattr(args, "json", False):
+        _dump_json({"generated_at": _iso(now_s), "credit_pools": rows, "warnings": notes},
+                   stdout)
+        return EXIT_OK
+    if not rows:
+        stdout.write("no credit pools configured ([credit_pools.<id>] in the config)\n")
+    else:
+        stdout.write(_credit_pool_table(rows, now_s))
+    for note in notes:
+        stderr.write(f"! {note}\n")
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -3961,6 +4106,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "waste": _cmd_waste,
     "forecast": _cmd_forecast,
     "replay": _cmd_replay,
+    "credits": _cmd_credits,
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,
