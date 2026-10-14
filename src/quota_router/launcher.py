@@ -655,13 +655,14 @@ def _route_from_cache(
 # ======================================================================================
 
 
-def _schedules(config: Config | None, only: Sequence[str]) -> dict[str, Any]:
+def _schedules(config: Config | None, only: Sequence[str], now_s: float) -> dict[str, Any]:
     """Weekly reset schedules for the candidates that could actually be launched.
 
     Filtered here rather than in :func:`quota_router.weekly_reset.earliest_weekly_reset`,
     which knows nothing about candidate sets or disabled accounts and should not: the
     pure layer answers "which of these expires first", and which accounts are *these*
-    is this launcher's question.
+    is this launcher's question. An account whose ``plan_ends`` has passed is not one:
+    its schedule describes a week the subscription no longer pays for.
     """
     if config is None:
         return {}
@@ -669,6 +670,8 @@ def _schedules(config: Config | None, only: Sequence[str]) -> dict[str, Any]:
     for account_id in only:
         account = config.account(account_id)
         if account is None or not account.enabled or account.weekly_reset is None:
+            continue
+        if account.plan_ends_s is not None and now_s >= account.plan_ends_s:
             continue
         found[account_id] = account.weekly_reset
     return found
@@ -753,7 +756,7 @@ def _unrouted(
     hardcoded default account -- but says which setting would have made it better,
     because a fallback nobody knows exists is a fallback nobody configures.
     """
-    schedules = _schedules(config, only)
+    schedules = _schedules(config, only, now_s)
     spent: list[_Spent] = []
     try:
         if schedules:

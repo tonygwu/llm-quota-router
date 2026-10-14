@@ -61,6 +61,7 @@ from . import history as history_mod
 from types import SimpleNamespace
 
 from . import doctor as doctor_mod
+from . import plan_end as plan_end_mod
 from . import reserve as reserve_mod
 from . import model_classes as mc
 from . import pse
@@ -1435,7 +1436,11 @@ def _prepare(
     # all read the same spendable figure. `raw_snapshots` stays exactly as read: history
     # records it, and a reserve written into history would read as usage.
     rates = config.manual_rates()
-    held_snapshots, manual_reserves = reserve_mod.apply_manual_reserve(snapshots, rates, now_s)
+    # A plan that is ending moves its windows' deadlines first, so the reserve below
+    # counts days to the deadline routing will actually see. Like the reserve, it never
+    # reaches history: the waste series reads recorded deadlines as the vendor's.
+    ending = plan_end_mod.apply_plan_ends(snapshots, config.plan_ends(), now_s)
+    held_snapshots, manual_reserves = reserve_mod.apply_manual_reserve(ending, rates, now_s)
     for account_id in reserve_mod.accounts_without_weekly_window(snapshots, rates):
         warnings.append(
             f"{account_id}: manual_rate_per_day is set but the account reports no 7-day "
@@ -2082,6 +2087,12 @@ def _deprioritized_block(prepared: Prepared) -> str:
     return line + "\n" if line else ""
 
 
+def _plan_end_block(prepared: Prepared) -> str:
+    """One line per configured plan end, newline-terminated; empty when there are none."""
+    lines = plan_end_mod.describe_plan_ends(prepared.config.plan_ends(), prepared.now_s)
+    return "".join(line + "\n" for line in lines)
+
+
 def _flush(stream: TextIO) -> None:
     """Flush a stream that has a ``flush``; a test's StringIO does, a pipe may not."""
     flush = getattr(stream, "flush", None)
@@ -2147,7 +2158,7 @@ def _write_status_compact(
     )
     if table:
         stdout.write(table + "\n")
-    held = _reserve_block(prepared) + _deprioritized_block(prepared)
+    held = _reserve_block(prepared) + _deprioritized_block(prepared) + _plan_end_block(prepared)
     if held:
         stdout.write(("\n" if table else "") + held)
     unmeasurable = explain_mod.format_unmeasurable(prepared.snapshots)

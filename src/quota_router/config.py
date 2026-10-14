@@ -30,6 +30,7 @@ import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
@@ -209,6 +210,35 @@ def _as_weekly_reset(value: Any, section: str, key: str) -> WeeklyReset:
         raise ConfigError(f"{_where(section, key)}: {exc}") from None
 
 
+def _as_instant(value: Any, section: str, key: str) -> float:
+    """An ISO-8601 instant with a zone, as epoch seconds.
+
+    Accepts a string or a TOML offset date-time. A value with no zone is refused rather
+    than read as local time: the same text would name a different instant on machines
+    in different zones, and a test box in UTC would pass what a laptop in Pacific fails.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            raise ConfigError(
+                f"{_where(section, key)} must be an ISO-8601 instant such as "
+                f"2026-10-16T00:00:00Z, got {value!r}"
+            ) from None
+    else:
+        raise ConfigError(
+            f"{_where(section, key)} must be an ISO-8601 instant string, got {value!r}"
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ConfigError(
+            f"{_where(section, key)} must name its zone (end it with Z or an offset such "
+            f"as -07:00), got {value!r}"
+        )
+    return parsed.timestamp()
+
+
 def _as_table(value: Any, section: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ConfigError(f"[{section}] must be a table, got {value!r}")
@@ -332,6 +362,11 @@ class AccountConfig:
             this account ranks below every eligible account that does not set it,
             whatever its score, the sticky incumbent or the switch margin. It stays
             eligible, so it is still chosen when no other account is. Default false.
+        plan_ends_s: When this account's subscription stops serving, as epoch seconds,
+            from ``plan_ends`` (an ISO-8601 instant with a zone). Until then every window
+            on the account counts as ending no later than this; from then on the account
+            is out of routing. Unset means the plan is not ending. See
+            :mod:`quota_router.plan_end`.
     """
 
     id: str
@@ -355,6 +390,7 @@ class AccountConfig:
     #: An Antigravity pool with a ``/usage`` reading competes normally; one whose read
     #: failed falls back to this. Unset (the default): a window-less account never wins.
     unmetered: str | None = None
+    plan_ends_s: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -456,6 +492,7 @@ class AccountConfig:
             "weekly_reset": (
                 self.weekly_reset.to_text() if self.weekly_reset is not None else None
             ),
+            "plan_ends_s": self.plan_ends_s,
         }
 
 
@@ -661,6 +698,14 @@ class Config:
             account.id: account.manual_rate_per_day
             for account in self.enabled_accounts()
             if account.manual_rate_per_day is not None
+        }
+
+    def plan_ends(self) -> dict[str, float]:
+        """``plan_ends`` for every enabled account that sets one, as epoch seconds."""
+        return {
+            account.id: account.plan_ends_s
+            for account in self.enabled_accounts()
+            if account.plan_ends_s is not None
         }
 
     def deprioritized_accounts(self) -> tuple[str, ...]:
@@ -1074,6 +1119,11 @@ def _build_accounts(
                 else False
             ),
             unmetered=_as_unmetered(body.get("unmetered"), section),
+            plan_ends_s=(
+                _as_instant(body["plan_ends"], section, "plan_ends")
+                if body.get("plan_ends") is not None
+                else None
+            ),
         )
 
         # An account whose provider resolves to nothing has no adapter behind it, so it
@@ -1124,6 +1174,16 @@ def _build_accounts(
             raise ConfigError(
                 f"[{section}] sets deprioritize, but no adapter reads an account named "
                 f"{str(account_id)!r}, so the preference would change nothing. Check the "
+                f"account id against `quotapick status`, or set provider = one of "
+                f"{', '.join(PROVIDERS)}."
+            )
+
+        # And for a plan end: a mistyped id would leave the real account ranked on the
+        # vendor's later deadline, then routed to after its plan had stopped serving.
+        if accounts[str(account_id)].plan_ends_s is not None and resolved_provider not in PROVIDERS:
+            raise ConfigError(
+                f"[{section}] sets plan_ends, but no adapter reads an account named "
+                f"{str(account_id)!r}, so the plan end would apply to nothing. Check the "
                 f"account id against `quotapick status`, or set provider = one of "
                 f"{', '.join(PROVIDERS)}."
             )

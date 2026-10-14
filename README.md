@@ -1046,6 +1046,39 @@ eligible, so the router still chooses it when no other account is eligible.
 - **The fallback is unchanged.** If no candidate is eligible, the router names whoever
   frees up first, as before, whether or not that account is deprioritized.
 
+### When a subscription is ending — `plan_ends`
+
+A cancelled subscription keeps serving until the end of the period already paid for, and
+then it stops. The vendor does not say so in advance. On 2026-10-14, minutes after a Max
+account was cancelled, its profile still read `subscription_status = "active"`, and its
+weekly window still ended four days after the plan would.
+
+Quota that lapses when a plan ends is the same waste as quota that lapses at a weekly
+reset. So tell the router the real deadline, and its own rule spends that account first:
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.claude_d]
+plan_ends = "2026-10-16T00:00:00Z"
+```
+
+- **Before `plan_ends`,** every window on the account that would reset later counts as
+  resetting at `plan_ends`. The account then ranks on the quota it will actually lose.
+  When its five-hour window is full, work goes to the next account, which is why this
+  beats pinning the account with `CL_ONLY`: a pinned `cl` with a full account falls back
+  to the hardcoded default.
+- **From `plan_ends` on,** the account is out of routing, with a reason that names the
+  instant. Its row in `status` reads `unavailable`. The schedule fallback in `cl` skips it
+  too. Delete the key, or set `enabled = false`, once the account is gone.
+- **An instant with a zone.** End it with `Z` or an offset such as `-07:00`. A value with
+  no zone is refused, because the same text would name a different instant on each
+  machine. If you know only the date, use the start of that day in UTC: an early cut-off
+  gives up a few hours of quota, and a late one routes work to a plan that has stopped.
+- **History is untouched.** The poller records the vendor's own deadlines, so the waste
+  series does not count the quota that lapses with the plan.
+- **Visible.** `status` prints `plan ends: claude_d at 2026-10-16T00:00Z; its windows count
+  as ending then`, and afterwards `plan ended: ...; excluded from routing`.
+
 ## The poller
 
 The router reads usage live on every invocation, so nothing needs to run on a
