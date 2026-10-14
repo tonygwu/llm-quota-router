@@ -3213,6 +3213,29 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
+    replay_parser = subparsers.add_parser(
+        "replay",
+        parents=[common],
+        help="route the last N days of real demand through each policy and compare waste",
+    )
+    replay_parser.add_argument("--days", type=float, default=None,
+                               help="days to count, ending now (default 21)")
+    replay_parser.add_argument("--policies", default=None,
+                               help="comma-separated (default: all)")
+    replay_parser.add_argument("--job-pse", type=float, default=None,
+                               help="job size in PSE (default 0.01)")
+    replay_parser.add_argument("--forecast-scale", type=float, default=None,
+                               help="multiply the forecast, to test robustness (default 1)")
+    replay_parser.add_argument("--group", default=None,
+                               help="provider group (default claude)")
+    replay_parser.add_argument("--history", default=None, metavar="PATH",
+                               help="history file to read instead of the live one")
+    replay_parser.add_argument("--waste", default=None, metavar="PATH",
+                               help="waste series to check fidelity against")
+    replay_parser.add_argument("--bin-minutes", type=float, default=None,
+                               help="demand bin size (default 15)")
+    replay_parser.add_argument("--without", action="append", default=None, metavar="ACCOUNT",
+                               help="what-if: drop this account's pool, keep its demand")
     forecast_parser = subparsers.add_parser(
         "forecast",
         parents=[common],
@@ -3833,6 +3856,102 @@ def _cmd_forecast(
     return EXIT_OK
 
 
+def _cmd_replay(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Route the last N days of real demand through each policy and compare the waste.
+
+    Read-only towards history and the waste series. The comparison counts only when the
+    ``actual`` policy reproduces the recorded waste (the fidelity gate).
+    """
+    from . import replay as replay_mod
+
+    config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    days = float(getattr(args, "days", None) or 21.0)
+    if not days > 0:
+        stderr.write(f"{_PROG} replay: --days must be positive, got {days}\n")
+        return EXIT_USAGE
+    policies = [
+        name.strip()
+        for name in (getattr(args, "policies", None) or ",".join(replay_mod.POLICIES)).split(",")
+        if name.strip()
+    ]
+    count_from = now_s - days * 86400.0
+    history_path = getattr(args, "history", None)
+    records = list(
+        history_mod.iter_records(
+            history_path,
+            env=env,
+            include_rotated=True,
+            since_s=count_from - forecast_mod.DEFAULT_WINDOW_S - _FORECAST_LEAD_S,
+        )
+    )
+    waste_rows, waste_warnings = waste_mod.read_records(
+        getattr(args, "waste", None) or waste_mod.waste_path(env), env=env
+    )
+    plans, warnings = _plans_for(config)
+    warnings.extend(waste_warnings)
+    try:
+        result = replay_mod.run_replay(
+            records,
+            waste_rows=waste_rows,
+            plans=plans,
+            plan_ends=config.plan_ends(),
+            count_from_s=count_from,
+            end_s=now_s,
+            policies=policies,
+            group=getattr(args, "group", None) or "claude",
+            job_pse=float(getattr(args, "job_pse", None) or 0.01),
+            forecast_scale=float(getattr(args, "forecast_scale", None) or 1.0),
+            bin_s=float(getattr(args, "bin_minutes", None) or 15.0) * 60.0,
+            without=_split_list(getattr(args, "without", None)),
+        )
+    except ValueError as exc:
+        stderr.write(f"{_PROG} replay: {exc}\n")
+        return EXIT_USAGE
+
+    if getattr(args, "json", False):
+        _dump_json({**result.to_dict(), "warnings": warnings}, stdout)
+        return EXIT_OK
+
+    actual = next((p for p in result.policies if p.policy == "actual"), None)
+    stdout.write(
+        f"replay of the {result.group} group, {_iso(count_from)} to {_iso(now_s)} "
+        f"({days:g} days), job {result.job_pse:.3f} PSE, forecast x{result.forecast_scale:g}\n"
+        f"accounts: {', '.join(result.accounts) or '(none)'}\n"
+    )
+    if result.fidelity_ok is None:
+        stdout.write("fidelity: not checked (no `actual` run or no waste series)\n")
+    else:
+        verdict = "OK" if result.fidelity_ok else "FAILED: no comparison below counts"
+        stdout.write(
+            f"fidelity: actual {actual.observed_waste_pse:.3f} PSE observed waste vs "
+            f"{result.recorded_waste_pse:.3f} recorded in waste.jsonl -> {verdict}\n"
+        )
+    stdout.write(
+        f"\n{'policy':<24} {'metric':>7} {'waste':>7} {'tail':>7} {'forfeit':>8} "
+        f"{'unmet':>7} {'served':>7} {'switch':>7} {'jobs':>6}\n"
+    )
+    for p in result.policies:
+        stdout.write(
+            f"{p.policy:<24} {p.metric_pse:>7.3f} {p.waste_pse:>7.3f} {p.tail_pse:>7.3f} "
+            f"{p.forfeited_pse:>8.3f} {p.unmet_pse:>7.3f} {p.served_pse:>7.3f} "
+            f"{p.switches:>7d} {p.jobs:>6d}\n"
+        )
+    stdout.write("\nmetric = waste at deadlines + neutral 7-day tail drain, in PSE\n")
+    for note in result.notes:
+        stdout.write(f"note: {note}\n")
+    for warning in dict.fromkeys(warnings):
+        stderr.write(f"! {warning}\n")
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -3841,6 +3960,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "calibrate": _cmd_calibrate,
     "waste": _cmd_waste,
     "forecast": _cmd_forecast,
+    "replay": _cmd_replay,
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,

@@ -207,6 +207,65 @@ def _rise(
     return max(0.0, later.used - mark), max(mark, later.used)
 
 
+@dataclass(frozen=True, slots=True)
+class Rise:
+    """PSE one account used between two consecutive readings, spread evenly over them."""
+
+    start_s: float
+    end_s: float
+    weekly_pse: float
+    fable_pse: float
+
+
+def dedupe_readings(readings: Iterable[Any]) -> list[Any]:
+    """Readings with strictly increasing observation times; a republish keeps the last."""
+    out: list[Any] = []
+    for reading in readings:
+        if out and reading.observed_at_s <= out[-1].observed_at_s:
+            out[-1] = reading
+        else:
+            out.append(reading)
+    return out
+
+
+def account_rises(readings: Iterable[Any], plan: Plan) -> list[Rise]:
+    """Every rise of one account's weekly window, in PSE, oldest first.
+
+    ``readings`` must be deduplicated (:func:`dedupe_readings`). The forecast and the
+    replay both read consumption through this, so they cannot disagree about it.
+    """
+    out: list[Rise] = []
+    weekly_mark: float | None = None
+    fable_mark: float | None = None
+    ordered = list(readings)
+    for before, after in zip(ordered, ordered[1:]):
+        weekly, later = before.windows.get(WINDOW_KEY_7D), after.windows.get(WINDOW_KEY_7D)
+        if weekly is None or later is None:
+            weekly_mark = None
+            continue
+        used, weekly_mark = _rise(
+            weekly_mark, weekly, later, before.observed_at_s, after.observed_at_s
+        )
+        fable_used = 0.0
+        fb, fa = _fable_window(before), _fable_window(after)
+        if fb is not None and fa is not None:
+            fable_used, fable_mark = _rise(
+                fable_mark, fb, fa, before.observed_at_s, after.observed_at_s
+            )
+        if after.observed_at_s <= before.observed_at_s:
+            continue
+        cap = plan.weekly_to_session * after.tier_scale
+        out.append(
+            Rise(
+                start_s=before.observed_at_s,
+                end_s=after.observed_at_s,
+                weekly_pse=used * cap,
+                fable_pse=fable_used * plan.fable_fraction * cap,
+            )
+        )
+    return out
+
+
 def _coverage(times: list[float], start_s: float, end_s: float) -> float:
     hours = max(1, int(math.ceil((end_s - start_s) / _HOUR_S - 1e-9)))
     seen = {int((t - start_s) // _HOUR_S) for t in times if start_s <= t < end_s}
@@ -241,12 +300,7 @@ def measure(
     warnings: list[str] = []
 
     for account_id, readings in sorted(waste.readings_by_account(materialized).items()):
-        deduped = []
-        for reading in readings:
-            if deduped and reading.observed_at_s <= deduped[-1].observed_at_s:
-                deduped[-1] = reading
-            else:
-                deduped.append(reading)
+        deduped = dedupe_readings(readings)
         provider = next((r.provider for r in reversed(deduped) if r.provider), None)
         group = GROUP_FOR_PROVIDER.get(provider or "")
         # No weekly window, no demand to measure: Cursor, and API credit pools, whose
@@ -269,30 +323,13 @@ def measure(
         if rate:
             tally.manual_pse_per_h += rate * plan.weekly_to_session * latest_scale / 24.0
 
-        weekly_mark: float | None = None
-        fable_mark: float | None = None
-        for before, after in zip(deduped, deduped[1:]):
-            span = after.observed_at_s - before.observed_at_s
-            overlap = min(after.observed_at_s, now_s) - max(before.observed_at_s, start_s)
-            weekly, later = before.windows.get(WINDOW_KEY_7D), after.windows.get(WINDOW_KEY_7D)
-            if weekly is None or later is None:
-                weekly_mark = None
+        for rise in account_rises(deduped, plan):
+            overlap = min(rise.end_s, now_s) - max(rise.start_s, start_s)
+            if overlap <= 0:
                 continue
-            used, weekly_mark = _rise(
-                weekly_mark, weekly, later, before.observed_at_s, after.observed_at_s
-            )
-            fable_used = 0.0
-            fb, fa = _fable_window(before), _fable_window(after)
-            if fb is not None and fa is not None:
-                fable_used, fable_mark = _rise(
-                    fable_mark, fb, fa, before.observed_at_s, after.observed_at_s
-                )
-            if span <= 0 or overlap <= 0:
-                continue
-            share = overlap / span
-            cap = plan.weekly_to_session * after.tier_scale
-            tally.measured_pse += used * cap * share
-            tally.fable_pse += fable_used * plan.fable_fraction * cap * share
+            share = overlap / (rise.end_s - rise.start_s)
+            tally.measured_pse += rise.weekly_pse * share
+            tally.fable_pse += rise.fable_pse * share
 
     for record in materialized:
         if record.get("event") != "run":

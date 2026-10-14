@@ -141,6 +141,33 @@ the counterfactual says.
 
 ---
 
+## 3. The joint objective stalls more than today's when the fleet is tight
+
+`[engine] objective = "joint"` ranks by projected fleet waste avoided and never scores
+unmet demand (operator decision 2026-10-14). `quotapick replay` (21 days to 2026-10-14,
+Claude group, job 0.01 PSE) is its gate, and the gate fails:
+
+| fleet | policy | metric PSE | waste | unmet | switches |
+|---|---|---|---|---|---|
+| as it was | own_waste | 34.633 | 26.321 | 0.000 | 852 |
+| as it was | joint | 34.633 | 25.141 | 0.000 | 131 |
+| one 20x account removed, its demand kept | own_waste | 11.634 | 11.634 | 1.217 | 702 |
+| one 20x account removed, its demand kept | joint | 12.155 | 9.966 | 2.520 | 126 |
+
+With the fleet as it was, every policy scores the same metric: nothing went unmet and no
+cap bound, so total waste is stock minus demand whatever the routing. With one account
+removed, every unmet PSE comes from the five-hour cap during bursts (each pool with
+weekly room had spent its five-hour window), under any routing rule; spreading work, as
+`own_waste` does, leaves less unmet than draining the earliest deadline first.
+
+**What would close it:** a stall term in the joint objective (lambda x projected unmet,
+priced in PSE), or a five-hour-aware tie-break, that passes the replay gate on both rows
+at job sizes 0.01 and 0.05 and forecast x0.5 and x2. Until then the default stays
+`own_waste`; `run` may still use the joint projection, because credit pools are invisible
+to `own_waste` and carry no five-hour cap.
+
+---
+
 ## Closed
 
 - **Pileup reservations double-counted once the endpoint caught up.** A claim existed

@@ -599,3 +599,33 @@ def test_a_stale_but_complete_reading_beats_a_fresh_blind_one() -> None:
         "beyond one session window the reading may describe a window that has since "
         "reset, which is wrong rather than stale"
     )
+
+
+def test_a_configured_working_rate_reaches_the_objective() -> None:
+    """``rate_pse_per_hour`` lets the replay score today's objective at the measured
+    rate (0.11 PSE/h on 2026-10-14) as well as at the 0.04 it hardcodes, so the
+    comparison with the joint objective is not won on a stale constant. Unset, the
+    built-in rate applies and nothing changes."""
+    from quota_router.scoring import DEFAULT_RATE_PSE_PER_HOUR, account_score
+    from quota_router.types import AccountSnapshot, Window
+
+    now = 1_700_000_000.0
+    snap = AccountSnapshot(
+        id="claude",
+        windows=(
+            Window(key="7d", used_fraction=0.2, length_s=7 * 86400.0,
+                   resets_at_s=now + 48 * 3600.0, observed_at_s=now),
+        ),
+        tier="max_20x",
+        source="live",
+    )
+    default = account_score(snap, now, None)
+    explicit = account_score(snap, now, {"rate_pse_per_hour": DEFAULT_RATE_PSE_PER_HOUR})
+    faster = account_score(snap, now, {"rate_pse_per_hour": 0.11})
+    assert default.score == explicit.score
+    # 5.0 PSE left over 48h. At 0.04 PSE/h only 1.92 is absorbable, so 3.08 is waste.
+    # At 0.11 PSE/h all 5.0 is absorbable, so nothing is wasted and the score drops to
+    # the earliest-deadline term.
+    assert default.score == pytest.approx(5.0 - 0.04 * 48)
+    assert faster.score < 1e-3
+    assert "nothing wasted" in faster.reason

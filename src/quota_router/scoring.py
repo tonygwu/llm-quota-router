@@ -519,9 +519,10 @@ def account_score(
     # 20x-equivalents and re-introduce the tier bias this change exists to remove.
     stocks = stocks_from_snapshot(snap, now_s, capacity, plan_for(cfg, snap.id))
     if stocks is not None:
-        score, waste_pse, label = pse_objective(
-            stocks, now_s, model_class, DEFAULT_RATE_PSE_PER_HOUR
-        )
+        # Unset in production, where DEFAULT_RATE_PSE_PER_HOUR applies; the replay sets
+        # it to score today's objective at a measured rate.
+        rate = cfg_get(cfg, "rate_pse_per_hour", default=DEFAULT_RATE_PSE_PER_HOUR)
+        score, waste_pse, label = pse_objective(stocks, now_s, model_class, float(rate))
         objective = waste_pse
     else:
         objective = slack if resolved == REGIME_A else remaining
