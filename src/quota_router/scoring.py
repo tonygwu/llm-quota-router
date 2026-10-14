@@ -563,15 +563,24 @@ def rank(
     now_s: float,
     cfg: Any = None,
     model_class: str | None = None,
+    *,
+    joint: Any = None,
 ) -> list[ScoreBreakdown]:
     """Score every candidate under one globally-chosen regime and sort them, best first.
 
     The regime is decided once, over the whole field, *before* anything is scored (see
     :func:`decide_regime`); every row then carries that same regime so the scores are
     mutually comparable.
+
+    ``joint`` is a :class:`quota_router.joint.JointContext` (anything with ``rescore``)
+    when ``[engine] objective = "joint"``. It replaces each row's score with the fleet
+    waste the job avoids there; every other field keeps today's meaning. Typed ``Any``
+    because ``joint`` builds on this module and cannot be imported by it.
     """
     candidates = tuple(snapshots)
     regime = decide_regime(candidates, now_s, model_class)
     rows = [account_score(snap, now_s, cfg, model_class, regime) for snap in candidates]
+    if joint is not None:
+        rows = list(joint.rescore(rows))
     rows.sort(key=ranking_sort_key)
     return rows

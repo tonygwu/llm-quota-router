@@ -44,8 +44,8 @@ from dataclasses import dataclass, replace
 from typing import Final
 
 from .pse import SESSION_LENGTH_S, Plan
-from .scoring import stocks_from_snapshot
-from .types import AccountSnapshot, WINDOW_KEY_5H
+from .scoring import ranking_sort_key, stocks_from_snapshot
+from .types import AccountSnapshot, ScoreBreakdown, WINDOW_KEY_5H
 
 KIND_SUBSCRIPTION: Final[str] = "subscription"
 KIND_CREDIT: Final[str] = "credit"
@@ -176,23 +176,36 @@ def subscription_stock(
         return None
     p = plan or Plan()
     weekly_cap = p.weekly_to_session * capacity
+    fable_cap = p.fable_fraction * weekly_cap
     session = next((w for w in snap.windows if w.key == WINDOW_KEY_5H), None)
     active = session is not None and session.resets_at_s > now_s
     fable_scoped = any(w.applies_to and "fable" in w.applies_to for w in snap.windows)
+    weekly_rem, fable_rem = stocks.weekly_remaining, stocks.fable_remaining
+    deadline_s = stocks.weekly_reset_s
+    period_s = 7 * 86400.0
+    if deadline_s <= now_s:
+        # A cached reading whose reset has passed: the window has rolled since it was
+        # read. The stock is full again with its next deadline; its old leftover is
+        # waste that already happened and that no choice made now can avoid.
+        if not refills:
+            return None
+        while deadline_s <= now_s:
+            deadline_s += period_s
+        weekly_rem, fable_rem = weekly_cap, fable_cap
     return Stock(
         id=snap.id,
         group=GROUP_FOR_PROVIDER.get(snap.provider, snap.provider),
         kind=KIND_SUBSCRIPTION,
-        weekly_rem=stocks.weekly_remaining,
+        weekly_rem=weekly_rem,
         weekly_cap=weekly_cap,
-        deadline_s=stocks.weekly_reset_s,
+        deadline_s=deadline_s,
         refills=refills,
-        period_s=7 * 86400.0,
+        period_s=period_s,
         session_cap=stocks.session_capacity,
         session_rem=stocks.session_remaining if active else None,
         session_reset_s=stocks.session_reset_s if active else None,
-        fable_rem=stocks.fable_remaining if fable_scoped else None,
-        fable_cap=p.fable_fraction * weekly_cap if fable_scoped else None,
+        fable_rem=fable_rem if fable_scoped else None,
+        fable_cap=fable_cap if fable_scoped else None,
         available_from_s=available_from_s if available_from_s is not None else now_s,
     )
 
@@ -432,3 +445,139 @@ def _debit(stock: Stock, amount: float, fable: bool, now_s: float) -> Stock:
         session_reset_s=session_reset_s,
         fable_rem=fable_rem,
     )
+
+
+# ======================================================================================
+# Scoring a field
+# ======================================================================================
+
+#: Scores are rounded to this before the deadline tie-break is added, so two candidates
+#: that avoid the same waste up to float noise tie, and the earlier deadline wins.
+SCORE_QUANTUM: Final[float] = 1e-6
+
+#: The tie-break term is below the quantum, so it orders ties and nothing else.
+_TIE_BREAK: Final[float] = 0.5e-6
+
+#: Score of a candidate with no weekly window: eligible, but loses every tie.
+UNVALUED_SCORE: Final[float] = 1e-12
+
+
+class JointContext:
+    """Everything one decision needs to score candidates by fleet waste avoided.
+
+    The stocks are the whole configured fleet, never only the eligible candidates:
+    digital-twin caches rankings on the promise that a candidate's score does not depend
+    on which others are allowed (``lib/quota-router.ts``), and the projection must see
+    every pool that will absorb future demand anyway.
+
+    Args:
+        stocks: Every pool the router can see.
+        streams: Forecast demand.
+        job_pse: Size of this job.
+        stream: Which stream this job belongs to (``other`` for ``pick``).
+        fable_ids: Accounts for which this job is Fable work.
+        tie_fraction: Hysteresis may keep an incumbent that avoids up to this fraction
+            of one job less waste than the leader.
+    """
+
+    def __init__(
+        self,
+        *,
+        stocks: Sequence[Stock],
+        streams: Sequence[Stream],
+        now_s: float,
+        horizon_s: float,
+        step_s: float,
+        job_pse: float,
+        stream: str = STREAM_OTHER,
+        fable_ids: frozenset[str] = frozenset(),
+        tie_fraction: float = 0.1,
+    ) -> None:
+        self.stocks = tuple(stocks)
+        self.streams = tuple(streams)
+        self.now_s = now_s
+        self.horizon_s = horizon_s
+        self.step_s = step_s
+        self.job_pse = job_pse
+        self.stream = stream
+        self.fable_ids = fable_ids
+        self.tie_fraction = tie_fraction
+        self._baselines: dict[str, Projection] = {}
+        self._scores: dict[str, Marginal | None] = {}
+
+    @property
+    def objective_gap(self) -> float:
+        """Score gap above which a challenger takes the seat whatever the dwell."""
+        return max(SCORE_QUANTUM, self.tie_fraction * self.job_pse)
+
+    def stock(self, account_id: str) -> Stock | None:
+        return next((s for s in self.stocks if s.id == account_id), None)
+
+    def baseline(self, group: str) -> Projection:
+        if group not in self._baselines:
+            self._baselines[group] = project(
+                [s for s in self.stocks if s.group == group],
+                [s for s in self.streams if s.group == group],
+                now_s=self.now_s,
+                horizon_s=self.horizon_s,
+                step_s=self.step_s,
+            )
+        return self._baselines[group]
+
+    def score(self, account_id: str) -> Marginal | None:
+        """Waste this job avoids on ``account_id``; None when it has no stock."""
+        if account_id not in self._scores:
+            target = self.stock(account_id)
+            if target is None or target.kind not in SERVES[self.stream]:
+                self._scores[account_id] = None
+            else:
+                self._scores[account_id] = marginal(
+                    self.stocks,
+                    self.streams,
+                    stock_id=account_id,
+                    job_pse=self.job_pse,
+                    fable=account_id in self.fable_ids,
+                    stream=self.stream,
+                    now_s=self.now_s,
+                    horizon_s=self.horizon_s,
+                    step_s=self.step_s,
+                    baseline=self.baseline(target.group),
+                )
+        return self._scores[account_id]
+
+    def rescore(self, rows: Sequence[ScoreBreakdown]) -> list[ScoreBreakdown]:
+        """Replace each row's ``score`` and ``reason``; every other field keeps its meaning.
+
+        ``min_slack``, ``binding_window``, ``regime`` and ``fits`` are still today's, so
+        the payload's other columns and the hysteresis margin read as before.
+        """
+        out: list[ScoreBreakdown] = []
+        for row in rows:
+            result = self.score(row.account_id)
+            target = self.stock(row.account_id)
+            if result is None or target is None:
+                out.append(
+                    replace(
+                        row,
+                        score=UNVALUED_SCORE,
+                        reason="no weekly window, so the joint objective cannot value it",
+                    )
+                )
+                continue
+            hours = max(0.0, (target.deadline_s - self.now_s) / 3600.0)
+            score = round(result.avoided / SCORE_QUANTUM) * SCORE_QUANTUM + _TIE_BREAK / (
+                1.0 + hours
+            )
+            note = "; clamped" if result.clamped else ""
+            out.append(
+                replace(
+                    row,
+                    score=score,
+                    reason=(
+                        f"{result.avoided:.4f} of {result.job_pse:.4f} PSE projected fleet "
+                        f"waste avoided (pool deadline in {hours:.1f}h{note})"
+                    ),
+                )
+            )
+        out.sort(key=ranking_sort_key)
+        return out

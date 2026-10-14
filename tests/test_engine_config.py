@@ -1,9 +1,8 @@
 """The ``[engine]`` section: which objective ranks the field, and its projection knobs.
 
-The section exists before the joint objective does, so that switching objectives is a
-config change rather than a code change, and so the switch can be shipped and proven
-inert first. Until the joint projection lands, ``objective = "joint"`` is refused rather
-than accepted and ignored: an operator who asks for an objective must get it or an error.
+Switching objectives is a config change, not a code change, and the switch was shipped
+and proven inert before the joint objective existed. An unknown objective is refused
+rather than accepted and ignored: an operator who asks for one gets it or an error.
 """
 
 from __future__ import annotations
@@ -66,9 +65,8 @@ def test_an_unknown_objective_is_a_config_error(tmp_path) -> None:
         _load(tmp_path, '[engine]\nobjective = "magic"\n')
 
 
-def test_joint_is_refused_until_it_exists(tmp_path) -> None:
-    with pytest.raises(ConfigError, match=r"joint.*not available"):
-        _load(tmp_path, '[engine]\nobjective = "joint"\n')
+def test_joint_is_accepted(tmp_path) -> None:
+    assert _load(tmp_path, '[engine]\nobjective = "joint"\n').engine.objective == "joint"
 
 
 @pytest.mark.parametrize(

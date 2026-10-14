@@ -332,6 +332,7 @@ def append_snapshots(
     cost: float | None = None,
     regime: str | None = None,
     degraded: bool = False,
+    objective: Mapping[str, Any] | None = None,
     path: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
@@ -371,6 +372,10 @@ def append_snapshots(
         "degraded": bool(degraded),
         "accounts": [snapshot.to_dict() for snapshot in snapshots],
     }
+    if objective is not None:
+        # Only when [engine] names a non-default objective or shadow mode, so a line
+        # written under today's objective is byte-for-byte what it always was.
+        record["objective"] = dict(objective)
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

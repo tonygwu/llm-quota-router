@@ -70,6 +70,7 @@ from . import waste as waste_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
+    MODEL_CLASS_FABLE,
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CURSOR,
@@ -449,6 +450,12 @@ class Prepared:
     #: Set only when the caller asked for a capability; ``None`` keeps every path and
     #: every byte of output exactly as it was before capabilities existed.
     capability: "CapabilityContext | None" = None
+    #: The joint objective's context (:class:`quota_router.joint.JointContext`) when
+    #: ``[engine]`` configures it or shadow mode, else ``None``.
+    joint: Any = None
+    #: What objective ranked this decision and why; ``None`` under today's default so
+    #: no payload or history line changes.
+    objective: dict[str, Any] | None = None
 
     @property
     def snapshot_map(self) -> dict[str, AccountSnapshot]:
@@ -946,6 +953,181 @@ def _mark_fallback(flag: list[bool] | None) -> None:
     return None
 
 
+def _build_joint(
+    config: Config,
+    base_config: Config,
+    fleet: Sequence[AccountSnapshot],
+    candidates: Sequence[AccountSnapshot],
+    state: StateSnapshot,
+    now_s: float,
+    env: Mapping[str, str],
+    args: argparse.Namespace,
+    model: mc.ModelResolution,
+    capability_ctx: "CapabilityContext | None",
+    warnings: list[str],
+) -> tuple[Any, dict[str, Any] | None]:
+    """The joint objective's context, or why the decision falls back to ``own_waste``.
+
+    Returns ``(None, None)`` under today's default, so nothing downstream changes. A
+    missing, stale or thin forecast falls back for the WHOLE decision -- mixing two
+    objectives in one ranking would compare unlike numbers -- and says why: a warning
+    when ``joint`` was asked for, and the ``fallback`` field either way.
+    """
+    engine = config.engine
+    if engine.objective == "own_waste" and not engine.shadow:
+        return None, None
+    job_pse = getattr(args, "job_pse", None) or engine.default_job_pse
+    report: dict[str, Any] = {
+        "configured": engine.objective,
+        "used": "own_waste",
+        "fallback": None,
+        "shadow": engine.shadow,
+        "job_pse": job_pse,
+        "forecast_age_s": None,
+        "partial_fleet": False,
+    }
+    try:
+        from . import joint as joint_mod  # type: ignore[attr-defined]
+        from . import scoring  # type: ignore[attr-defined]
+    except ImportError as exc:  # pragma: no cover - the pure layer ships with the CLI
+        return _joint_fallback(report, f"decision layer unavailable: {exc}", warnings)
+
+    cached, problem = forecast_mod.read_cache(env=env)
+    if cached is None:
+        return _joint_fallback(report, f"demand forecast unavailable: {problem}", warnings)
+    age = now_s - cached.computed_at_s
+    report["forecast_age_s"] = age
+    if age < 0 or age > engine.forecast_max_age_s:
+        return _joint_fallback(
+            report,
+            f"demand forecast stale (computed {_format_age(age)} ago, limit "
+            f"{_format_age(engine.forecast_max_age_s)})",
+            warnings,
+        )
+    wanted = {
+        joint_mod.GROUP_FOR_PROVIDER.get(snap.provider) for snap in candidates
+    } - {None}
+    for group in sorted(wanted):
+        measured = cached.groups.get(group)
+        if measured is None:
+            return _joint_fallback(
+                report, f"demand forecast has no {group} group", warnings
+            )
+        if measured.coverage < engine.forecast_min_coverage:
+            return _joint_fallback(
+                report,
+                f"demand forecast for {group} has coverage {measured.coverage:.0%}, "
+                f"below {engine.forecast_min_coverage:.0%}",
+                warnings,
+            )
+
+    # The projection sees the whole configured fleet; `--only`/`--exclude` narrow the
+    # read, so the projection is then partial for any group the narrowing cut.
+    seen = {snap.id for snap in fleet}
+    report["partial_fleet"] = any(
+        account.id not in seen
+        and joint_mod.GROUP_FOR_PROVIDER.get(account.provider) in wanted
+        for account in base_config.enabled_accounts()
+    )
+
+    plan_ends = config.plan_ends()
+    cooldowns = state.selection.get("exhausted_until") if isinstance(state.selection, Mapping) else None
+    stocks = []
+    for snap in fleet:
+        if joint_mod.GROUP_FOR_PROVIDER.get(snap.provider) is None:
+            continue
+        try:
+            plan = scoring.plan_for(config, snap.id)
+        except ValueError as exc:
+            warnings.append(f"{snap.id}: {exc}")
+            continue
+        until = cooldowns.get(snap.id) if isinstance(cooldowns, Mapping) else None
+        stock = joint_mod.subscription_stock(
+            snap,
+            now_s=now_s,
+            capacity=snap.capacity,
+            plan=plan,
+            refills=True,
+            available_from_s=float(until) if isinstance(until, (int, float)) else None,
+        )
+        if stock is None:
+            continue
+        end = plan_ends.get(snap.id)
+        if end is not None and end <= stock.deadline_s + 60.0:
+            stock = replace(stock, refills=False)
+        stocks.append(stock)
+
+    streams = []
+    for group, measured in sorted(cached.groups.items()):
+        streams.append(
+            joint_mod.Stream(group, joint_mod.STREAM_OTHER, measured.other.pse_per_h,
+                             measured.other.fable_share)
+        )
+        streams.append(
+            joint_mod.Stream(group, joint_mod.STREAM_RUN, measured.run.pse_per_h,
+                             measured.run.fable_share)
+        )
+    if capability_ctx is not None:
+        fable_ids = frozenset(
+            account_id
+            for account_id, cls in capability_ctx.classes.items()
+            if cls == MODEL_CLASS_FABLE
+        )
+    elif normalize_model_class(model.model_class) == MODEL_CLASS_FABLE:
+        fable_ids = frozenset(stock.id for stock in stocks)
+    else:
+        fable_ids = frozenset()
+    context = joint_mod.JointContext(
+        stocks=stocks,
+        streams=streams,
+        now_s=now_s,
+        horizon_s=engine.horizon_s,
+        step_s=engine.step_s,
+        job_pse=job_pse,
+        stream=joint_mod.STREAM_OTHER,
+        fable_ids=fable_ids,
+        tie_fraction=engine.tie_fraction,
+    )
+    report["used"] = "joint" if engine.objective == "joint" else "own_waste"
+    return context, report
+
+
+def _joint_fallback(
+    report: dict[str, Any], reason: str, warnings: list[str]
+) -> tuple[Any, dict[str, Any]]:
+    report["fallback"] = reason
+    if report["configured"] == "joint":
+        warnings.append(f"joint objective unavailable: {reason}; ranked by own_waste")
+    return None, report
+
+
+def _format_age(seconds: float) -> str:
+    seconds = abs(seconds)
+    hours, rest = divmod(int(seconds), 3600)
+    return f"{hours}h{rest // 60:02d}m"
+
+
+def _shadow_choice(prepared: Prepared, deps: Deps) -> str | None:
+    """Who the joint objective would have picked among the same eligible accounts."""
+    if prepared.joint is None or deps.rank is None:
+        return None
+    eligible = {row.account_id for row in prepared.decision.ranked}
+    field_ = [snap for snap in prepared.candidates if snap.id in eligible]
+    if not field_:
+        return None
+    try:
+        rows = deps.rank(
+            field_,
+            prepared.now_s,
+            prepared.config.engine_cfg(),
+            prepared.model.model_class,
+            joint=prepared.joint,
+        )
+    except Exception:  # noqa: BLE001 - shadow scoring must never touch the real decision
+        return None
+    return rows[0].account_id if rows else None
+
+
 def _decide(
     prepared: Prepared,
     deps: Deps,
@@ -989,6 +1171,8 @@ def _decide(
         "state": selection_state if sticky else None,
         "record": record,
     }
+    if prepared.objective is not None and prepared.objective.get("used") == "joint":
+        shared["joint"] = prepared.joint
 
     try:
         ranked = _call(deps.rank, candidates, shared)
@@ -1371,6 +1555,7 @@ def _prepare(
 ) -> Prepared:
     """Config -> oracle -> history -> state -> pileup -> filter -> decide."""
     config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    base_config = config
     config = config.with_overrides(
         min_remaining=getattr(args, "min_remaining", None),
         no_sticky=bool(getattr(args, "no_sticky", False)),
@@ -1507,6 +1692,9 @@ def _prepare(
         warnings.append(
             "single candidate: pileup reservations not applied (nothing to spread to)"
         )
+    # The joint projection needs the fleet as routing sees it -- reserves, plan ends and
+    # pileup applied -- but before capability views drop Fable windows it must keep.
+    fleet = tuple(adjusted)
     capability_ctx: CapabilityContext | None = None
     if capability:
         adjusted, capability_ctx = _apply_capability(
@@ -1529,6 +1717,20 @@ def _prepare(
         ),
     )
 
+    joint_ctx, objective = _build_joint(
+        config,
+        base_config,
+        fleet,
+        partition.candidates,
+        state,
+        now_s,
+        env,
+        args,
+        model,
+        capability_ctx,
+        warnings,
+    )
+
     prepared = Prepared(
         config=config,
         model=model,
@@ -1543,6 +1745,8 @@ def _prepare(
         warnings=tuple(warnings),
         degraded=tuple(degraded),
         capability=capability_ctx,
+        joint=joint_ctx,
+        objective=objective,
     )
 
     records_a_pick = bool(write_state and not getattr(args, "dry_run", False))
@@ -1554,6 +1758,13 @@ def _prepare(
     )
     prepared.decision = decision
     prepared.from_fallback = bool(fallback_flag)
+    if objective is not None:
+        objective["shadow_chosen"] = _shadow_choice(prepared, deps) if objective.get(
+            "shadow"
+        ) else None
+        if prepared.from_fallback:
+            # The exhausted fallback orders by earliest reset; no objective ranked it.
+            objective["used"] = None
     if capability_ctx is not None:
         decision = _fallback_only(prepared, capability_ctx, warnings)
         prepared.decision = decision
@@ -1620,6 +1831,7 @@ def _prepare(
             cost=spent_multiplier if records_a_pick else None,
             regime=decision.regime,
             degraded=bool(prepared.degraded) or decision.degraded,
+            objective=prepared.objective,
             env=env,
         )
         prepared.warnings = prepared.warnings + write.warnings
@@ -1770,6 +1982,10 @@ def _meets_policy(prepared: Prepared) -> bool:
 
 def _pick_payload(prepared: Prepared) -> dict[str, Any]:
     payload = _pick_payload_v1(prepared)
+    if prepared.objective is not None:
+        # Additive, and only when [engine] configures the joint objective or shadow
+        # mode: today's payload is byte-identical (tests/test_contract_golden.py).
+        payload["objective"] = dict(prepared.objective)
     ctx = prepared.capability
     if ctx is None:
         return payload
@@ -1942,6 +2158,8 @@ def _cmd_explain(
         payload = decision.to_dict()
         payload["generated_at"] = _iso(now_s)
         payload["warnings"] = list(dict.fromkeys(prepared.warnings))
+        if prepared.objective is not None:
+            payload["projection"] = _projection_payload(prepared)
         _dump_json(payload, stdout)
         return EXIT_OK
 
@@ -1950,12 +2168,100 @@ def _cmd_explain(
             decision,
             margin=_effective_margin(prepared),
             deprioritized=prepared.config.deprioritized_accounts(),
+            objective=(prepared.objective or {}).get("used"),
         )
         + "\n"
         + _reserve_block(prepared)
         + _deprioritized_block(prepared)
+        + _projection_block(prepared)
     )
     return EXIT_OK
+
+
+def _projection_payload(prepared: Prepared) -> dict[str, Any]:
+    """The joint projection behind a decision: leftovers, unmet demand, avoided waste."""
+    payload: dict[str, Any] = {"objective": dict(prepared.objective or {})}
+    ctx = prepared.joint
+    if ctx is None:
+        return payload
+    now_s = prepared.now_s
+    payload["streams"] = [
+        {"group": s.group, "name": s.name, "pse_per_h": s.pse_per_h,
+         "fable_share": s.fable_share}
+        for s in ctx.streams
+    ]
+    settled: list[dict[str, Any]] = []
+    unmet: list[dict[str, Any]] = []
+    for group in sorted({stock.group for stock in ctx.stocks}):
+        base = ctx.baseline(group)
+        settled.extend(
+            {"id": row.id, "kind": row.kind, "deadline": _iso(row.deadline_s),
+             "hours": (row.deadline_s - now_s) / 3600.0, "leftover_pse": row.leftover}
+            for row in base.settled
+        )
+        unmet.extend(
+            {"group": key[0], "stream": key[1], "pse": amount}
+            for key, amount in sorted(base.unmet.items())
+        )
+    payload["settled"] = settled
+    payload["unmet"] = unmet
+    avoided: list[dict[str, Any]] = []
+    for stock in ctx.stocks:
+        result = ctx.score(stock.id)
+        if result is None:
+            continue
+        avoided.append(
+            {"id": stock.id, "avoided_pse": result.avoided, "job_pse": result.job_pse,
+             "raw_pse": result.raw, "clamped": result.clamped}
+        )
+    payload["avoided"] = avoided
+    return payload
+
+
+def _projection_block(prepared: Prepared) -> str:
+    report = prepared.objective
+    if report is None:
+        return ""
+    used = report.get("used") or "none (exhausted fallback)"
+    lines = [
+        "",
+        f"objective: {used} (configured {report['configured']}"
+        + (", shadow" if report.get("shadow") else "")
+        + ")",
+    ]
+    if report.get("fallback"):
+        lines.append(f"  fell back to own_waste: {report['fallback']}")
+    if report.get("shadow_chosen"):
+        lines.append(f"  joint objective would pick: {report['shadow_chosen']}")
+    payload = _projection_payload(prepared)
+    if "settled" not in payload:
+        return "\n".join(lines) + "\n"
+    age = report.get("forecast_age_s")
+    lines.append(
+        f"  job {report['job_pse']:.4f} PSE; demand forecast "
+        f"{_format_age(age) if isinstance(age, (int, float)) else '?'} old"
+        + ("; partial fleet (--only/--exclude)" if report.get("partial_fleet") else "")
+    )
+    for stream in payload["streams"]:
+        lines.append(
+            f"  demand {stream['group']}/{stream['name']}: {stream['pse_per_h']:.4f} PSE/h"
+            f" ({stream['fable_share']:.0%} Fable)"
+        )
+    lines.append("  projection, leftover at each deadline inside the horizon:")
+    for row in payload["settled"]:
+        lines.append(
+            f"    {row['id']:<22} {row['kind']:<12} in {row['hours']:6.1f}h  "
+            f"leftover {row['leftover_pse']:.3f} PSE"
+        )
+    for row in payload["unmet"]:
+        lines.append(f"    unmet {row['group']}/{row['stream']}: {row['pse']:.3f} PSE")
+    lines.append("  waste this job avoids:")
+    for row in payload["avoided"]:
+        lines.append(
+            f"    {row['id']:<22} {row['avoided_pse']:.4f} of {row['job_pse']:.4f} PSE"
+            + ("  (clamped)" if row["clamped"] else "")
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _plans_for(config: Config) -> tuple[dict[str, pse.Plan], list[str]]:
@@ -2746,6 +3052,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Each model gains effort {requested, applied, clamped, supported}; applied is "
             "the highest supported level at or below the request, else the lowest above "
             "it. Never changes which account wins"
+        ),
+    )
+    pick_parser.add_argument(
+        "--job-pse",
+        type=float,
+        default=None,
+        metavar="PSE",
+        help=(
+            "size of this job in PSE, for the joint objective ([engine] objective = "
+            "\"joint\"); default [engine] default_job_pse"
         ),
     )
     exec_parser = subparsers.add_parser(

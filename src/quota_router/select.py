@@ -512,6 +512,7 @@ def select(
     switch_margin: float | None = None,
     sticky: Any = None,
     record: bool = True,
+    joint: Any = None,
 ) -> Decision:
     """Choose which account should serve this call.
 
@@ -543,6 +544,10 @@ def select(
             decides -- the hint's owner has its own freshness policy.
         record: When ``False`` the decision is computed without updating ``state`` -- for
             previews, dry runs and tests.
+        joint: A :class:`quota_router.joint.JointContext` when the joint objective is in
+            force. Scores become fleet waste avoided, and hysteresis brakes only within a
+            tie class: a challenger that avoids more than ``joint.objective_gap`` more
+            waste takes the seat whatever the dwell.
 
     Returns:
         A :class:`~quota_router.types.Decision`. Always. ``chosen is None`` means nothing
@@ -616,7 +621,8 @@ def select(
         _writeback(writeback, resolved_state, record)
         return decision
 
-    ranked = rank(eligible, now_s, scoring_cfg, model_class)
+    ranked = rank(eligible, now_s, scoring_cfg, model_class, joint=joint)
+    objective_gap = joint.objective_gap if joint is not None else None
     ranked = apply_confidence_shrinkage(
         ranked, {snap.id: snap.confidence for snap in eligible}
     )
@@ -652,6 +658,7 @@ def select(
             max_dwell_s=max_dwell_s,
             margin_ratio=margin_ratio,
             margin_abs=margin_abs,
+            objective_gap=objective_gap,
         )
         if would_have_kept:
             released_incumbent = incumbent.account_id
@@ -664,6 +671,7 @@ def select(
         max_dwell_s=max_dwell_s,
         margin_ratio=margin_ratio,
         margin_abs=margin_abs,
+        objective_gap=objective_gap,
     )
 
     if ranked[0].account_id != chosen_row.account_id:
@@ -771,6 +779,7 @@ def _apply_hysteresis(
     max_dwell_s: float,
     margin_ratio: float,
     margin_abs: float,
+    objective_gap: float | None = None,
 ) -> tuple[ScoreBreakdown, bool, str]:
     """Decide whether the top-ranked challenger may take the seat from the incumbent.
 
@@ -787,6 +796,11 @@ def _apply_hysteresis(
     An incumbent that is no longer eligible is not in ``ranked`` at all (its key changed
     with the candidate set), so nothing here can pin the router to an account that cannot
     serve the call.
+
+    Under the joint objective (``objective_gap`` set) both brakes act only inside a tie
+    class: a leader whose score beats the incumbent's by more than ``objective_gap`` PSE
+    of avoided waste takes the seat at once, so stickiness can cost at most that much
+    per decision.
     """
     leader = ranked[0]
     if incumbent is None:
@@ -794,6 +808,9 @@ def _apply_hysteresis(
 
     seated = next((row for row in ranked if row.account_id == incumbent.account_id), None)
     if seated is None or seated.account_id == leader.account_id:
+        return leader, False, ""
+
+    if objective_gap is not None and leader.score - seated.score > objective_gap:
         return leader, False, ""
 
     dwell_calls_met = incumbent.calls >= min_dwell_calls

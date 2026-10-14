@@ -354,13 +354,21 @@ def explain_verbose(
     margin: float | None = None,
     show_windows: bool = True,
     deprioritized: Collection[str] = (),
+    objective: str | None = None,
 ) -> str:
-    """Full rendering: headline, ranked table, per-window arithmetic, exclusions."""
+    """Full rendering: headline, ranked table, per-window arithmetic, exclusions.
+
+    ``objective`` names what ranked the table; ``None`` is today's per-account waste.
+    """
     blocks: list[str] = [
         explain_decision(decision, margin=margin, deprioritized=deprioritized)
     ]
 
-    blocks.append("objective: PSE at risk of expiring before reset (tier-normalized)")
+    blocks.append(
+        "objective: projected fleet waste this job avoids (joint)"
+        if objective == "joint"
+        else "objective: PSE at risk of expiring before reset (tier-normalized)"
+    )
 
     table = format_ranked_table(decision)
     if table:

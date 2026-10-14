@@ -612,12 +612,12 @@ class OracleConfig:
 
 #: Objectives the ``[engine]`` section may name. ``own_waste`` is today's per-account
 #: projection (:func:`quota_router.scoring.pse_objective`).
-ENGINE_OBJECTIVES: Final[tuple[str, ...]] = ("own_waste",)
+ENGINE_OBJECTIVES: Final[tuple[str, ...]] = ("own_waste", "joint")
 
 #: Objectives that are designed but not shipped in this version. Naming one is a config
 #: error, never a silent fall back to ``own_waste``: an operator who asks for an
 #: objective gets it or is told.
-ENGINE_OBJECTIVES_PENDING: Final[tuple[str, ...]] = ("joint",)
+ENGINE_OBJECTIVES_PENDING: Final[tuple[str, ...]] = ()
 
 _ENGINE_KEYS: Final[frozenset[str]] = frozenset(
     {

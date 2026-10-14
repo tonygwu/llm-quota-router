@@ -132,6 +132,7 @@ def select_account(
     deps: Any = None,
     capability: str | None = None,
     effort: str | None = None,
+    job_pse: float | None = None,
 ) -> Selection:
     """Choose which account to spend on this invocation.
 
@@ -158,6 +159,8 @@ def select_account(
             for its account and gains ``effort`` (``requested``, ``applied``,
             ``clamped``, ``supported``); an Antigravity id becomes the label at
             ``applied``. It never changes which account wins.
+        job_pse: Size of this job in PSE, for ``[engine] objective = "joint"``; the
+            default is ``[engine] default_job_pse``. Ignored under today's objective.
 
     Returns:
         A :class:`Selection`. **This function does not raise on routing failure** --
@@ -178,9 +181,12 @@ def select_account(
             raise ValueError("effort needs a capability")
         if effort not in EFFORTS:
             raise ValueError(f"unknown effort {effort!r} (known: {', '.join(EFFORTS)})")
+    if job_pse is not None and not job_pse > 0:
+        raise ValueError(f"job_pse must be positive, got {job_pse!r}")
     args = SimpleNamespace(
         capability=capability,
         effort=effort,
+        job_pse=job_pse,
         model=model,
         # argparse declares --only/--exclude with action="append", so _split_list
         # expects an ITERABLE OF STRINGS. Handing it one joined string makes it
