@@ -2134,7 +2134,7 @@ def _write_status_compact(
     model_class: str | None,
     stdout: TextIO,
 ) -> None:
-    """The default view: one line per measurable account, one screen for the fleet."""
+    """The default view: one line per account, one screen for the fleet."""
     scope = "" if model_class is None else f" (model class {model_class})"
     stdout.write(
         f'quota LEFT + time to reset ("-" = no such window); '
@@ -2142,7 +2142,8 @@ def _write_status_compact(
     )
     reserves = {held.account_id: held for held in prepared.manual_reserves}
     table = explain_mod.format_status_table(
-        prepared.snapshots, now_s, model_class, reserves
+        prepared.snapshots, now_s, model_class, reserves,
+        max_age_s=prepared.config.staleness.max_age_s,
     )
     if table:
         stdout.write(table + "\n")

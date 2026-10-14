@@ -78,6 +78,7 @@ __all__ = [
     "ACCOUNT_IDS",
     "ACCOUNT_CURSOR",
     "PROVIDER_CURSOR",
+    "UNMEASURED_PROVIDERS",
     "ACCOUNT_PROVIDERS",
     "PROVIDER_CLAUDE",
     "PROVIDER_CODEX",
@@ -234,6 +235,12 @@ PROVIDERS: Final[tuple[str, ...]] = (
     PROVIDER_CURSOR,
     PROVIDER_ANTIGRAVITY,
 )
+
+#: Providers with no usage source at all, whose accounts never carry windows. ``status``
+#: names their accounts on one "not measurable" line. Every other provider keeps a table
+#: row for each account, measured or not, so a provider whose reads all failed on one
+#: poll shows why, rather than its table vanishing.
+UNMEASURED_PROVIDERS: Final[frozenset[str]] = frozenset({PROVIDER_CURSOR})
 
 #: Canonical account id -> provider.
 ACCOUNT_PROVIDERS: Final[Mapping[str, str]] = MappingProxyType(

@@ -86,7 +86,8 @@ estimating. Cursor's CLI has `status` and `about`, and neither reports a quota
 figure. Such accounts carry no windows and `confidence=0.0`, so they are routable
 but never scored as if measured. `quotapick status` lists them under **not
 measurable**, with the reason, rather than giving them a table row that would read
-as "measured, and empty".
+as "measured, and empty". Every other provider keeps a row for each account, even one
+with no reading, and its STATUS cell says why the row has no numbers.
 
 Antigravity was in that position until 2026-10-12: agy exposed no usage command and
 wrote no quota anywhere on disk. agy 1.3.3 answers `/usage` headlessly, in about 4s,
@@ -338,11 +339,15 @@ quotapick capabilities                   # which model each account resolves, pe
 ```
 quota LEFT + time to reset ("-" = no such window); TIGHTEST = pace vs an even burn
 
-ACCOUNT   TIER     5h         7d         fable      TIGHTEST              SOURCE
-claude    max_20x   70% 2.5h   29% 4.6d    2% 4.6d  fable  64% over pace  live
-claude_b  max_20x   70% 3.0h   91% 6.0d   85% 6.0d  fable   1% over pace  live
-claude_d  max_20x   89% 4.6h   84% 5.4d   81% 5.4d  5h      3% over pace  live
-codex     pro        -         83% 4.7d    -        7d     15% to spare   cache 1.7h
+provider: claude
+ACCOUNT   TIER     5h         7d         fable      TIGHTEST              STATUS
+claude    max_20x   70% 2.5h   29% 4.6d    2% 4.6d  fable  64% over pace  fresh 40s
+claude_b  max_20x   70% 3.0h   91% 6.0d   85% 6.0d  fable   1% over pace  fresh 40s
+claude_c  max_5x     -          -          -                              unreadable
+
+provider: codex
+ACCOUNT  TIER  7d         TIGHTEST          STATUS
+codex    pro    83% 4.7d  7d  16% to spare  stale 1.7h
 
 not measurable: cursor (no usage API; unobservable)
 ```
@@ -366,6 +371,18 @@ Pace is not "how full" — an account can be 70% empty and still have quota to
 spare if its reset is close, which is exactly the case the router exists to
 catch. `quotapick status --verbose` prints the subtraction for every window, per
 account, plus every warning the history scan produced.
+
+**STATUS** says whether to trust the row's numbers:
+
+- **`fresh 40s`** / **`stale 1.7h`** — measured, and the age is from when the vendor
+  answered, whether this run read it or reused the poller's reading. `stale` means older
+  than `[staleness] max_age_s` (300s by default), the same threshold that lists the
+  account in `degraded`.
+- **`unreadable`** — no reading at all, and no pick routes to it: an expired token, or
+  an Antigravity login that answers as another account. Its quota is unknown, not zero.
+- **`unavailable`** — the account cannot serve now, such as a pool cooling off after a
+  quota error. Any numbers shown are still its own.
+- **`unmeasured`** — no reading, but still routable as a fallback.
 
 From Python:
 
@@ -687,9 +704,9 @@ account.
   vendor says is left -- and the hold gets two columns of its own:
 
   ```
-  ACCOUNT  TIER  7d          manual_reserve  spendable  TIGHTEST                  SOURCE
-  codex    pro    72% 6.6d    33% budget      39%       7d  55% over pace         live
-  codex_b  pro   100% 7.0d     -               -        7d      on pace           live
+  ACCOUNT  TIER  7d          manual_reserve  spendable  TIGHTEST                  STATUS
+  codex    pro    72% 6.6d    33% budget      39%       7d  55% over pace         fresh 0s
+  codex_b  pro   100% 7.0d     -               -        7d      on pace           fresh 0s
 
   reserve codex: 72% left - 33% budgeted hold (0.05/day x 6.6d to reset) = 39% spendable
   ```
@@ -707,9 +724,9 @@ account.
   gets an `in_flight` column, again only while something is actually dispatched:
 
   ```
-  ACCOUNT   TIER     7d        in_flight  spendable  TIGHTEST           SOURCE
-  claude    max_20x   44% 60m    1%        43%       7d   7% over pace  live
-  claude_b  max_20x   40% 60m    -          -        7d  10% over pace  live
+  ACCOUNT   TIER     7d        in_flight  spendable  TIGHTEST           STATUS
+  claude    max_20x   44% 60m    1%        43%       7d   7% over pace  fresh 40s
+  claude_b  max_20x   40% 60m    -          -        7d  10% over pace  fresh 40s
   ```
 
   So a window cell is always the vendor's capacity, `spendable` is always what routing

@@ -207,7 +207,7 @@ def test_spendable_is_the_weekly_arithmetic_even_when_another_window_binds() -> 
         ),
         {"codex_b": 0.01},
     )
-    table = format_status_table(snap, NOW)
+    table = format_status_table(snap, NOW, max_age_s=300.0)
     binding = table.splitlines()[1]
     # Guard the premise: the reserve bucket really is what TIGHTEST names.
     assert re.search(r"base_model_inference\s+\d+% over pace", binding), binding
@@ -224,5 +224,5 @@ def test_a_deduction_too_small_to_round_to_a_percent_is_not_shown_as_zero() -> N
     from quota_router.explain import format_status_table
 
     snap = _apply_pileup((account("claude", window("7d", 0.56)),), {"claude": 0.005})
-    table = format_status_table(snap, NOW)
+    table = format_status_table(snap, NOW, max_age_s=300.0)
     assert re.search(r"claude\s+max_20x\s+44% 60m\s+<1%\s+43%", table), table

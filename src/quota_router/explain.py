@@ -31,12 +31,13 @@ from .types import (
     PROVIDERS,
     REGIME_A,
     REGIME_B,
-    SOURCE_LIVE,
+    UNMEASURED_PROVIDERS,
     WINDOW_KEY_7D,
     AccountSnapshot,
     Decision,
     ScoreBreakdown,
     WindowSlack,
+    unreadable_reason,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; avoids an import cycle
@@ -483,21 +484,30 @@ def _pace_cell(slack: float, label: str, label_width: int) -> str:
     return f"{label:<{label_width}} {abs(rounded):>3}% {direction}"
 
 
-def _source_cell(snapshot: AccountSnapshot, now_s: float) -> str:
-    """Where these numbers came from, and how old they are.
+def _status_cell(snapshot: AccountSnapshot, now_s: float, max_age_s: float) -> str:
+    """Whether to trust this row's numbers: one word, plus the reading's age.
 
-    A fresh live read is the boring case and says only ``live``. Everything else names
-    the source and its age, because a cached or assumed reading is exactly the kind of
-    thing that must not be mistaken for a measurement.
+    * ``fresh <age>`` / ``stale <age>``: measured, and older than ``max_age_s`` or not.
+      That is the threshold that lists an account in ``degraded``, so the column and
+      the JSON never disagree. The age is from when the vendor answered, whether this
+      run read it or reused the poller's reading.
+    * ``unreadable``: no reading at all, and no pick routes to it (an expired token,
+      a login that answers as another account). The quota is unknown, not zero.
+    * ``unavailable``: the source says the account cannot serve now, such as a pool
+      cooling off after a quota error. Any numbers shown are still its own.
+    * ``unmeasured``: no reading, but still routable as a fallback.
+
+    It replaced a SOURCE column that printed a reused Claude reading as ``live`` and
+    hid its age below 60s, while the same reuse of an Antigravity reading said
+    ``cache``: two words for one thing, and neither said whether to trust the number.
     """
     if not snapshot.available:
-        return "UNAVAILABLE"
+        return "unreadable" if unreadable_reason(snapshot) is not None else "unavailable"
     age = snapshot.staleness_s(now_s)
-    if snapshot.source == SOURCE_LIVE and (age is None or age < 60.0):
-        return SOURCE_LIVE
     if age is None:
-        return snapshot.source
-    return f"{snapshot.source} {format_duration(age)}"
+        return "unmeasured"
+    word = "stale" if age > max_age_s else "fresh"
+    return f"{word} {format_duration(age)}"
 
 
 def _window_columns(
@@ -566,7 +576,8 @@ def _status_block(
     measurable: Sequence[AccountSnapshot],
     now_s: float,
     model_class: str | None,
-    reserves: Mapping[str, "ManualReserve"] | None = None,
+    reserves: Mapping[str, "ManualReserve"] | None,
+    max_age_s: float,
 ) -> str:
     """One table: a line per account, sharing one set of window columns.
 
@@ -690,10 +701,10 @@ def _status_block(
             if binding is None
             else _pace_cell(binding.slack, window_label(binding.key), label_width)
         )
-        cells.append(_source_cell(snapshot, now_s))
+        cells.append(_status_cell(snapshot, now_s, max_age_s))
         rows.append(cells)
 
-    headers = ["ACCOUNT", "TIER", *columns, "TIGHTEST", "SOURCE"]
+    headers = ["ACCOUNT", "TIER", *columns, "TIGHTEST", "STATUS"]
     right = [False, False, *(False for _ in columns), False, False]
     return _aligned_table(headers, rows, right)
 
@@ -706,11 +717,18 @@ def _provider_sort_key(provider: str) -> tuple[int, str]:
         return (len(PROVIDERS), provider)
 
 
+def _tabled(snapshot: AccountSnapshot) -> bool:
+    """Whether ``status`` gives this account a table row (else the "not measurable" line)."""
+    return bool(snapshot.windows) or snapshot.provider not in UNMEASURED_PROVIDERS
+
+
 def format_status_table(
     snapshots: Iterable[AccountSnapshot],
     now_s: float,
     model_class: str | None = None,
     reserves: Mapping[str, "ManualReserve"] | None = None,
+    *,
+    max_age_s: float,
 ) -> str:
     """One table per provider: what is left in each window, and its pace.
 
@@ -725,17 +743,21 @@ def format_status_table(
     account temporarily loses a window. Two providers that publish identical windows are
     still two tables, which is the price of that stability.
 
-    An account with no windows at all is in no table -- there is nothing to put in the
-    cells, and a row of dashes would read as "measured, and empty". Those accounts are
-    named by :func:`format_unmeasurable` instead.
+    An account of a provider with no usage source at all (:data:`UNMEASURED_PROVIDERS`,
+    Cursor) is in no table, and :func:`format_unmeasurable` names it instead. Every other
+    account has a row even without windows: its dashes sit beside a STATUS cell that
+    says ``unreadable`` or ``unmeasured``, so they cannot read as "measured, and empty",
+    and a provider whose reads all failed on one poll keeps its table.
 
     Args:
+        max_age_s: Older readings show as ``stale``. Pass ``staleness.max_age_s`` from
+            the config, the threshold that lists an account in ``degraded``.
         reserves: Manual-use reserves by account id. A provider table with at least one
             gains a ``manual_reserve`` column (the budget, uncapped) and a ``spendable``
             column (what routing may use) beside its weekly window. Omitting them leaves
             every table exactly as it was.
     """
-    measurable = [snapshot for snapshot in snapshots if snapshot.windows]
+    measurable = [snapshot for snapshot in snapshots if _tabled(snapshot)]
     if not measurable:
         return ""
 
@@ -749,20 +771,21 @@ def format_status_table(
     name_them = len(ordered) > 1
     blocks: list[str] = []
     for provider, members in ordered:
-        block = _status_block(members, now_s, model_class, reserves)
+        block = _status_block(members, now_s, model_class, reserves, max_age_s)
         blocks.append(f"provider: {provider}\n{block}" if name_them else block)
     return "\n\n".join(blocks)
 
 
 def format_unmeasurable(snapshots: Iterable[AccountSnapshot]) -> str:
-    """The accounts that published no windows, named rather than silently omitted.
+    """The accounts of a provider with no usage source, named rather than silently omitted.
 
     Leaving them out entirely would make a provider with no usage API indistinguishable
     from one that is not configured. Each is listed with the reason its adapter gave.
+    Exactly the accounts :func:`format_status_table` leaves out.
     """
     lines: list[str] = []
     for snapshot in snapshots:
-        if snapshot.windows:
+        if _tabled(snapshot):
             continue
         reason = snapshot.note or "no usage windows published"
         lines.append(f"{snapshot.id} ({reason})")

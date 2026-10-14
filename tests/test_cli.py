@@ -31,6 +31,7 @@ from quota_router.explain import (
     explain_decision,
     format_pace,
     format_status_table,
+    format_unmeasurable,
 )
 from quota_router.model_classes import classify, demand_multiplier, resolve
 from quota_router.types import (
@@ -1095,7 +1096,7 @@ def test_status_columns_line_up_when_a_window_is_exactly_on_pace(env):
     burning = account(
         "claude_b", window("seven_day", 0.90, resets_in_s=half, expected_used=0.50)
     )
-    table = format_status_table((level, burning), NOW)
+    table = format_status_table((level, burning), NOW, max_age_s=300.0)
     lines = table.splitlines()
     assert "on pace" in lines[1] and "over pace" in lines[2], table
     assert lines[1].index("on pace") == lines[2].index("over pace"), table
@@ -1132,6 +1133,81 @@ def test_status_names_an_unmeasurable_account_instead_of_tabling_it(env):
     assert code == cli.EXIT_OK
     assert "not measurable: cursor (no usage API; unobservable)" in out
     assert not any(line.startswith("cursor ") for line in out.splitlines()), out
+
+
+def _status_cells(table: str) -> dict[str, str]:
+    """``{account id: STATUS cell}`` from a rendered status table."""
+    cells: dict[str, str] = {}
+    for block in table.split("\n\n"):
+        lines = [line for line in block.splitlines() if not line.startswith("provider:")]
+        at = lines[0].index("STATUS")
+        for line in lines[1:]:
+            cells[line.split()[0]] = line[at:].strip()
+    return cells
+
+
+def test_status_column_says_fresh_or_stale_by_the_degraded_threshold(env):
+    """One threshold, the one that puts an account in `degraded`, so the two agree.
+
+    The column used to be SOURCE: a Claude reading reused from the poller read "live" and
+    hid its age below 60s, while the same reuse of an Antigravity reading read "cache".
+    """
+    young = account("claude", window("seven_day", 0.5, observed_at_s=NOW - 55))
+    edge = account("claude_b", window("seven_day", 0.5, observed_at_s=NOW - 300))
+    old = account("claude_c", window("seven_day", 0.5, observed_at_s=NOW - 400))
+    table = format_status_table((young, edge, old), NOW, max_age_s=300.0)
+
+    assert "STATUS" in table.splitlines()[0] and "SOURCE" not in table, table
+    assert _status_cells(table) == {
+        "claude": "fresh 55s",
+        "claude_b": "fresh 5m",
+        "claude_c": "stale 7m",
+    }
+
+
+def test_status_column_names_why_an_account_has_no_usable_reading(env):
+    """unreadable / unmeasured / unavailable, each a row of its provider's table."""
+    benched = account("claude", window("seven_day", 0.5), available=False,
+                      note="failure-learned exhaustion")
+    dark = account("claude_b", available=False, note="access token expired")
+    measured = account("antigravity_gemini", window("seven_day", 0.1))
+    blank = AccountSnapshot(
+        id="antigravity_claude", windows=(), source=SOURCE_ASSUMED, confidence=0.0,
+        note="no /usage reading; unmeasured",
+    )
+    table = format_status_table((benched, dark, measured, blank), NOW, max_age_s=300.0)
+
+    assert _status_cells(table) == {
+        "claude": "unavailable",
+        "claude_b": "unreadable",
+        "antigravity_gemini": "fresh 0s",
+        "antigravity_claude": "unmeasured",
+    }, table
+
+
+def test_a_provider_keeps_its_table_when_no_account_has_a_reading(env):
+    """All four Antigravity pools failed on the same poll about a dozen times in two days."""
+    blank = [
+        AccountSnapshot(id=pool, windows=(), source=SOURCE_ASSUMED, confidence=0.0,
+                        note="no /usage reading; unmeasured")
+        for pool in ("antigravity_gemini", "antigravity_claude")
+    ]
+    table = format_status_table(blank, NOW, max_age_s=300.0)
+    assert _status_cells(table) == {
+        "antigravity_gemini": "unmeasured", "antigravity_claude": "unmeasured",
+    }, table
+    assert format_unmeasurable(blank) == "", "a measurable provider is never 'not measurable'"
+
+
+def test_status_reads_the_stale_threshold_from_config(env, tmp_path):
+    aged = (account("claude", window("seven_day", 0.5, observed_at_s=NOW - 400)),)
+    _code, out, _ = run(["status"], env, snapshots=aged)
+    assert _status_cells(out.split("\n\n", 1)[1].split("\n\n")[0])["claude"] == "stale 7m", out
+
+    config = tmp_path / "patient.toml"
+    config.write_text("[staleness]\nmax_age_s = 600\n", encoding="utf-8")
+    _code, out, _ = run(["status", "--config", str(config)], env, snapshots=aged)
+    assert _status_cells(out.split("\n\n", 1)[1].split("\n\n")[0])["claude"] == "fresh 7m", out
 
 
 def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):
@@ -2200,7 +2276,7 @@ def test_status_gives_each_provider_its_own_table(env):
         tier="pro",
     )
 
-    table = format_status_table((*claude_side, codex_side), NOW)
+    table = format_status_table((*claude_side, codex_side), NOW, max_age_s=300.0)
 
     headers = [line for line in table.splitlines() if line.startswith("ACCOUNT")]
     assert len(headers) == 2, table
@@ -2215,10 +2291,10 @@ def test_status_gives_each_provider_its_own_table(env):
 def test_status_names_the_provider_only_when_more_than_one_is_measurable(env):
     """One provider keeps today's caption-free table; a mixed fleet says which is which."""
     one = account("claude", window("seven_day", 0.60))
-    assert "provider:" not in format_status_table((one,), NOW)
+    assert "provider:" not in format_status_table((one,), NOW, max_age_s=300.0)
 
     two = account("codex", window("seven_day", 0.31), tier="pro")
-    both = format_status_table((one, two), NOW)
+    both = format_status_table((one, two), NOW, max_age_s=300.0)
     assert "provider: claude" in both, both
     assert "provider: codex" in both, both
     assert both.index("provider: claude") < both.index("provider: codex"), both
@@ -2242,7 +2318,7 @@ def test_status_pace_cell_ignores_the_width_of_columns_it_never_names(env):
     pattern = re.compile(r"7d\s+\d+% (?:over pace|to spare)")
 
     def tightest(snapshot) -> str:
-        table = format_status_table((snapshot,), NOW)
+        table = format_status_table((snapshot,), NOW, max_age_s=300.0)
         found = pattern.search(table.splitlines()[1])
         assert found is not None, table
         return found.group(0)
