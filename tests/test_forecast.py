@@ -296,3 +296,17 @@ def test_status_keeps_the_forecast_warm(tmp_path) -> None:
     )
     assert code == cli.EXIT_OK, err
     assert forecast.forecast_path(env).exists()
+
+
+def test_a_credit_pool_reading_is_not_subscription_demand() -> None:
+    # A credit pool snapshot carries a `credit` window, not a weekly one. Its spend reaches
+    # the forecast through `run` lines; its reading must not join the claude accounts or
+    # dilute their coverage.
+    credit = hrecord(
+        T0 + HOUR,
+        account("anthropic_api_d", window("credit", 0.3, T0 + 100 * HOUR, T0 + HOUR,
+                                          length_s=30 * 86400.0), provider="anthropic_api"),
+    )
+    claude = _measure(_hourly(10, 0.01) + [credit], hours=10).groups["claude"]
+    assert claude.accounts == ("claude",)
+    assert claude.coverage == pytest.approx(1.0)

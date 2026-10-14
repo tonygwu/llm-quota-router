@@ -38,6 +38,7 @@ from typing import Any, Final
 
 from . import waste
 from .history import history_path
+from .joint import GROUP_FOR_PROVIDER
 from .pse import Plan
 from .types import MODEL_CLASS_FABLE, WINDOW_KEY_7D
 
@@ -45,14 +46,6 @@ FORECAST_VERSION: Final[int] = 1
 
 #: Default look-back: one weekly cycle, so a weekday-heavy week is averaged in full.
 DEFAULT_WINDOW_S: Final[float] = 7 * 86400.0
-
-#: Provider -> demand group. Providers not listed carry no measurable demand (Cursor
-#: publishes no windows).
-GROUP_FOR_PROVIDER: Final[Mapping[str, str]] = {
-    "claude": "claude",
-    "codex": "codex",
-    "antigravity": "antigravity",
-}
 
 _HOUR_S: Final[float] = 3600.0
 
@@ -256,7 +249,9 @@ def measure(
                 deduped.append(reading)
         provider = next((r.provider for r in reversed(deduped) if r.provider), None)
         group = GROUP_FOR_PROVIDER.get(provider or "")
-        if group is None:
+        # No weekly window, no demand to measure: Cursor, and API credit pools, whose
+        # spend arrives through `run` lines instead.
+        if group is None or not any(WINDOW_KEY_7D in r.windows for r in deduped):
             continue
         inside = [r.observed_at_s for r in deduped if start_s <= r.observed_at_s <= now_s]
         if not inside:

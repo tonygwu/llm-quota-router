@@ -48,6 +48,7 @@ PURE_MODULES: dict[str, frozenset[str]] = {
     "pse.py": frozenset({"types"}),
     "scoring.py": frozenset({"types", "pse"}),
     "select.py": frozenset({"types", "scoring", "pse"}),
+    "joint.py": frozenset({"types", "scoring", "pse"}),
 }
 
 
