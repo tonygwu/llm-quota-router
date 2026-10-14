@@ -91,6 +91,23 @@ the counterfactual says.
   Closes when the *reported* waste figure is computed over the whole field with one shared
   rate, the ranking still orders by earliest deadline, and a test pins both.
 
+- **The capability refresher does not check which Google account answered.** Every
+  Antigravity `/usage` read now compares agy's sign-in log with `identity_email`, and a
+  mismatch benches the pool. `capability_refresh` still runs `agy models` through the
+  same launch recipe with no such check, so after a silent login switch it would record
+  the other account's model list under this pool. The stakes are lower than for quota
+  numbers, because a model list rarely differs between two accounts of one tier.
+  Closes when the refresher passes `--log-file /dev/stderr`, refuses a listing whose
+  log names another address, and a test pins it.
+
+- **Antigravity read failures leave no durable cause.** `--log-file /dev/stderr` replaces
+  agy's own per-run log file, which held the only record of why a `/usage` read failed
+  (sign-in stall, eligibility stall, eligibility 503). The cause now reaches only the
+  `status` warnings, and the poller's log rotates within about 30 minutes because of the
+  window-transition notes. The snapshot note, which history keeps for days, says only
+  that the latest read failed. Closes when the note carries the failure's cause, so an
+  attempted / succeeded / failed-by-cause count can be read back out of history.
+
 ---
 
 ## Closed
