@@ -2414,7 +2414,7 @@ def _cmd_status(
             "degraded": list(prepared.degraded),
             "warnings": list(dict.fromkeys(prepared.warnings)),
         }
-        pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s)
+        pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True)
         if pools:
             # Additive, and only when [credit_pools] is configured.
             payload["credit_pools"] = pools
@@ -2430,7 +2430,7 @@ def _cmd_status(
         _write_status_verbose(prepared, now_s, model_class, stdout)
     else:
         _write_status_compact(prepared, now_s, model_class, stdout)
-    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s)
+    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True)
     if pools:
         stdout.write("\n" + _credit_pool_table(pools, now_s))
     for note in pool_notes:
@@ -3791,6 +3791,26 @@ def _cmd_doctor(
             )
         )
 
+    cached_forecast, forecast_problem = forecast_mod.read_cache(env=env)
+    checks.extend(
+        doctor_mod.check_forecast(
+            computed_at_s=cached_forecast.computed_at_s if cached_forecast else None,
+            problem=forecast_problem,
+            engine=config.engine,
+            credit_pools=len(config.credit_pools),
+            now_s=now_s,
+        )
+    )
+    pool_rows, _pool_notes = _credit_pool_rows(config, env, now_s)
+    checks.extend(
+        doctor_mod.check_credit_pools(
+            pool_rows,
+            now_s=now_s,
+            keychain_runner=deps.run,
+            services={p.id: p.keychain_service for p in config.credit_pools.values()},
+        )
+    )
+
     from . import capability as cap_mod
 
     cap_path = cap_mod.table_path(env)
@@ -4001,9 +4021,13 @@ def _cmd_replay(
 
 
 def _credit_pool_rows(
-    config: Config, env: Mapping[str, str], now_s: float
+    config: Config, env: Mapping[str, str], now_s: float, *, record_expiries: bool = False
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Each configured credit pool's balance, from the ledger; empty without pools."""
+    """Each configured credit pool's balance, from the ledger; empty without pools.
+
+    ``record_expiries`` (``status`` only, the poller's command) writes one ``expired``
+    line for each period that ended since the last run.
+    """
     if not config.credit_pools:
         return [], []
     from . import credits as credits_mod
@@ -4011,10 +4035,29 @@ def _credit_pool_rows(
     lines, problems = credits_mod.read(env)
     plan_ends = config.plan_ends()
     usd_per_pse = config.engine.usd_per_pse or 0.0
+    notes = list(problems)
+    if record_expiries:
+        for pool in config.credit_pools.values():
+            for line in credits_mod.expiries_due(
+                pool, lines, now_s=now_s, plan_end_s=plan_ends.get(pool.linked_account)
+            ):
+                if usd_per_pse:
+                    line["remaining_pse"] = line["remaining_usd"] / usd_per_pse
+                try:
+                    credits_mod.append(env, line)
+                except OSError as exc:
+                    notes.append(f"cannot record {pool.id}'s expiry: {exc}")
+                    continue
+                lines.append({"v": credits_mod.LEDGER_VERSION, **line})
     rows = []
     for pool in config.credit_pools.values():
         bal = credits_mod.balance(
             pool, lines, now_s=now_s, plan_end_s=plan_ends.get(pool.linked_account)
+        )
+        expired_unused = sum(
+            float(line.get("remaining_usd") or 0.0)
+            for line in lines
+            if line.get("pool") == pool.id and line.get("type") == "expired"
         )
         rows.append(
             {
@@ -4033,10 +4076,13 @@ def _credit_pool_rows(
                 "exhausted": bal.exhausted,
                 "expired": bal.expired,
                 "available": bal.available and pool.enabled,
+                "checkpoint_at": _iso(bal.since_s) if bal.since_s is not None else None,
+                "checkpoint_s": bal.since_s,
+                "expired_unused_usd": expired_unused,
                 "note": bal.note,
             }
         )
-    return rows, list(problems)
+    return rows, notes
 
 
 def _credit_pool_table(rows: Sequence[Mapping[str, Any]], now_s: float) -> str:

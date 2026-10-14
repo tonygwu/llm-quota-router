@@ -13,6 +13,8 @@ OpenAI, not Google). So the balance is a ledger, ``credits.jsonl`` beside
 ``release``     a hold given back without spending.
 ``exhausted``   the vendor refused a call for lack of credit. The pool reads empty until
                 the next grant or checkpoint.
+``expired``     what a period had left when it ended (written once by ``status``, stamped
+                with the expiry instant): the credit series of waste, in dollars and PSE.
 
 The balance starts from the latest grant or checkpoint. With none, the config's grant
 applies, labelled ``config`` at confidence 0.5. Past the expiry, a ``monthly`` pool is
@@ -42,7 +44,7 @@ LEDGER_VERSION: Final[int] = 1
 HOLD_TTL_S: Final[float] = 3600.0
 
 LINE_TYPES: Final[frozenset[str]] = frozenset(
-    {"grant", "checkpoint", "hold", "spend", "release", "exhausted"}
+    {"grant", "checkpoint", "hold", "spend", "release", "exhausted", "expired"}
 )
 
 SOURCE_OPERATOR: Final[str] = "operator"
@@ -131,6 +133,12 @@ class Balance:
     exhausted: bool
     expired: bool
     note: str
+    #: When the balance was last confirmed (a grant or checkpoint); None when it rests on
+    #: the config or an assumed renewal.
+    since_s: float | None = None
+    #: Period ends that passed before ``now_s`` (the base's expiry, then any assumed
+    #: renewals), oldest first.
+    ended_s: tuple[float, ...] = ()
 
     @property
     def available(self) -> bool:
@@ -174,8 +182,11 @@ def balance(
             base_t, remaining, source, confidence = float(line["t"]), usd, SOURCE_OPERATOR, 1.0
             expires = exp if exp is not None else expires
 
+    since_s = base_t if source == SOURCE_OPERATOR else None
     expired = False
+    ended: list[float] = []
     while now_s >= expires:
+        ended.append(expires)
         renews = pool.renewal == "monthly" and (plan_end_s is None or expires < plan_end_s)
         if not renews:
             expired = True
@@ -184,6 +195,7 @@ def balance(
         base_t, remaining = expires, pool.grant_usd
         expires = add_month(expires)
         source, confidence = SOURCE_ASSUMED, 0.6
+        since_s = None
 
     settled: set[str] = set()
     spent = held = 0.0
@@ -231,4 +243,31 @@ def balance(
         exhausted=exhausted,
         expired=expired,
         note=note,
+        since_s=since_s,
+        ended_s=tuple(ended),
     )
+
+
+def expiries_due(
+    pool: CreditPoolConfig,
+    lines: list[Mapping[str, Any]],
+    *,
+    now_s: float,
+    plan_end_s: float | None = None,
+) -> list[dict[str, Any]]:
+    """``expired`` lines not yet written for periods that ended before ``now_s``."""
+    recorded = {
+        float(line["expires_s"])
+        for line in lines
+        if line.get("pool") == pool.id
+        and line.get("type") == "expired"
+        and isinstance(line.get("expires_s"), (int, float))
+    }
+    out = []
+    for end in balance(pool, lines, now_s=now_s, plan_end_s=plan_end_s).ended_s:
+        if end in recorded:
+            continue
+        left = balance(pool, lines, now_s=end - 0.001, plan_end_s=plan_end_s).remaining_usd
+        out.append({"t": end, "pool": pool.id, "type": "expired", "expires_s": end,
+                    "remaining_usd": left})
+    return out

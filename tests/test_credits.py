@@ -18,6 +18,7 @@ for calls in flight. What must hold:
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -265,3 +266,66 @@ def test_add_month_keeps_the_day_and_clamps_at_month_end(start, end) -> None:
 
     got = credits.add_month(datetime.fromisoformat(start).timestamp())
     assert got == datetime.fromisoformat(end).timestamp()
+
+
+# ======================================================================================
+# Expiry and doctor (U9)
+# ======================================================================================
+
+
+def test_status_records_what_a_pool_had_left_when_it_expired(env) -> None:
+    expires = 1_792_368_000.0  # the pool's configured expiry, 2026-10-19T00:00:00Z
+    credits.append(env, {"t": expires - 3 * DAY, "pool": "anthropic_api_d",
+                         "type": "checkpoint", "remaining_usd": 150.0})
+    credits.append(env, {"t": expires - 2 * DAY, "pool": "anthropic_api_d",
+                         "type": "spend", "run_id": "r1", "usd": 10.0})
+    for _ in range(2):  # twice: the record is written once
+        code, _out, err = run(["status", "--json"], env, snapshots=real_capture(),
+                              now_s=expires + HOUR, cwd=_NO_CONFIG_FILES)
+        assert code == cli.EXIT_OK, err
+    expired = [line for line in credits.read(env)[0] if line["type"] == "expired"]
+    assert len(expired) == 1
+    assert expired[0]["expires_s"] == expires
+    assert expired[0]["remaining_usd"] == pytest.approx(140.0)
+    assert expired[0]["remaining_pse"] == pytest.approx(140.0 / 305)
+    code, out, _err = run(["credits", "--json"], env, now_s=expires + HOUR, cwd=_NO_CONFIG_FILES)
+    pool = json.loads(out)["credit_pools"][0]
+    assert pool["expired_unused_usd"] == pytest.approx(140.0)
+
+
+def test_doctor_flags_a_pool_with_no_checkpoint_and_a_missing_key(env) -> None:
+    from quota_router import doctor
+
+    rows, _ = cli._credit_pool_rows(cli.load_config(env=env, cwd=_NO_CONFIG_FILES), env, NOW)
+
+    def runner(argv, **kwargs):
+        assert "-w" not in argv  # existence only; the key is never read here
+        return subprocess.CompletedProcess(argv, 44, "", "")
+
+    checks = doctor.check_credit_pools(rows, now_s=NOW, keychain_runner=runner,
+                                       services={"anthropic_api_d": "anthropic-api-key-claude-d"})
+    by_name = {c.name: c for c in checks}
+    assert by_name["credits[anthropic_api_d]"].status == "warn"
+    assert "credits set" in by_name["credits[anthropic_api_d]"].remedy
+    assert by_name["keychain[anthropic_api_d]"].status == "fail"
+
+
+def test_doctor_flags_a_stale_forecast_only_when_something_uses_it() -> None:
+    from quota_router import doctor
+    from quota_router.config import EngineConfig
+
+    stale = doctor.check_forecast(
+        computed_at_s=NOW - 7 * HOUR, problem=None, engine=EngineConfig(objective="joint"),
+        credit_pools=0, now_s=NOW,
+    )
+    assert stale[0].status == "warn" and "stale" in stale[0].detail
+    missing = doctor.check_forecast(
+        computed_at_s=None, problem="no forecast yet", engine=EngineConfig(),
+        credit_pools=1, now_s=NOW,
+    )
+    assert missing[0].status == "warn"
+    unused = doctor.check_forecast(
+        computed_at_s=None, problem="no forecast yet", engine=EngineConfig(),
+        credit_pools=0, now_s=NOW,
+    )
+    assert unused == []

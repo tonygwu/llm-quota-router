@@ -457,6 +457,105 @@ def check_capabilities(
     return checks
 
 
+#: A credit pool's balance rests on its last checkpoint plus the router's own booking;
+#: past a week, anything else that used the key has had time to make it drift.
+CHECKPOINT_WARN_S: Final[float] = 7 * 24 * 3600.0
+
+
+def check_forecast(
+    *,
+    computed_at_s: float | None,
+    problem: str | None,
+    engine: Any,
+    credit_pools: int,
+    now_s: float,
+) -> list[Check]:
+    """Is the demand forecast fresh enough for what uses it? Nothing, if nothing does."""
+    if engine.objective == "own_waste" and not engine.shadow and not credit_pools:
+        return []
+    remedy = (
+        "`quotapick status` refreshes it (the launchd poller runs status every 120 s); "
+        "or run `quotapick forecast --refresh`"
+    )
+    if computed_at_s is None:
+        return [Check("forecast", "warn", problem or "no demand forecast", remedy)]
+    age = now_s - computed_at_s
+    if age < 0 or age > engine.forecast_max_age_s:
+        return [
+            Check(
+                "forecast",
+                "warn",
+                f"demand forecast stale: computed {age / 3600:.1f}h ago, limit "
+                f"{engine.forecast_max_age_s / 3600:.1f}h; the joint objective falls back",
+                remedy,
+            )
+        ]
+    return [Check("forecast", "ok", f"demand forecast {age / 60:.0f} min old")]
+
+
+def check_credit_pools(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    now_s: float,
+    keychain_runner: Any,
+    services: Mapping[str, str],
+) -> list[Check]:
+    """Each credit pool: is its balance confirmed and recent, and does its key exist?
+
+    The Keychain is asked whether the item exists (``security find-generic-password``
+    without ``-w``), which never reads the key.
+    """
+    checks: list[Check] = []
+    for row in rows:
+        pool = str(row["id"])
+        setter = (
+            f"read the pool's balance in the Console and run `quotapick credits set {pool} "
+            f"--remaining <USD> --expires <ISO date>`"
+        )
+        if row.get("source") in ("config", "assumed"):
+            checks.append(Check(f"credits[{pool}]", "warn",
+                                f"balance rests on the {row['source']} figure, not a Console "
+                                f"reading", setter))
+        elif row.get("checkpoint_s") is not None and now_s - float(row["checkpoint_s"]) > CHECKPOINT_WARN_S:
+            days = (now_s - float(row["checkpoint_s"])) / 86400.0
+            checks.append(Check(f"credits[{pool}]", "warn",
+                                f"last checkpoint {days:.0f} days old", setter))
+        elif (
+            row.get("available")
+            and float(row.get("expires_s") or 0) - now_s < 86400.0
+            and float(row.get("remaining_usd") or 0) > 1.0
+        ):
+            checks.append(Check(f"credits[{pool}]", "warn",
+                                f"${float(row['remaining_usd']):.2f} expires within a day",
+                                "route `quotapick run` work to it, or accept the loss"))
+        else:
+            checks.append(Check(f"credits[{pool}]", "ok",
+                                f"${float(row.get('remaining_usd') or 0):.2f} left, "
+                                f"source {row.get('source')}"))
+        service = services.get(pool)
+        if service is None:
+            continue
+        try:
+            completed = keychain_runner(
+                ["security", "find-generic-password", "-s", service],
+                capture_output=True, text=True, timeout=10,
+            )
+            exists = completed.returncode == 0
+        except Exception:  # noqa: BLE001 - a doctor check reports, never raises
+            exists = False
+        checks.append(
+            Check(f"keychain[{pool}]", "ok", f"Keychain item {service!r} exists")
+            if exists
+            else Check(
+                f"keychain[{pool}]",
+                "fail",
+                f"Keychain item {service!r} not found; `run` cannot use this pool",
+                f"in a terminal: security add-generic-password -U -s {service} -a <account> -w",
+            )
+        )
+    return checks
+
+
 def worst_exit_code(checks: Sequence[Check]) -> int:
     """EXIT_FAIL if anything failed, EXIT_WARN if anything warned, else EXIT_OK."""
     statuses = {check.status for check in checks}
