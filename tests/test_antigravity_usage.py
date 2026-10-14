@@ -46,7 +46,17 @@ def _epoch(text: str) -> float:
 #: The fixture was captured when its unstarted 5-hour window reset at now + 5h.
 NOW = _epoch("2026-10-12T07:09:46Z")
 
-USAGE_ARGV = ["-p", "/usage", "--output-format", "json"]
+USAGE_ARGV = ["-p", "/usage", "--output-format", "json", "--log-file", "/dev/stderr"]
+
+
+def _sign_in_log(email: str) -> str:
+    """The two lines agy's sign-in writes, in agy 1.3.5's exact format, addresses replaced."""
+    return (
+        "I1013 23:32:24.775503       1 server_oauth.go:204] applyAuthResult: "
+        f"email={email}, authMethod=consumer, quotaProject=\n"
+        "I1013 23:32:24.775511       1 server_oauth.go:209] OAuth: authenticated "
+        f"successfully as {email}\n"
+    )
 
 FOUR_POOLS = (
     '[accounts.antigravity_gemini]\nprovider = "antigravity"\n'
@@ -103,12 +113,26 @@ def _accounts(env, tmp_path, text: str = FOUR_POOLS):
 
 
 class Recorder:
-    """An agy runner that records every call and answers from a script."""
+    """An agy runner that records every call and answers from a script.
 
-    def __init__(self, stdout: str = RAW, returncode: int = 0, error: BaseException | None = None):
+    Its log, on stderr, signs in as the account each pool declares: ``b@example.com``
+    through the second account's ``sudo`` recipe, ``a@example.com`` otherwise.
+    ``signed_in`` replaces the log's address, and ``""`` writes no sign-in line at all.
+    """
+
+    def __init__(
+        self,
+        stdout: str = RAW,
+        returncode: int = 0,
+        error: BaseException | None = None,
+        signed_in: str | None = None,
+        log_tail: str = "",
+    ):
         self.stdout = stdout
+        self.log_tail = log_tail
         self.returncode = returncode
         self.error = error
+        self.signed_in = signed_in
         self.calls: list[tuple[list[str], dict[str, str], float]] = []
         self._lock = threading.Lock()
 
@@ -117,7 +141,11 @@ class Recorder:
             self.calls.append((list(argv), dict(env), timeout_s))
         if self.error is not None:
             raise self.error
-        return AgyCompleted(self.returncode, self.stdout, "")
+        email = self.signed_in
+        if email is None:
+            email = "b@example.com" if argv[0] == "sudo" else "a@example.com"
+        log = (_sign_in_log(email) if email else "") + self.log_tail
+        return AgyCompleted(self.returncode, self.stdout, log)
 
 
 def _adapter(env, accounts, runner, *, live=True, **kwargs) -> AntigravityAdapter:
@@ -217,6 +245,7 @@ def test_the_second_account_is_read_through_its_launch_plan(env, tmp_path):
     assert argv == [
         "sudo", "-n", "/usr/local/libexec/agy-as-user", "tonyagents",
         "/usr/local/bin/agy", "-p", "/usage", "--output-format", "json",
+        "--log-file", "/dev/stderr",
     ]
     plan = cli._launch_plan(config.account("antigravity_gemini_b"))
     assert argv[: len(plan["argv_prefix"])] == plan["argv_prefix"]
@@ -308,6 +337,101 @@ def test_a_response_that_is_not_the_usage_command_yields_no_windows(env, tmp_pat
     joined = "\n".join(adapter.warnings)
     assert cause in joined, joined
     assert "antigravity_gemini" in joined and "antigravity_claude" in joined
+
+
+# ======================================================================================
+# Which Google account answered: agy's own sign-in log, on every read
+# ======================================================================================
+
+
+def test_the_snapshot_names_the_account_agy_signed_in_as(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    snaps = _by_id(_adapter(env, accounts, Recorder()).snapshot(NOW))
+
+    assert snaps["antigravity_gemini"].identity.email == "a@example.com"
+    assert snaps["antigravity_claude"].identity.email == "a@example.com"
+    assert snaps["antigravity_gemini_b"].identity.email == "b@example.com"
+    assert snaps["antigravity_claude_b"].identity.email == "b@example.com"
+    assert "signed in as a@example.com" in (snaps["antigravity_gemini"].note or "")
+
+
+def test_a_reading_from_another_google_account_is_dropped_and_the_pools_benched(env, tmp_path):
+    """A silent login switch must not show the other account's numbers as this one's."""
+    _config_obj, accounts = _accounts(env, tmp_path)
+    adapter = _adapter(env, accounts[:2], Recorder(signed_in="b@example.com"))
+    snaps = _by_id(adapter.snapshot(NOW))
+
+    for snapshot in snaps.values():
+        assert snapshot.windows == ()
+        assert snapshot.available is False, "a launch would spend the other account's quota"
+        assert "b@example.com" in (snapshot.note or "")
+        assert "a@example.com" in (snapshot.note or "")
+    text = "\n".join(adapter.warnings)
+    assert "signed in as b@example.com, not the declared a@example.com" in text, text
+
+    # The pick path reads the same verdict from the cache.
+    picked = _by_id(_adapter(env, accounts[:2], explode, live=False).snapshot(NOW + 30))
+    assert all(s.windows == () and s.available is False for s in picked.values())
+
+
+def test_a_failed_read_that_names_another_account_is_still_a_mismatch(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    runner = Recorder(returncode=1, stdout="", signed_in="b@example.com")
+    snaps = _by_id(_adapter(env, accounts[:2], runner).snapshot(NOW))
+    assert all(s.available is False for s in snaps.values())
+
+
+def test_a_failed_read_quotes_agys_own_failure_line_not_the_log_tail(env, tmp_path):
+    """With the log on stderr, its last lines are shutdown noise, not the cause."""
+    tail = (
+        "E1014 07:05:10.998633       1 printmode.go:291] Print mode: eligibility check "
+        "failed: Eligibility check failed: UNAVAILABLE (code 503): The service is "
+        "currently unavailable.\n"
+        + "I1014 07:05:10.999651     321 server.go:3088] Waiting for migrations to "
+        "complete to prevent partial migration state...\n" * 5
+    )
+    _config_obj, accounts = _accounts(env, tmp_path)
+    adapter = _adapter(env, accounts[:2], Recorder(returncode=1, stdout="", log_tail=tail))
+    adapter.snapshot(NOW)
+    joined = "\n".join(adapter.warnings)
+    assert "exited 1: " in joined and "UNAVAILABLE (code 503)" in joined, joined
+
+
+def test_a_log_that_names_no_account_yields_no_windows(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    adapter = _adapter(env, accounts[:2], Recorder(signed_in=""))
+    snaps = _by_id(adapter.snapshot(NOW))
+
+    for snapshot in snaps.values():
+        assert snapshot.windows == ()
+        assert snapshot.available is True, "no evidence of a wrong account; still a fallback"
+    assert any("named no signed-in Google account" in w for w in adapter.warnings), adapter.warnings
+
+
+def test_a_pool_with_no_declared_identity_gets_no_windows_and_is_told_who_answered(env, tmp_path):
+    text = FOUR_POOLS.replace('identity_email = "a@example.com"\n', "")
+    _config_obj, accounts = _accounts(env, tmp_path, text)
+    adapter = _adapter(env, accounts[:2], Recorder())
+    snaps = _by_id(adapter.snapshot(NOW))
+
+    assert all(s.windows == () and s.available is True for s in snaps.values())
+    joined = "\n".join(adapter.warnings)
+    assert "no identity_email is declared" in joined and "a@example.com" in joined, joined
+
+
+def test_a_cache_record_written_before_the_identity_check_is_not_served(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    for pool in ("antigravity_gemini", "antigravity_claude"):
+        path = agy_mod.usage_cache_path(pool, env)
+        record = json.loads(path.read_text())
+        del record["payload"]["served"]
+        path.write_text(json.dumps(record))
+
+    adapter = _adapter(env, accounts[:2], explode, live=False)
+    snaps = _by_id(adapter.snapshot(NOW + 30))
+    assert all(s.windows == () for s in snaps.values())
+    assert any("predates the identity check" in w for w in adapter.warnings), adapter.warnings
 
 
 def test_a_failure_learned_deadline_still_benches_a_measured_pool(env, tmp_path):

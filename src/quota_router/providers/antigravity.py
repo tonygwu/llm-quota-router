@@ -44,13 +44,26 @@ a duplicate window, a ``remaining_fraction`` outside ``[0, 1]`` or an unparseabl
 ``reset_time`` makes that pool's whole reading unusable: dropping only the strange
 bucket would make the pool look healthier than it is.
 
-IDENTITY IS THE RECIPE, NOT THE RESPONSE
-----------------------------------------
-The response carries no account identity at all. Which Google account answered is
-guaranteed by the launch recipe (the macOS user, through ``macos_user`` and the
-``agy-as-user`` wrapper) plus the ``identity_email`` the operator declares, and it is
-NOT verified from the response. The cache records the recipe that produced each reading
-and refuses to serve a reading made under a different one.
+IDENTITY FROM AGY'S OWN LOG, ON EVERY READ
+------------------------------------------
+The response carries no account identity at all. The launch recipe (the macOS user,
+through ``macos_user`` and the ``agy-as-user`` wrapper) selects the Google account, but a
+login can change under it: an agy logout once reverted to the other account days later,
+and the desktop app shares agy's Keychain login. So every read passes ``--log-file
+/dev/stderr``, and agy's sign-in lines (``OAuth: authenticated successfully as ...``)
+name the account that answered. That address is compared with the pool's declared
+``identity_email``:
+
+* the same address: the reading is used, and the snapshot carries it as ``identity``;
+* another address: the numbers belong to another account, and a launch would spend that
+  account's quota. The pool gets no windows and is marked unavailable, so a pick
+  excludes it until the login is fixed. This holds even when the read itself failed;
+* no address in the log, or no ``identity_email`` declared: the reading cannot be tied
+  to the pool, so the pool gets no windows, as for any failed read.
+
+Measured 2026-10-14: 1,473 of 1,474 successful ``/usage`` runs on one account logged its
+address, and none logged another. The cache records the recipe and the logged address of
+each reading, and the same comparison runs on every cached reading served.
 
 NEVER ON THE PICK PATH
 ----------------------
@@ -95,6 +108,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -115,6 +129,7 @@ from ..types import (
     WINDOW_KEY_5H,
     WINDOW_KEY_7D,
     AccountSnapshot,
+    Identity,
     Window,
     normalize_tier,
 )
@@ -153,6 +168,7 @@ __all__ = [
     "default_run_agy",
     "launch_key",
     "map_usage",
+    "signed_in_as",
 ]
 
 #: The CLI the executor spawns for these pools, for the calling macOS user.
@@ -173,8 +189,21 @@ ANTIGRAVITY_ACCOUNT_IDS: Final[tuple[str, ...]] = (
 #: or ISO-8601. Unset means "no learned state", not an error.
 ANTIGRAVITY_STATE_ENV: Final[str] = "QUOTA_ROUTER_ANTIGRAVITY_STATE"
 
-#: What follows the binary to ask for the usage table instead of running a prompt.
-USAGE_ARGS: Final[tuple[str, ...]] = ("-p", "/usage", "--output-format", "json")
+#: What follows the binary to ask for the usage table instead of running a prompt. The
+#: log goes to stderr, which the runner captures, so its sign-in lines can name the
+#: account that answered. ``/dev/stderr`` and not a file path: the second account's agy
+#: runs as another macOS user, who cannot write to the caller's directories, while the
+#: inherited stderr reaches both.
+USAGE_ARGS: Final[tuple[str, ...]] = (
+    "-p", "/usage", "--output-format", "json", "--log-file", "/dev/stderr",
+)
+
+#: agy's two sign-in log lines, each naming the Google account it signed in as:
+#: ``applyAuthResult: email=X, authMethod=...`` and ``OAuth: authenticated successfully
+#: as X``.
+_SIGNED_IN: Final[re.Pattern[str]] = re.compile(
+    r"(?:applyAuthResult: email=|OAuth: authenticated successfully as )([^\s,]+@[^\s,]+)"
+)
 
 #: Budget for one Google account's whole read, process start included. Measured on
 #: 2026-10-12: 3.6-6.1 s for one account alone, and 5.7-12.9 s for the second account
@@ -472,6 +501,57 @@ def map_usage(
     return out, warnings
 
 
+def _failure_line(log_text: str) -> str | None:
+    """agy's own one-line account of why print mode failed, if its log has one.
+
+    The log is on stderr now, and its last lines are shutdown noise ("Waiting for
+    migrations to complete"), so a plain tail would hide the cause.
+    """
+    for line in reversed((log_text or "").splitlines()):
+        if line.startswith("E") and "Print mode:" in line:
+            return line.split("] ", 1)[-1].strip()[:_OUTPUT_TAIL_CHARS]
+    return None
+
+
+def signed_in_as(log_text: str) -> tuple[str, ...]:
+    """Every distinct Google account agy's log says it signed in as, in first-seen order."""
+    seen: dict[str, str] = {}
+    for email in _SIGNED_IN.findall(log_text or ""):
+        seen.setdefault(email.casefold(), email)
+    return tuple(seen.values())
+
+
+def _identity_split(
+    pools: Sequence[_Pool], served: Sequence[str]
+) -> tuple[list[_Pool], dict[str, str], dict[str, str]]:
+    """``(confirmed pools, {id: mismatch}, {id: why unconfirmed})`` for one account's read.
+
+    A mismatch is evidence that the read reached another Google account. An unconfirmed
+    pool has no such evidence, only no proof either way.
+    """
+    confirmed: list[_Pool] = []
+    mismatched: dict[str, str] = {}
+    unconfirmed: dict[str, str] = {}
+    answered = ", ".join(served)
+    for pool in pools:
+        declared = getattr(pool.account, "identity_email", None)
+        if not served:
+            unconfirmed[pool.id] = (
+                "agy's log named no signed-in Google account, so the reading cannot be tied "
+                f"to {declared or 'this pool'}"
+            )
+        elif not declared:
+            unconfirmed[pool.id] = (
+                f"no identity_email is declared for this pool, so a reading from {answered} "
+                f"cannot be checked; declare the account it should reach"
+            )
+        elif {email.casefold() for email in served} != {declared.casefold()}:
+            mismatched[pool.id] = f"agy is signed in as {answered}, not the declared {declared}"
+        else:
+            confirmed.append(pool)
+    return confirmed, mismatched, unconfirmed
+
+
 # ======================================================================================
 # The adapter
 # ======================================================================================
@@ -507,6 +587,7 @@ class _Reading:
     windows: tuple[Window, ...]
     source: str
     observed_at_s: float
+    identity: str  # the address agy's log signed in as
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +598,16 @@ class _Cached:
     fetched_at_s: float | None
     error: str | None
     problem: str | None  # why the record cannot be served at all
+    served: tuple[str, ...] = ()  # the addresses that read's log signed in as
+
+
+@dataclass(frozen=True, slots=True)
+class _Live:
+    """One live ``/usage`` call for one Google account."""
+
+    response: Any | None
+    error: str | None
+    served: tuple[str, ...]
 
 
 class AntigravityAdapter(ProviderAdapter):
@@ -666,59 +757,105 @@ class AntigravityAdapter(ProviderAdapter):
                 None, fetched_at_s, None,
                 "the cached /usage reading was made with a different launch recipe",
             )
+        served = payload.get("served")
+        if not isinstance(served, list) or not all(isinstance(e, str) for e in served):
+            return _Cached(
+                None, fetched_at_s, None,
+                "the cached /usage reading predates the identity check",
+            )
         error = payload.get("error")
         if isinstance(error, str) and error:
-            return _Cached(None, fetched_at_s, error, None)
+            return _Cached(None, fetched_at_s, error, None, tuple(served))
         if payload.get("response") is None:
             return _Cached(None, fetched_at_s, None, "the cached /usage record holds no response")
-        return _Cached(payload.get("response"), fetched_at_s, None, None)
+        return _Cached(payload.get("response"), fetched_at_s, None, None, tuple(served))
 
-    def _write(self, pools: Sequence[_Pool], fetched_at_s: float, response: Any, error: str | None) -> None:
+    def _write(self, pools: Sequence[_Pool], fetched_at_s: float, read: _Live) -> None:
         for pool in pools:
             _write_usage_cache(
                 self._cache_path(pool.id),
-                {"launch": pool.key, "response": response, "error": error},
+                {"launch": pool.key, "response": read.response, "error": read.error,
+                 "served": list(read.served)},
                 fetched_at_s,
             )
 
     # -- reading -------------------------------------------------------------------------
 
-    def _read_live(self, pools: Sequence[_Pool]) -> tuple[Any | None, str | None]:
-        """One ``/usage`` call for one Google account: ``(response, None)`` or ``(None, cause)``."""
+    def _read_live(self, pools: Sequence[_Pool]) -> _Live:
+        """One ``/usage`` call for one Google account, with the addresses its log named.
+
+        The log is read even when the call failed: a sign-in line naming another
+        account is evidence of a wrong login whatever happened after it.
+        """
         try:
             argv, child = agy_argv_env(pools[0].account, USAGE_ARGS, self._environ(),
                                        which=self._resolve)
         except AgyMissing as exc:
-            return None, str(exc)
+            return _Live(None, str(exc), ())
         runner = self._run_agy if self._run_agy is not None else default_run_agy
         try:
             done = runner(argv, child, self.timeout_s)
         except subprocess.TimeoutExpired:
-            return None, (
+            return _Live(None, (
                 f"{' '.join(argv)} timed out after {self.timeout_s:g}s; its process group "
                 f"was stopped"
-            )
+            ), ())
         except OSError as exc:
-            return None, f"could not run {' '.join(argv)}: {exc}"
+            return _Live(None, f"could not run {' '.join(argv)}: {exc}", ())
         except Exception as exc:  # noqa: BLE001 - an adapter never raises
-            return None, f"{' '.join(argv)}: {type(exc).__name__}: {exc}"
+            return _Live(None, f"{' '.join(argv)}: {type(exc).__name__}: {exc}", ())
+        served = signed_in_as(done.stderr)
         if done.returncode != 0:
-            tail = (done.stderr or done.stdout or "").strip()[-_OUTPUT_TAIL_CHARS:]
-            return None, f"{' '.join(argv)} exited {done.returncode}" + (f": {tail}" if tail else "")
+            tail = _failure_line(done.stderr) or (done.stderr or done.stdout or "").strip()[
+                -_OUTPUT_TAIL_CHARS:
+            ]
+            return _Live(
+                None,
+                f"{' '.join(argv)} exited {done.returncode}" + (f": {tail}" if tail else ""),
+                served,
+            )
         try:
             response = json.loads(done.stdout)
         except ValueError:
-            return None, (
+            return _Live(None, (
                 f"{' '.join(argv)} output is not JSON: "
                 f"{(done.stdout or '').strip()[:_OUTPUT_TAIL_CHARS]!r}"
-            )
+            ), served)
         try:
             usage_groups(response)
         except UsageRejected as exc:
-            return None, str(exc)
-        return response, None
+            return _Live(None, str(exc), served)
+        return _Live(response, None, served)
 
-    def _readings(self, now_s: float, warnings: list[str]) -> dict[str, _Reading]:
+    @staticmethod
+    def _confirm(
+        pools: Sequence[_Pool],
+        served: Sequence[str],
+        error: str | None,
+        refused: dict[str, str],
+        warnings: list[str],
+    ) -> list[_Pool]:
+        """The pools a reading may be mapped to; a mismatch lands in ``refused``.
+
+        A mismatch is reported whatever the read's outcome. ``error`` set means the
+        caller reports the failure itself, so an unconfirmed pool is not reported twice.
+        """
+        confirmed, mismatched, unconfirmed = _identity_split(pools, served)
+        for account_id, message in mismatched.items():
+            refused[account_id] = message
+            warnings.append(
+                f"{account_id}: {message}; its /usage numbers are dropped and the pool is "
+                f"unavailable until that login is fixed"
+            )
+        if error is None:
+            for account_id, message in unconfirmed.items():
+                warnings.append(f"{account_id}: no /usage reading: {message}")
+        return confirmed
+
+    def _readings(
+        self, now_s: float, warnings: list[str]
+    ) -> tuple[dict[str, _Reading], dict[str, str]]:
+        """``(readings by account id, {account id: identity mismatch})``."""
         groups = self._groups(warnings)
         offline = (self._environ().get(USAGE_OFFLINE_ENV) or "").strip().lower() in _TRUTHY
         live = self._live and not offline
@@ -734,7 +871,7 @@ class AntigravityAdapter(ProviderAdapter):
             )
 
         to_read = [pools for pools in groups if live and not all(fresh(p) for p in pools)]
-        results: list[tuple[Any | None, str | None]] = []
+        results: list[_Live] = []
         if to_read:
             with ThreadPoolExecutor(
                 max_workers=len(to_read), thread_name_prefix="agy-usage"
@@ -742,17 +879,21 @@ class AntigravityAdapter(ProviderAdapter):
                 results = list(executor.map(self._read_live, to_read))
 
         readings: dict[str, _Reading] = {}
-        for pools, (response, error) in zip(to_read, results):
-            ids = ", ".join(pool.id for pool in pools)
-            self._write(pools, now_s, response, error)
-            if error is not None:
-                warnings.append(f"{ids}: no /usage reading: {error}")
+        refused: dict[str, str] = {}
+        for pools, read in zip(to_read, results):
+            self._write(pools, now_s, read)
+            confirmed = self._confirm(pools, read.served, read.error, refused, warnings)
+            if read.error is not None:
+                failed = [pool.id for pool in pools if pool.id not in refused]
+                if failed:
+                    warnings.append(f"{', '.join(failed)}: no /usage reading: {read.error}")
                 continue
-            self._map(response, pools, now_s, SOURCE_LIVE, readings, warnings)
+            self._map(read.response, confirmed, now_s, SOURCE_LIVE, read.served, readings,
+                      warnings)
 
         read_ids = {pool.id for pools in to_read for pool in pools}
         for pools in groups:
-            served: dict[float, list[_Pool]] = {}
+            servable: dict[float, list[_Pool]] = {}
             for pool in pools:
                 if pool.id in read_ids:
                     continue
@@ -763,10 +904,15 @@ class AntigravityAdapter(ProviderAdapter):
                     continue
                 assert record.fetched_at_s is not None
                 age_s = now_s - record.fetched_at_s
+                confirmed = self._confirm([pool], record.served, record.error, refused, warnings)
                 if record.error is not None:
-                    warnings.append(
-                        f"{pool.id}: the last /usage read, {age_s:.0f}s ago, failed: {record.error}"
-                    )
+                    if pool.id not in refused:
+                        warnings.append(
+                            f"{pool.id}: the last /usage read, {age_s:.0f}s ago, failed: "
+                            f"{record.error}"
+                        )
+                    continue
+                if not confirmed:
                     continue
                 if age_s >= self._stale_max_s:
                     warnings.append(
@@ -774,11 +920,12 @@ class AntigravityAdapter(ProviderAdapter):
                         f"{self._stale_max_s:.0f}s bound; not served"
                     )
                     continue
-                served.setdefault(record.fetched_at_s, []).append(pool)
-            for fetched_at_s, same in served.items():
-                self._map(cached[same[0].id].response, same, fetched_at_s, SOURCE_CACHE,
+                servable.setdefault(record.fetched_at_s, []).append(pool)
+            for fetched_at_s, same in servable.items():
+                record = cached[same[0].id]
+                self._map(record.response, same, fetched_at_s, SOURCE_CACHE, record.served,
                           readings, warnings)
-        return readings
+        return readings, refused
 
     @staticmethod
     def _map(
@@ -786,9 +933,13 @@ class AntigravityAdapter(ProviderAdapter):
         pools: Sequence[_Pool],
         observed_at_s: float,
         source: str,
+        served: Sequence[str],
         readings: dict[str, _Reading],
         warnings: list[str],
     ) -> None:
+        """Map a reading onto pools whose declared account its log already confirmed."""
+        if not pools:
+            return
         try:
             mapped, notes = map_usage(response, [(p.id, p.flavour) for p in pools], observed_at_s)
         except UsageRejected as exc:
@@ -796,7 +947,7 @@ class AntigravityAdapter(ProviderAdapter):
             return
         warnings.extend(notes)
         for account_id, windows in mapped.items():
-            readings[account_id] = _Reading(windows, source, observed_at_s)
+            readings[account_id] = _Reading(windows, source, observed_at_s, served[0])
 
     # -- protocol -------------------------------------------------------------------------
 
@@ -809,10 +960,10 @@ class AntigravityAdapter(ProviderAdapter):
             warnings.append(f"antigravity: {self._binary} not on PATH; pools marked unavailable")
 
         try:
-            readings = self._readings(now_s, warnings) if self._accounts else {}
+            readings, refused = self._readings(now_s, warnings) if self._accounts else ({}, {})
         except Exception as exc:  # noqa: BLE001 - an adapter never raises
             warnings.append(f"antigravity: /usage read failed: {type(exc).__name__}: {exc}")
-            readings = {}
+            readings, refused = {}, {}
         policy = {str(account.id): account for account in self._accounts or ()}
 
         snapshots: list[AccountSnapshot] = []
@@ -830,12 +981,9 @@ class AntigravityAdapter(ProviderAdapter):
                     if reading.source == SOURCE_LIVE
                     else f"agy /usage, cached reading {age_s:.0f}s old"
                 )
-                declared = getattr(account, "identity_email", None)
-                parts.append(
-                    "account from the launch recipe"
-                    + (f" (declared {declared})" if declared else "")
-                    + ", not verified from the response"
-                )
+                parts.append(f"signed in as {reading.identity} (agy's own log), as declared")
+            elif account_id in refused:
+                parts.append(f"{refused[account_id]}; numbers dropped")
             elif account is None:
                 parts.append("no launch plan; usage not read")
             else:
@@ -860,8 +1008,9 @@ class AntigravityAdapter(ProviderAdapter):
                         confidence=(
                             MEASURED_CONFIDENCE if reading is not None else UNOBSERVABLE_CONFIDENCE
                         ),
-                        available=installed and not exhausted,
+                        available=installed and not exhausted and account_id not in refused,
                         note="; ".join(parts),
+                        identity=Identity(email=reading.identity) if reading is not None else None,
                     )
                 )
             except (TypeError, ValueError) as exc:  # pragma: no cover - defensive

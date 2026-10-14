@@ -96,8 +96,13 @@ models` to the Claude pool, each with a weekly and a 5-hour window. The router r
 it strictly. A response is used only when agy exits 0 with `status: SUCCESS`,
 `command.name: usage` and `num_turns: 0`; an unknown group or window is a warning,
 and the affected pool gets no windows, never a guess. The response names no account,
-so which Google account answered rests on the launch recipe and your
-`identity_email`, not on anything the router can check.
+so every read also passes `--log-file /dev/stderr`, and agy's sign-in line (`OAuth:
+authenticated successfully as ...`) names the account that answered. The router
+compares it with the pool's `identity_email` on every read. If the address differs,
+the login has changed under the launch recipe: the pool gets no windows and is marked
+unavailable, so no pick sends work to it until the login is fixed. If the log names
+no address, or the pool declares no `identity_email`, the reading cannot be tied to
+the pool, and the pool gets no windows, as for any failed read.
 
 That read takes longer than the 3s `cl` and `cdx` give a whole pick, so only
 `quotapick status` makes it, which the launchd poller runs every 120s. It is reused
@@ -109,16 +114,19 @@ reading behaves exactly as before: no windows, `confidence=0.0`.
 Antigravity is the one provider that is **not** configured by default, because
 reaching each Google account needs a launch recipe only you can state. Declare the
 pools if you want them; `AGY_MODEL` is the pool selector, and a value containing
-`claude` means the Claude pool:
+`claude` means the Claude pool. `identity_email` is required for a reading: it is the
+address agy's log must name.
 
 ```toml
 # ~/.config/quota-router/config.toml
 [accounts.antigravity_gemini]
 provider = "antigravity"
+identity_email = "you@example.com"
 
 [accounts.antigravity_claude]
 provider = "antigravity"
 env = { AGY_MODEL = "claude" }
+identity_email = "you@example.com"
 ```
 
 ### A second Antigravity account is a second macOS user
@@ -138,12 +146,13 @@ binary as that user:
 [accounts.antigravity_gemini_b]
 provider   = "antigravity"
 macos_user = "tonyagents"
-identity_email = "second@example.com"   # what you can assert the call served
+identity_email = "second@example.com"   # checked against agy's log on every read
 
 [accounts.antigravity_claude_b]
 provider   = "antigravity"
 macos_user = "tonyagents"
 env = { AGY_MODEL = "claude" }
+identity_email = "second@example.com"
 ```
 
 `sudo -u <user>` alone does **not** work, and this is the part every consumer
