@@ -54,7 +54,7 @@ from __future__ import annotations
 #: Distribution version. Kept as a plain literal because ``pyproject.toml`` reads it
 #: statically (``[tool.setuptools.dynamic] version = {attr = "quota_router.__version__"}``)
 #: and must not have to import the package to build it.
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 from .api import Selection, report_failure, select_account
 from .types import (
