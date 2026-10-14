@@ -177,6 +177,49 @@ def _day_from_rotated_name(name: str) -> str | None:
     return day
 
 
+def _rotation_index(name: str) -> int:
+    """``history-<day>.jsonl`` -> 0, ``history-<day>.<n>.jsonl`` -> n.
+
+    :func:`_rotation_target` gives a day's first rotated file the bare name and numbers
+    the later ones, so the bare name is the oldest of its day.
+    """
+    middle = name[len("history-") + 10 : -len(".jsonl")]
+    if middle.startswith(".") and middle[1:].isdigit():
+        return int(middle[1:])
+    return 0
+
+
+def _rotated_in_order(paths: list[Path], since_s: float | None) -> list[Path]:
+    """Rotated files oldest first, without those a ``since_s`` read cannot need.
+
+    Sorting the names as strings put ``history-<day>.1.jsonl`` before the bare
+    ``history-<day>.jsonl``, so a day's records came back out of order. Names without a
+    date keep their old place at the front, in name order, and are always read.
+
+    A file named for day D holds records of day D (rotation happens when the day of the
+    data rolls). One day of slack is kept for a straggler, so a file is skipped only
+    when D + 1 ends before the UTC day of ``since_s``.
+    """
+    undated: list[Path] = []
+    dated: list[tuple[str, int, Path]] = []
+    for item in paths:
+        day = _day_from_rotated_name(item.name)
+        if day is None:
+            undated.append(item)
+        else:
+            dated.append((day, _rotation_index(item.name), item))
+    undated.sort()
+    dated.sort(key=lambda entry: (entry[0], entry[1]))
+    if since_s is not None:
+        cutoff = datetime.strptime(_utc_date(since_s), "%Y-%m-%d").date()
+        dated = [
+            entry
+            for entry in dated
+            if (cutoff - datetime.strptime(entry[0], "%Y-%m-%d").date()).days < 2
+        ]
+    return undated + [entry[2] for entry in dated]
+
+
 def _rotation_target(path: Path, day: str) -> Path:
     """``history-<day>.jsonl``, disambiguated when that name is taken."""
     candidate = path.with_name(f"history-{day}.jsonl")
@@ -365,7 +408,15 @@ def iter_records(
     since_s: float | None = None,
     include_rotated: bool = False,
 ) -> Iterator[dict[str, Any]]:
-    """Yield history records oldest-first, skipping anything unparseable.
+    """Yield history records oldest file first, skipping anything unparseable.
+
+    Within a file records are in append order, which is close to but not exactly time
+    order: ``t`` is the ``now_s`` a process started its decision with, and concurrent
+    writers (the poller, ``cl``, clients) append when they finish, so neighbours can be a
+    few seconds out of order. Callers that pair consecutive
+    readings sort by the time they care about, as :func:`quota_router.waste._series` does.
+
+    With ``since_s``, rotated files that end before that day are not opened at all.
 
     A truncated final line (a crash mid-append) is simply skipped: a partial record must
     not stop the router from reading the good ones before it.
@@ -375,9 +426,10 @@ def iter_records(
     files: list[Path] = []
     if include_rotated:
         try:
-            files.extend(sorted(target.parent.glob(_ROTATED_GLOB)))
+            rotated = list(target.parent.glob(_ROTATED_GLOB))
         except OSError:
-            pass
+            rotated = []
+        files.extend(_rotated_in_order(rotated, since_s))
     files.append(target)
 
     for file_path in files:
