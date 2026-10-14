@@ -232,9 +232,14 @@ leaving the account quietly missing.
   authorized to use and stops when they are exhausted. It cannot and does not
   raise any limit.
 - **Not a credential manager.** It never mints, refreshes, rotates, or writes a
-  token. It reads the access token an account already holds and nothing else.
-  See [The single-writer rule](#the-single-writer-rule) for why that boundary is
+  token. It reads the access token an account already holds, and for an
+  [API credit pool](#api-credit-pools--credit_pools) the key in the Keychain item you
+  name. It never stores, prints or logs either. See
+  [The single-writer rule](#the-single-writer-rule) for why that boundary is
   load-bearing rather than fastidious.
+- **`quotapick run` is not a proxy either.** It runs the vendor's own CLI, as `cl`
+  does, and returns what that CLI printed. It never sits between a client and a
+  vendor API connection.
 
 These are enforced by tests, not merely by intent: the suite asserts that no
 exec plan ever carries a proxy environment variable, and that no module contains
@@ -332,6 +337,11 @@ quotapick waste                          # what expired unused, per account, in 
 quotapick pick --capability premium      # provider + account + the model to request
 quotapick pick --capability premium --effort xhigh  # ...translated to YOUR effort level
 quotapick capabilities                   # which model each account resolves, per capability
+echo '{"capability":"fast","prompt":"..."}' | quotapick run   # the router runs one call
+quotapick credits                        # API credit pool balances
+quotapick credits set anthropic_api_d --remaining 199.98 --expires 2026-10-19T00:00:00Z
+quotapick forecast                       # measured demand per provider group, PSE/h
+quotapick replay --without claude_d      # last 21 days of demand through each policy
 ```
 
 ### Reading `quotapick status`
@@ -1078,6 +1088,134 @@ plan_ends = "2026-10-16T00:00:00Z"
   series does not count the quota that lapses with the plan.
 - **Visible.** `status` prints `plan ends: claude_d at 2026-10-16T00:00Z; its windows count
   as ending then`, and afterwards `plan ended: ...; excluded from routing`.
+
+### Running a call — `quotapick run`
+
+`pick` tells a client which account to use; the client then has to turn an account id
+into a config dir and run the CLI itself. `run` does all of that for one **tool-less**
+call: a prompt in, text or JSON out. The client states what it needs and never touches
+an account id, a config dir or a credential.
+
+```sh
+echo '{"capability":"premium","system":"Reply in JSON.","prompt":"...",
+       "json_schema":{"type":"object","properties":{"verdict":{"type":"string"}},
+                      "required":["verdict"]},
+       "client":"memkg"}' | quotapick run
+```
+
+| request field | meaning |
+|---|---|
+| `prompt` | required |
+| `capability` or `model` | one is required; `model` is an exact id such as `claude-haiku-5-5` |
+| `effort`, `system`, `json_schema` | optional |
+| `timeout_s` | default 300, at most 1800 |
+| `expected_cost_usd` | optional; a credit pool is used only if its balance covers this times its margin |
+| `max_attempts` | 1–3, default 2 |
+| `allow_credit` | default `true`; `false` keeps the call on subscriptions |
+| `client`, `request_id` | tags, echoed back and logged |
+
+The response carries `run_contract: 1` (pick's `contract_version` is untouched), `ok`,
+`outcome`, `text`, `structured`, `served {account, provider, pool_kind, model, auth}`,
+`usage`, `cost_usd`, `cost_pse`, `attempts[]` and `decision {reason, objective,
+fallback}`. Exit 0 whenever the request parsed, whatever the outcome; exit 2 for a
+request or config refused before anything was spent. Outcomes: `ok`, `exhausted`,
+`wrong_model`, `auth`, `transient`, `timeout`, `schema_invalid`, `cli_error`,
+`no_candidate`, `bad_request`.
+
+What it guarantees, each checked from the CLI's own stream-json rather than assumed:
+
+- **The child cannot bill an API key by accident.** `ANTHROPIC_API_KEY`, OAuth-token and
+  cloud-provider variables are removed; the account is chosen by `CLAUDE_CONFIG_DIR`
+  alone (the default account by its absence). A subscription run must report
+  `apiKeySource: none`.
+- **The model you asked for served the call.** It must appear in the result's
+  `modelUsage`; `--fallback-model` is never passed.
+- **A JSON schema is answered.** `structured_output` must be present. A schema takes two
+  turns, so `--max-turns` is never passed.
+- **Small.** `claude -p --tools "" --strict-mcp-config --safe-mode --no-session-persistence`
+  from an empty directory sent 1,107 input tokens of preamble on 2026-10-14, against a
+  57k median for the api-shaped `claude -p` calls clients made that week.
+- **Retries go elsewhere.** Exhaustion, auth and transient failures and a wrong model
+  retry on another account with the failed one excluded; a timeout does not retry.
+- **History records the outcome, never the prompt.**
+
+`run` ranks with the joint objective (below) and the job in the `run` stream, whatever
+`pick` defaults to; without a usable forecast it falls back to `own_waste` and says so
+in `decision.fallback`. `[engine] usd_per_pse` is required. From Python:
+`quota_router.run_call(request, ...)` returns the same dict.
+
+**Migrating a client.** Replace the `claude -p` call in the one function that makes it
+(digital-twin `callLlm`, memkg-evals `ClaudeCLI.call`, self-rsi-habits' `ModelProvider`)
+with `quotapick run`, keep the old path as the fallback when `run_contract != 1` or the
+outcome is `no_candidate`/`cli_error`, and read provenance from `served`. A client that
+strips `ANTHROPIC_API_KEY` from its own environment may keep doing so: `run` reads a
+credit pool's key from the Keychain itself.
+
+### API credit pools — `[credit_pools]`
+
+Max plans grant monthly API credit to one linked Console org ($200 for Max 20x, $100 for
+Max 5x; each grant expires at the end of its billing cycle). Headless `claude -p` with a
+key from that org spends the credit; interactive Claude Code does not. Declare a pool:
+
+```toml
+[engine]
+usd_per_pse = 305        # dollars of API-priced work per PSE, measured 2026-10-14
+
+[credit_pools.anthropic_api_d]
+provider = "anthropic_api"
+keychain_service = "anthropic-api-key-claude-d"   # the item's name, never the key
+linked_account = "claude_d"
+grant_usd = 200
+expires = "2026-10-19T00:00:00Z"   # the Console shows a UTC date; use its start
+renewal = "monthly"
+card_on_file = false               # true requires hard_cap_usd
+```
+
+- **Reachable only through `run`.** `pick` and `cl` never see a pool; pick output is
+  byte-identical with one configured. A pool competes only through the joint objective,
+  for `run` work, and only when its balance covers the expected cost times
+  `admission_margin` (default 1.5).
+- **No vendor publishes the balance,** so the router keeps a ledger,
+  `credits.jsonl` beside history: a grant or your Console checkpoint, minus what `run`
+  spent, minus holds for calls in flight. `quotapick credits set` records the Console
+  figure. Without one the config grant applies at confidence 0.5; past an expiry a
+  monthly pool is assumed renewed at confidence 0.6 until a checkpoint confirms it. A
+  wrong assumption fails loud on the first call ("credit balance is too low"), which
+  empties the pool, and costs nothing when no card is on file.
+- **A credit run uses `claude -p --bare`:** Anthropic auth strictly the API key, OAuth and
+  the Keychain never read. It runs from an empty router-owned config dir with a per-call
+  `--max-budget-usd`, and must report `apiKeySource: ANTHROPIC_API_KEY`. The key exists
+  in the child's environment and nowhere else; every string the child returns is scrubbed
+  of it.
+- **Plan ends.** Credits already granted keep their own expiry after the linked plan ends
+  (Anthropic's docs); only renewal stops.
+- **Visible.** `status` and `credits` show each pool's balance in dollars and PSE, its
+  expiry and source; `status` records what each period had left when it expired, and
+  `doctor` flags an unconfirmed or week-old balance, imminent expiry, and a missing
+  Keychain item.
+- **Fail-loud config.** A value that looks like a key, an unknown linked account, an id a
+  prefix could read as a subscription (`claude_*`), or a card without a cap is refused.
+
+### The joint objective — `[engine]`, `forecast`, `replay`
+
+Today's objective values each account alone, giving each the whole working rate. Pools
+that share one stream of work therefore both claim it, and a small pool (a $200 credit
+pool is 0.66 PSE) never wins. `[engine] objective = "joint"` instead scores each
+candidate by the **fleet** waste a job avoids there: forecast demand is spread over every
+stock hour by hour, earliest deadline first, under each five-hour cap, and the score is
+the drop in total leftover at the deadlines. Ties, which are common, go to the earlier
+deadline; hysteresis then holds the incumbent only inside a tie class.
+
+- `quotapick forecast` measures demand per provider group from history (`status`
+  refreshes the cache every 15 minutes); a stale or thin forecast falls the decision
+  back to `own_waste`, with a warning.
+- `quotapick replay` routes the last N days of real demand through each policy with the
+  production `select`, and must reproduce `waste.jsonl` before it counts. Result on
+  2026-10-14: with the fleet as it was, every policy wastes the same (nothing went unmet);
+  with one 20x account removed, the joint objective leaves more work unmet than
+  `own_waste` (2.5 vs 1.2 PSE over 21 days, all at five-hour caps in bursts). So
+  **`own_waste` stays the default**; `BACKLOG.md` #3 says what would change that.
+- `shadow = true` records the joint winner in history beside every `own_waste` decision.
 
 ## The poller
 
