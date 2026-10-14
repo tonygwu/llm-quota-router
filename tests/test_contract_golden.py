@@ -116,6 +116,33 @@ def test_pick_without_capability_is_byte_identical(env, tmp_path):
     _assert_golden("pick_real_capture", payload)
 
 
+def _write_engine(env, body: str) -> None:
+    xdg = Path(env["XDG_CONFIG_HOME"]) / "quota-router"
+    xdg.mkdir(parents=True, exist_ok=True)
+    (xdg / "config.toml").write_text(f"[engine]\n{body}\n", encoding="utf-8")
+
+
+def test_pick_is_byte_identical_with_objective_own_waste_explicit(env, tmp_path):
+    """Naming today's objective must change nothing, or the switch is not inert."""
+    _write_engine(env, 'objective = "own_waste"\nshadow = false')
+    payload = _pick(["pick", "--dry-run"], env, tmp_path, snapshots=real_capture())
+    _assert_golden("pick_real_capture", payload)
+
+
+def test_status_is_byte_identical_with_objective_own_waste_explicit(env, tmp_path):
+    _write_engine(env, 'objective = "own_waste"')
+    code, out, err = run(
+        ["status", "--json"], env, snapshots=real_capture(), cwd=_NO_CONFIG_FILES
+    )
+    assert code == cli.EXIT_OK, err
+    payload = _normalize(out, tmp_path)
+    # The config file is a source the status payload names; everything else must match.
+    golden = json.loads((GOLDEN_DIR / "status_real_capture.json").read_text(encoding="utf-8"))
+    assert {k: v for k, v in payload.items() if k != "config_sources"} == {
+        k: v for k, v in golden.items() if k != "config_sources"
+    }
+
+
 def test_pick_with_model_class_is_byte_identical(env, tmp_path):
     payload = _pick(
         ["pick", "--dry-run", "--model", "fable"], env, tmp_path, snapshots=real_capture()

@@ -610,6 +610,153 @@ class OracleConfig:
     use_cache_on_failure: bool = True
 
 
+#: Objectives the ``[engine]`` section may name. ``own_waste`` is today's per-account
+#: projection (:func:`quota_router.scoring.pse_objective`).
+ENGINE_OBJECTIVES: Final[tuple[str, ...]] = ("own_waste",)
+
+#: Objectives that are designed but not shipped in this version. Naming one is a config
+#: error, never a silent fall back to ``own_waste``: an operator who asks for an
+#: objective gets it or is told.
+ENGINE_OBJECTIVES_PENDING: Final[tuple[str, ...]] = ("joint",)
+
+_ENGINE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "objective",
+        "shadow",
+        "horizon_s",
+        "step_s",
+        "forecast_max_age_s",
+        "forecast_refresh_s",
+        "forecast_min_coverage",
+        "default_job_pse",
+        "tie_fraction",
+        "usd_per_pse",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EngineConfig:
+    """Which objective ranks the field, and the knobs of the joint projection.
+
+    Args:
+        objective: ``own_waste`` ranks each account by its own projected waste (today's
+            behaviour). ``joint`` will rank by the projected *fleet* waste a job avoids.
+        shadow: Compute the joint winner alongside ``own_waste`` and record it in history
+            without acting on it, so the two can be compared on live traffic.
+        horizon_s: How far ahead the joint projection looks (default 7 days).
+        step_s: The projection's time step (default 1 hour).
+        forecast_max_age_s: A demand forecast older than this is stale; the decision then
+            falls back to ``own_waste`` and says so.
+        forecast_refresh_s: ``status`` recomputes the forecast at most this often.
+        forecast_min_coverage: Below this fraction of hours with a reading, the forecast
+            is not trusted.
+        default_job_pse: Job size assumed when a caller gives no hint. 0.003 PSE is the
+            median headless run on 2026-10-14 ($0.91 at about $305 per PSE).
+        tie_fraction: Stickiness may cost at most this fraction of one job's PSE before
+            the incumbent is released.
+        usd_per_pse: Dollars of API-priced work per PSE, used to put API credit balances
+            and subscription quota in one unit. No default: credit pools and ``run``
+            refuse to start without it.
+    """
+
+    objective: str = "own_waste"
+    shadow: bool = False
+    horizon_s: float = 7 * 86400.0
+    step_s: float = 3600.0
+    forecast_max_age_s: float = 6 * 3600.0
+    forecast_refresh_s: float = 900.0
+    forecast_min_coverage: float = 0.5
+    default_job_pse: float = 0.003
+    tie_fraction: float = 0.1
+    usd_per_pse: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "objective": self.objective,
+            "shadow": self.shadow,
+            "horizon_s": self.horizon_s,
+            "step_s": self.step_s,
+            "forecast_max_age_s": self.forecast_max_age_s,
+            "forecast_refresh_s": self.forecast_refresh_s,
+            "forecast_min_coverage": self.forecast_min_coverage,
+            "default_job_pse": self.default_job_pse,
+            "tie_fraction": self.tie_fraction,
+            "usd_per_pse": self.usd_per_pse,
+        }
+
+
+def _build_engine(raw: Any, warnings: list[str]) -> EngineConfig:
+    table = _as_table(raw, "engine")
+    for key in sorted(set(table) - _ENGINE_KEYS):
+        known = ", ".join(sorted(_ENGINE_KEYS))
+        warnings.append(f"unknown key [engine] {key} ignored (known: {known})")
+    default = EngineConfig()
+    objective = _as_str(table.get("objective", default.objective), "engine", "objective")
+    if objective in ENGINE_OBJECTIVES_PENDING:
+        raise ConfigError(
+            f"[engine] objective {objective!r} is not available in this version; "
+            f"use one of: {', '.join(ENGINE_OBJECTIVES)}"
+        )
+    if objective not in ENGINE_OBJECTIVES:
+        raise ConfigError(
+            f"[engine] objective must be one of: {', '.join(ENGINE_OBJECTIVES)}; "
+            f"got {objective!r}"
+        )
+    step_s = _as_number(table.get("step_s", default.step_s), "engine", "step_s", minimum=60.0)
+    horizon_s = _as_number(
+        table.get("horizon_s", default.horizon_s), "engine", "horizon_s", minimum=60.0
+    )
+    if horizon_s < step_s:
+        raise ConfigError(
+            f"[engine] horizon_s ({horizon_s}) must be at least step_s ({step_s})"
+        )
+    usd_raw = table.get("usd_per_pse")
+    return EngineConfig(
+        objective=objective,
+        shadow=_as_bool(table.get("shadow", default.shadow), "engine", "shadow"),
+        horizon_s=horizon_s,
+        step_s=step_s,
+        forecast_max_age_s=_as_number(
+            table.get("forecast_max_age_s", default.forecast_max_age_s),
+            "engine",
+            "forecast_max_age_s",
+            minimum=0.0,
+        ),
+        forecast_refresh_s=_as_number(
+            table.get("forecast_refresh_s", default.forecast_refresh_s),
+            "engine",
+            "forecast_refresh_s",
+            minimum=0.0,
+        ),
+        forecast_min_coverage=_as_number(
+            table.get("forecast_min_coverage", default.forecast_min_coverage),
+            "engine",
+            "forecast_min_coverage",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        default_job_pse=_as_number(
+            table.get("default_job_pse", default.default_job_pse),
+            "engine",
+            "default_job_pse",
+            minimum=1e-9,
+        ),
+        tie_fraction=_as_number(
+            table.get("tie_fraction", default.tie_fraction),
+            "engine",
+            "tie_fraction",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        usd_per_pse=(
+            None
+            if usd_raw is None
+            else _as_number(usd_raw, "engine", "usd_per_pse", minimum=1e-9)
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecConfig:
     """Provider -> binary, for ``quotapick exec``."""
@@ -642,6 +789,7 @@ class Config:
     pileup: PileupConfig = field(default_factory=PileupConfig)
     oracle: OracleConfig = field(default_factory=OracleConfig)
     exec: ExecConfig = field(default_factory=ExecConfig)
+    engine: EngineConfig = field(default_factory=EngineConfig)
     #: Model to fall back to when the requested one is exhausted on every account.
     #:
     #: Read by ``cl`` only, and **opt-in**: unset means "tell me and start anyway",
@@ -864,6 +1012,7 @@ class Config:
                 "timeout_ms": self.oracle.timeout_ms,
                 "use_cache_on_failure": self.oracle.use_cache_on_failure,
             },
+            "engine": self.engine.to_dict(),
             "sources": list(self.sources),
             "warnings": list(self.warnings),
         }
@@ -933,6 +1082,9 @@ _BUILTIN: Final[Mapping[str, Any]] = MappingProxyType(
             "max_records": 500,
         },
         "oracle": {"command": "", "timeout_ms": 5000, "use_cache_on_failure": True},
+        # Empty here: EngineConfig holds the defaults, and _build_engine reports unknown
+        # keys. Listed so that an [engine] table is a known section.
+        "engine": {},
         # Empty here: the defaults live in quota_router.capability, and an operator's
         # [capabilities.<name>] rows are validated and merged over them.
         "capabilities": {},
@@ -1330,6 +1482,7 @@ def _build(
             or dict(PROVIDER_CONFIG_DIR_ENV),
         ),
         capabilities=_build_capabilities(merged.get("capabilities")),
+        engine=_build_engine(merged.get("engine", {}), warnings),
         fallback_model=(
             _as_str(merged["fallback_model"], "", "fallback_model") or None
             if merged.get("fallback_model") is not None
