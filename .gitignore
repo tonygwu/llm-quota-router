@@ -54,6 +54,9 @@ htmlcov/
 # --------------------------------------------------------------------------------------
 .env
 .env.*
+# API keys belong in the Keychain, never in a file here (tests/test_secret_files_ignored.py).
+*api-key*
+*.key
 /cswap-*.json
 /*.local.json
 /scratch/
