@@ -210,6 +210,33 @@ def subscription_stock(
     )
 
 
+def credit_stock(
+    pool_id: str,
+    *,
+    remaining_pse: float,
+    expires_s: float,
+    now_s: float,
+    group: str = "claude",
+) -> Stock:
+    """An API credit pool as a stock: no five-hour cap, retires at its expiry."""
+    return Stock(
+        id=pool_id,
+        group=group,
+        kind=KIND_CREDIT,
+        weekly_rem=max(0.0, remaining_pse),
+        weekly_cap=max(0.0, remaining_pse),
+        deadline_s=max(expires_s, now_s + 1.0),
+        refills=False,
+        period_s=0.0,
+        session_cap=None,
+        session_rem=None,
+        session_reset_s=None,
+        fable_rem=None,
+        fable_cap=None,
+        available_from_s=now_s,
+    )
+
+
 # ======================================================================================
 # The projection
 # ======================================================================================
@@ -545,6 +572,14 @@ class JointContext:
                 )
         return self._scores[account_id]
 
+    def ranked_score(self, account_id: str) -> float | None:
+        """The sortable score: waste avoided, quantized, plus the deadline tie-break."""
+        result, target = self.score(account_id), self.stock(account_id)
+        if result is None or target is None:
+            return None
+        hours = max(0.0, (target.deadline_s - self.now_s) / 3600.0)
+        return round(result.avoided / SCORE_QUANTUM) * SCORE_QUANTUM + _TIE_BREAK / (1.0 + hours)
+
     def rescore(self, rows: Sequence[ScoreBreakdown]) -> list[ScoreBreakdown]:
         """Replace each row's ``score`` and ``reason``; every other field keeps its meaning.
 
@@ -565,9 +600,7 @@ class JointContext:
                 )
                 continue
             hours = max(0.0, (target.deadline_s - self.now_s) / 3600.0)
-            score = round(result.avoided / SCORE_QUANTUM) * SCORE_QUANTUM + _TIE_BREAK / (
-                1.0 + hours
-            )
+            score = self.ranked_score(row.account_id)
             note = "; clamped" if result.clamped else ""
             out.append(
                 replace(

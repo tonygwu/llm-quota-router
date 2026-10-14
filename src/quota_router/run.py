@@ -306,6 +306,58 @@ def _claude_binary(env: Mapping[str, str], configured: str | None) -> str:
     return os.path.expanduser(DEFAULT_CLAUDE_BIN)
 
 
+#: Expected cost of one call when the request gives none: generous for a tool-less
+#: call (a 50k-token prompt on Opus is about $0.20), so admission keeps a margin.
+DEFAULT_EXPECTED_COST_USD: Final[float] = 0.25
+
+
+@dataclass(slots=True)
+class _Target:
+    kind: str
+    account: str
+    model: str
+    effort: str | None
+    env: dict[str, str]
+    argv_extra: list[str]
+    want_auth: str
+    pool: Any = None
+    secret: Any = None
+    hold_usd: float = 0.0
+
+
+def _pool_targets(
+    request: RunRequest,
+    *,
+    config: Any,
+    env: Mapping[str, str],
+    now_s: float,
+    excluded: Sequence[str],
+    warnings: list[str],
+) -> list[tuple[Any, Any, float]]:
+    """Admissible credit pools: ``(pool, balance, expected_usd)``."""
+    from . import credits as credits_mod
+
+    lines, problems = credits_mod.read(env)
+    warnings.extend(p for p in problems if p not in warnings)
+    plan_ends = config.plan_ends()
+    expected = (
+        request.expected_cost_usd
+        if request.expected_cost_usd is not None
+        else DEFAULT_EXPECTED_COST_USD
+    )
+    out = []
+    for pool in config.credit_pools.values():
+        if not pool.enabled or pool.id in excluded:
+            continue
+        bal = credits_mod.balance(
+            pool, lines, now_s=now_s, plan_end_s=plan_ends.get(pool.linked_account)
+        )
+        if not bal.available or bal.remaining_usd < expected * pool.admission_margin:
+            continue
+        out.append((pool, bal, expected))
+    return out
+
+
 def execute(
     request: RunRequest,
     *,
@@ -317,8 +369,11 @@ def execute(
 ) -> dict[str, Any]:
     """Pick, run, check, retry, book. Returns the response object."""
     from . import cli as cli_mod
+    from . import credits as credits_mod
     from . import history as history_mod
+    from . import joint as joint_mod
     from .config import load_config
+    from .secrets import SecretError, read_api_key
 
     config = load_config(env=env, cwd=cwd, explicit_path=config_path)
     usd_per_pse = config.engine.usd_per_pse
@@ -327,6 +382,7 @@ def execute(
             "[engine] usd_per_pse is required for `run`: it converts each call's cost into "
             "PSE for the demand forecast (305 was measured on 2026-10-14)"
         )
+    read_secret = getattr(deps, "read_secret", None) or read_api_key
     claude_ids = [
         account.id for account in config.enabled_accounts() if account.provider == "claude"
     ]
@@ -338,20 +394,20 @@ def execute(
     started = time.monotonic()
     final: Attempt | None = None
     outcome = "no_candidate"
+    binary = _claude_binary(env, config.exec.commands.get("claude"))
+    state_dir = credits_mod.ledger_path(env).parent
 
-    for _ in range(request.max_attempts):
-        candidates = [a for a in claude_ids if a not in excluded]
-        if not candidates:
-            break
+    for index in range(request.max_attempts):
         remaining_s = request.timeout_s - (time.monotonic() - started)
         if remaining_s <= 1.0:
             outcome = "timeout"
             break
+        sub_ids = [a for a in claude_ids if a not in excluded]
         args = SimpleNamespace(
             capability=request.capability,
             effort=request.effort if request.capability else None,
             model=request.model,
-            only=candidates,
+            only=sub_ids or claude_ids,
             exclude=None,
             min_remaining=None,
             no_sticky=False,
@@ -365,42 +421,129 @@ def execute(
         )
         prepared = cli_mod._prepare(
             args, env, now_s, deps, cwd, event="run", write_state=True,
-            objective="joint", job_stream="run",
+            objective="joint", job_stream=joint_mod.STREAM_RUN,
         )
         warnings.extend(w for w in prepared.warnings if w not in warnings)
-        decision = prepared.decision
         report = prepared.objective or {}
+        decision = prepared.decision
+        sub_choice = decision.chosen
+        if sub_choice is None or prepared.from_fallback or sub_choice in excluded:
+            sub_choice = None
         decision_info = {
             "reason": decision.reason,
             "objective": report.get("used"),
             "fallback": report.get("fallback"),
         }
-        chosen = decision.chosen
-        if chosen is None or prepared.from_fallback:
+
+        def model_for(account_id: str | None) -> tuple[str, str | None]:
+            choices = prepared.capability.choices if prepared.capability else {}
+            choice = choices.get(account_id or "") or next(iter(choices.values()), None)
+            if request.model and not request.capability:
+                return request.model, request.effort
+            if choice is None:
+                return request.model or "", None
+            effort = choice.effort.get("applied") if choice.effort else None
+            return choice.id, effort
+
+        target: _Target | None = None
+        if sub_choice is not None:
+            account = prepared.config.account(sub_choice)
+            overlay = account.exec_env() if account is not None else {}
+            var = account.config_dir_env_var if account is not None else "CLAUDE_CONFIG_DIR"
+            model_id, effort = model_for(sub_choice)
+            target = _Target("subscription", sub_choice, model_id, effort,
+                             child_env(env, overlay, var), [], "none")
+
+        if request.allow_credit and config.credit_pools:
+            if report.get("used") != "joint" or prepared.joint is None:
+                note = (
+                    "credit pools are ranked only by the joint projection, which this run "
+                    f"could not use ({report.get('fallback') or 'no forecast'}); they sat out"
+                )
+                if note not in warnings:
+                    warnings.append(note)
+            else:
+                pools = _pool_targets(request, config=config, env=env, now_s=now_s,
+                                      excluded=excluded, warnings=warnings)
+                if pools:
+                    base = prepared.joint
+                    context = joint_mod.JointContext(
+                        stocks=list(base.stocks) + [
+                            joint_mod.credit_stock(
+                                pool.id,
+                                remaining_pse=bal.remaining_usd / usd_per_pse,
+                                expires_s=bal.expires_s,
+                                now_s=now_s,
+                            )
+                            for pool, bal, _ in pools
+                        ],
+                        streams=base.streams,
+                        now_s=now_s,
+                        horizon_s=base.horizon_s,
+                        step_s=base.step_s,
+                        job_pse=base.job_pse,
+                        stream=joint_mod.STREAM_RUN,
+                        fable_ids=base.fable_ids,
+                        tie_fraction=base.tie_fraction,
+                    )
+                    best_id, best_score = None, None
+                    if sub_choice is not None:
+                        best_id, best_score = sub_choice, context.ranked_score(sub_choice)
+                    for pool, bal, expected in pools:
+                        score = context.ranked_score(pool.id)
+                        if score is not None and (best_score is None or score > best_score):
+                            best_id, best_score = pool.id, score
+                    chosen_pool = next(
+                        ((pool, bal, expected) for pool, bal, expected in pools
+                         if pool.id == best_id),
+                        None,
+                    )
+                    if chosen_pool is not None:
+                        pool, bal, expected = chosen_pool
+                        result = context.score(pool.id)
+                        decision_info["reason"] = (
+                            f"{pool.id} wins: {result.avoided:.4f} of {result.job_pse:.4f} PSE "
+                            f"projected fleet waste avoided (API credit, ${bal.remaining_usd:.2f} "
+                            f"left, expires {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(bal.expires_s))})"
+                        )
+                        try:
+                            secret = read_secret(pool.keychain_service)
+                        except SecretError as exc:
+                            warnings.append(f"{pool.id}: {exc}")
+                            excluded.append(pool.id)
+                            secret = None
+                        if secret is not None:
+                            home = state_dir / "credit-homes" / pool.id
+                            home.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            overlay = {"CLAUDE_CONFIG_DIR": str(home),
+                                       "ANTHROPIC_API_KEY": secret.reveal()}
+                            child = child_env(env, {}, "CLAUDE_CONFIG_DIR")
+                            child.update(overlay)
+                            model_id, effort = model_for(pool.linked_account)
+                            budget = min(bal.remaining_usd, pool.max_usd_per_call)
+                            target = _Target(
+                                "credit", pool.id, model_id, effort, child,
+                                ["--bare", "--max-budget-usd", f"{budget:.2f}"],
+                                "ANTHROPIC_API_KEY", pool=pool, secret=secret,
+                                hold_usd=expected,
+                            )
+
+        if target is None:
             outcome = "no_candidate"
             break
-        choice = prepared.capability.choices.get(chosen) if prepared.capability else None
-        model_id = choice.id if choice is not None else (request.model or "")
-        if not model_id:
+        if not target.model:
+            warnings.append(f"{target.account}: no model resolved for this request")
             outcome = "no_candidate"
-            warnings.append(f"{chosen}: no model resolved for this request")
             break
-        effort = None
-        if choice is not None and choice.effort:
-            effort = choice.effort.get("applied")
-        elif request.effort and not request.capability:
-            effort = request.effort
-        account = prepared.config.account(chosen)
-        overlay = account.exec_env() if account is not None else {}
-        config_var = account.config_dir_env_var if account is not None else "CLAUDE_CONFIG_DIR"
-        argv = build_argv(
-            _claude_binary(env, prepared.config.exec.commands.get("claude")),
-            model=model_id,
-            effort=effort,
-            system=request.system,
-            json_schema=request.json_schema,
-        )
-        child = child_env(env, overlay, config_var)
+
+        run_id = f"{request_id}.{index}"
+        scrub = target.secret.scrub if target.secret is not None else (lambda text: text)
+        if target.kind == "credit":
+            credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "hold",
+                                     "run_id": run_id, "usd": target.hold_usd})
+        argv = build_argv(binary, model=target.model, effort=target.effort,
+                          system=request.system, json_schema=request.json_schema)
+        argv += target.argv_extra
         t0 = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="quota-router-run-") as scratch:
             try:
@@ -409,43 +552,52 @@ def execute(
                     input=request.prompt,
                     capture_output=True,
                     text=True,
-                    env=child,
+                    env=target.env,
                     cwd=scratch,
                     timeout=remaining_s,
                 )
             except Exception as exc:  # noqa: BLE001 - classified below, never raised
                 elapsed = int((time.monotonic() - t0) * 1000)
                 is_timeout = type(exc).__name__ == "TimeoutExpired"
-                attempts.append(
-                    Attempt(chosen, "subscription", model_id,
-                            "timeout" if is_timeout else "cli_error", elapsed, None,
-                            f"{type(exc).__name__}: {exc}"[:300])
+                attempt = Attempt(
+                    target.account, target.kind, target.model,
+                    "timeout" if is_timeout else "cli_error", elapsed, None,
+                    scrub(f"{type(exc).__name__}: {exc}")[:300],
                 )
-                outcome = attempts[-1].outcome
-                final = attempts[-1]
+                attempts.append(attempt)
+                final = attempt
+                outcome = attempt.outcome
+                if target.kind == "credit":
+                    # A timed-out call may still have spent: book the hold as spent.
+                    credits_mod.append(env, {
+                        "t": now_s, "pool": target.account,
+                        "type": "spend" if is_timeout else "release", "run_id": run_id,
+                        **({"usd": target.hold_usd, "estimated": True} if is_timeout else {}),
+                    })
                 if is_timeout:
                     break
-                excluded.append(chosen)
+                excluded.append(target.account)
                 continue
         elapsed = int((time.monotonic() - t0) * 1000)
         outcome, detail, parsed = judge(
             completed.returncode,
-            completed.stdout or "",
-            completed.stderr or "",
-            requested_model=model_id,
+            scrub(completed.stdout or ""),
+            scrub(completed.stderr or ""),
+            requested_model=target.model,
             want_structured=request.json_schema is not None,
-            want_auth="none",
+            want_auth=target.want_auth,
             now_s=now_s,
         )
         result = parsed.result or {}
         cost = result.get("total_cost_usd")
+        cost_usd = float(cost) if isinstance(cost, (int, float)) else None
         attempt = Attempt(
-            account=chosen,
-            pool_kind="subscription",
-            model=model_id,
+            account=target.account,
+            pool_kind=target.kind,
+            model=target.model,
             outcome=outcome,
             duration_ms=elapsed,
-            cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+            cost_usd=cost_usd,
             detail=detail,
             text=result.get("result") if isinstance(result.get("result"), str) else None,
             structured=result.get("structured_output"),
@@ -455,9 +607,20 @@ def execute(
         )
         attempts.append(attempt)
         final = attempt
+        if target.kind == "credit":
+            if cost_usd is not None and cost_usd > 0:
+                credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "spend",
+                                         "run_id": run_id, "usd": cost_usd,
+                                         "model": target.model, "outcome": outcome})
+            else:
+                credits_mod.append(env, {"t": now_s, "pool": target.account,
+                                         "type": "release", "run_id": run_id})
+            if outcome == "exhausted":
+                credits_mod.append(env, {"t": now_s, "pool": target.account,
+                                         "type": "exhausted", "signal": detail[:200]})
         if outcome == "ok" or outcome not in RETRYABLE:
             break
-        excluded.append(chosen)
+        excluded.append(target.account)
 
     ok = final is not None and final.outcome == "ok"
     cost_usd = final.cost_usd if final is not None else None
@@ -466,12 +629,14 @@ def execute(
     if final is not None:
         served = {
             "account": final.account,
-            "provider": "claude",
+            "provider": "claude" if final.pool_kind == "subscription" else "anthropic_api",
             "pool_kind": final.pool_kind,
             "model": final.models_seen[0] if len(final.models_seen) == 1 else final.model,
             "model_requested": final.model,
             "models_seen": list(final.models_seen),
-            "auth": "oauth" if final.auth == "none" else final.auth,
+            "auth": {"none": "oauth", "ANTHROPIC_API_KEY": "api_key"}.get(
+                final.auth or "", final.auth
+            ),
         }
     fable = bool(final is not None and "fable" in final.model.casefold())
     history_mod.append_snapshots(

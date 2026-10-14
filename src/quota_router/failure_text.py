@@ -294,6 +294,11 @@ _EXHAUSTION_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("limit:usage_limit", r"\busage limit\s+(?:reached|exceeded)\b"),
     ("limit:limit_reached", r"\b(?:session|weekly|daily|monthly)\s+limit\s+(?:reached|exceeded)\b"),
     ("limit:upgrade", r"\bupgrade to (?:increase|raise) your (?:usage )?limit\b"),
+    # An API org out of prepaid credit, or at its spend cap (Anthropic, 2026-10-14).
+    # Listed here, ahead of the transient patterns, so the bare 429 that can carry
+    # them never downgrades them to a retry.
+    ("limit:credit_balance_low", r"\bcredit balance is too low\b"),
+    ("limit:spend_limit", r"\benforced_spend_limit_reached\b|\breached your specified api usage limits\b"),
 )
 
 #: Not exhaustion, whatever the HTTP status says.

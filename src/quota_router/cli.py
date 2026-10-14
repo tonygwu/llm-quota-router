@@ -127,6 +127,9 @@ class Deps:
     #: I/O for ``capabilities --refresh`` (``model/list``, ``agy models``). ``pick``
     #: never uses it; tests inject it so no process is spawned.
     capability_refresh: Any = None
+    #: Reads a credit pool's key by Keychain item; ``run`` only. ``None`` means
+    #: :func:`quota_router.secrets.read_api_key`.
+    read_secret: Callable[[str], Any] | None = None
 
     @classmethod
     def resolve(cls, given: Deps | None = None) -> Deps:
