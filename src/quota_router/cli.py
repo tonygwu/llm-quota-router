@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable, Final, TextIO
 
 from . import explain as explain_mod
+from . import forecast as forecast_mod
 from . import forensics as forensics_mod
 from . import history as history_mod
 from types import SimpleNamespace
@@ -1997,6 +1998,45 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     return warnings + list(write.warnings)
 
 
+#: Read this much history before the forecast window, so the reading that straddles the
+#: window's start is still paired with the one after it.
+_FORECAST_LEAD_S: Final[float] = 6 * 3600.0
+
+
+def _forecast_records(
+    env: Mapping[str, str], now_s: float, window_s: float, path: str | None = None
+) -> Callable[[], Any]:
+    def load() -> Any:
+        return history_mod.iter_records(
+            path,
+            env=env,
+            include_rotated=True,
+            since_s=now_s - window_s - _FORECAST_LEAD_S,
+        )
+
+    return load
+
+
+def _refresh_forecast(config: Config, env: Mapping[str, str], now_s: float) -> list[str]:
+    """Keep the demand forecast warm for the joint objective.
+
+    Run from ``status`` for the same reason as :func:`_record_waste`: the poller already
+    calls it on a schedule, and a pick must never scan history. ``forecast_refresh_s``
+    keeps the scan to once per quarter hour.
+    """
+    plans, warnings = _plans_for(config)
+    result = forecast_mod.refresh_if_due(
+        _forecast_records(env, now_s, forecast_mod.DEFAULT_WINDOW_S),
+        now_s=now_s,
+        plans=plans,
+        manual_rates=config.manual_rates(),
+        window_s=forecast_mod.DEFAULT_WINDOW_S,
+        refresh_s=config.engine.forecast_refresh_s,
+        env=env,
+    )
+    return warnings + list(result.warnings)
+
+
 def _cmd_status(
     args: argparse.Namespace,
     env: Mapping[str, str],
@@ -2016,7 +2056,14 @@ def _cmd_status(
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
     # --verbose prints both in full, and --json still carries both, in that order.
-    history_notes = tuple(dict.fromkeys(_record_waste(prepared.config, env)))
+    notes = _record_waste(prepared.config, env)
+    forecast_notes = _refresh_forecast(prepared.config, env, now_s)
+    # The forecast feeds only the joint objective. Until it is configured, or shadowed,
+    # its notes would be noise in a status nobody asked to change.
+    engine = prepared.config.engine
+    if engine.objective != "own_waste" or engine.shadow:
+        notes = notes + forecast_notes
+    history_notes = tuple(dict.fromkeys(notes))
     live_warnings = tuple(
         note for note in dict.fromkeys(prepared.warnings) if note not in set(history_notes)
     )
@@ -2850,6 +2897,28 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
+    forecast_parser = subparsers.add_parser(
+        "forecast",
+        parents=[common],
+        help="measure demand per provider group, in PSE per hour, from history",
+    )
+    forecast_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="also write the cache the joint objective reads (status does this every 15 min)",
+    )
+    forecast_parser.add_argument(
+        "--history",
+        default=None,
+        metavar="PATH",
+        help="read this history file and its rotated siblings instead of the live one",
+    )
+    forecast_parser.add_argument(
+        "--days",
+        type=float,
+        default=None,
+        help="look-back in days (default 7)",
+    )
     waste_parser.add_argument(
         "--backfill",
         action="store_true",
@@ -3389,6 +3458,65 @@ def _cmd_doctor(
     return doctor_mod.worst_exit_code(checks)
 
 
+def _cmd_forecast(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    now_s: float,
+    deps: Deps,
+    stdout: TextIO,
+    stderr: TextIO,
+    cwd: str | None,
+) -> int:
+    """Measure demand per provider group from history; ``--refresh`` also caches it.
+
+    Read-only towards history: it never appends to, rotates or prunes it.
+    """
+    config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
+    days = getattr(args, "days", None) or forecast_mod.DEFAULT_WINDOW_S / 86400.0
+    if not days > 0:
+        stderr.write(f"{_PROG} forecast: --days must be positive, got {days}\n")
+        return EXIT_USAGE
+    window_s = days * 86400.0
+    plans, warnings = _plans_for(config)
+    result = forecast_mod.measure(
+        _forecast_records(env, now_s, window_s, getattr(args, "history", None))(),
+        plans=plans,
+        now_s=now_s,
+        window_s=window_s,
+        manual_rates=config.manual_rates(),
+    )
+    written: str | None = None
+    if getattr(args, "refresh", False):
+        try:
+            written = str(forecast_mod.write_cache(result, env=env))
+        except OSError as exc:
+            warnings.append(f"cannot write the demand forecast: {exc}")
+    notes = list(dict.fromkeys(warnings + list(result.warnings)))
+
+    if getattr(args, "json", False):
+        _dump_json({**result.to_dict(), "written": written, "warnings": notes}, stdout)
+        return EXIT_OK
+
+    stdout.write(
+        f"demand over the last {days:g} day(s), ending {_iso(now_s)}\n\n"
+        f"{'group':<12} {'other PSE/h':>11} {'fable':>6} {'run PSE/h':>10} "
+        f"{'coverage':>9}  accounts\n"
+    )
+    for name, group in sorted(result.groups.items()):
+        stdout.write(
+            f"{name:<12} {group.other.pse_per_h:>11.4f} {group.other.fable_share:>6.0%} "
+            f"{group.run.pse_per_h:>10.4f} {group.coverage:>9.0%}  "
+            f"{', '.join(group.accounts) or '-'}\n"
+        )
+    if not result.groups:
+        stdout.write("(no measurable demand in the window)\n")
+    if written:
+        stdout.write(f"\nwritten to {written}\n")
+    for note in notes:
+        stderr.write(f"! {note}\n")
+    return EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "pick": _cmd_pick,
     "exec": _cmd_exec,
@@ -3396,6 +3524,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "explain": _cmd_explain,
     "calibrate": _cmd_calibrate,
     "waste": _cmd_waste,
+    "forecast": _cmd_forecast,
     "forensics": _cmd_forensics,
     "launch-plan": _cmd_launch_plan,
     "doctor": _cmd_doctor,

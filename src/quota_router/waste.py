@@ -688,6 +688,45 @@ def _observed_record(
     )
 
 
+def readings_by_account(records: Iterable[Mapping[str, Any]]) -> dict[str, list[_Reading]]:
+    """Per-account readings, oldest observation first. See :func:`_series`."""
+    return _series(records)
+
+
+#: What happened to one window between two readings.
+TRANSITION_BACKWARDS: Final[str] = "backwards"
+TRANSITION_SAME: Final[str] = "same"
+TRANSITION_ROLLED: Final[str] = "rolled"
+
+
+def window_transition(
+    window: _WindowReading,
+    later: _WindowReading,
+    before_observed_s: float,
+    after_observed_s: float,
+) -> str:
+    """Did ``window`` roll over before ``later`` was read? The one rule for that.
+
+    :func:`detect_resets` decides resets with it, and the demand forecast decides
+    whether a rise is measured from the old value or from zero, so the two can never
+    disagree about whether a reset happened.
+    """
+    jump = later.resets_at_s - window.resets_at_s
+    if jump < -RESET_JITTER_S:
+        return TRANSITION_BACKWARDS
+    dropped = later.used < window.used - USED_QUANTUM
+    fresh_start_s = later.resets_at_s - later.length_s
+    opened_between = (
+        before_observed_s - RESET_JITTER_S
+        <= fresh_start_s
+        <= after_observed_s + RESET_JITTER_S
+    )
+    rolled_early_in_week = jump > RESET_JITTER_S and dropped and opened_between
+    if jump < MIN_RESET_JUMP_FRACTION * window.length_s and not rolled_early_in_week:
+        return TRANSITION_SAME
+    return TRANSITION_ROLLED
+
+
 def detect_resets(
     records: Iterable[Mapping[str, Any]], *, plans: Mapping[str, Plan] | None = None
 ) -> Detection:
@@ -725,7 +764,10 @@ def detect_resets(
                     continue
 
                 jump = later.resets_at_s - window.resets_at_s
-                if jump < -RESET_JITTER_S:
+                transition = window_transition(
+                    window, later, before.observed_at_s, after.observed_at_s
+                )
+                if transition == TRANSITION_BACKWARDS:
                     warnings.append(
                         f"{account_id}/{key}: reset time moved backwards "
                         f"{_iso(window.resets_at_s)} -> {_iso(later.resets_at_s)}; "
@@ -734,16 +776,7 @@ def detect_resets(
                     continue
                 dropped = later.used < window.used - USED_QUANTUM
                 fresh_start_s = later.resets_at_s - later.length_s
-                opened_between = (
-                    before.observed_at_s - RESET_JITTER_S
-                    <= fresh_start_s
-                    <= after.observed_at_s + RESET_JITTER_S
-                )
-                rolled_early_in_week = jump > RESET_JITTER_S and dropped and opened_between
-                if (
-                    jump < MIN_RESET_JUMP_FRACTION * window.length_s
-                    and not rolled_early_in_week
-                ):
+                if transition == TRANSITION_SAME:
                     if dropped:
                         warnings.append(
                             f"{account_id}/{key}: incoherent pair -- used fell "
