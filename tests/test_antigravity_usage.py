@@ -545,15 +545,103 @@ def test_a_cached_reading_from_another_launch_recipe_is_not_served(env, tmp_path
     assert any("launch recipe" in w for w in adapter.warnings), adapter.warnings
 
 
-def test_a_failed_live_read_reaches_the_pick_path_too(env, tmp_path):
+# ======================================================================================
+# A failed read serves the last confirmed reading, with its true age
+# ======================================================================================
+
+
+def test_a_failed_read_serves_the_last_confirmed_reading_with_its_age(env, tmp_path):
+    """About 3% of reads fail at Google's side; one failure must not blank the numbers."""
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+
+    adapter = _adapter(env, accounts[:2], Recorder(returncode=75, stdout=""))
+    snaps = _by_id(adapter.snapshot(NOW + 200))
+
+    for snapshot in snaps.values():
+        assert snapshot.windows, "the reading from NOW is still the best one there is"
+        assert snapshot.source == SOURCE_CACHE
+        assert snapshot.staleness_s(NOW + 200) == 200, "aged from when it was read"
+        assert snapshot.available is True
+        assert "latest read failed" in (snapshot.note or "")
+    joined = "\n".join(adapter.warnings)
+    assert "exited 75" in joined and "serving the last confirmed reading" in joined, joined
+
+
+def test_after_a_failed_read_pick_serves_the_same_reading(env, tmp_path):
     _config_obj, accounts = _accounts(env, tmp_path)
     _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
     _adapter(env, accounts[:2], Recorder(returncode=75, stdout="")).snapshot(NOW + 200)
 
     adapter = _adapter(env, accounts[:2], explode, live=False)
     snaps = _by_id(adapter.snapshot(NOW + 230))
-    assert all(s.windows == () for s in snaps.values())
+    assert all(s.windows and s.staleness_s(NOW + 230) == 230 for s in snaps.values())
     assert any("exited 75" in w for w in adapter.warnings), adapter.warnings
+
+
+def test_a_read_whose_log_names_no_account_serves_the_last_confirmed_one(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    snaps = _by_id(_adapter(env, accounts[:2], Recorder(signed_in="")).snapshot(NOW + 200))
+    assert all(s.windows and s.staleness_s(NOW + 200) == 200 for s in snaps.values())
+
+
+def test_the_last_confirmed_reading_is_not_served_past_the_stale_bound(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    later = NOW + agy_mod.DEFAULT_USAGE_STALE_MAX_S + 10
+    adapter = _adapter(env, accounts[:2], Recorder(returncode=75, stdout=""))
+    snaps = _by_id(adapter.snapshot(later))
+    assert all(s.windows == () for s in snaps.values())
+    assert any("past the" in w for w in adapter.warnings), adapter.warnings
+
+
+def test_a_record_from_before_the_last_good_reading_was_kept_is_its_own(env, tmp_path):
+    """Such a record held one read; when that read succeeded, it is the last good one."""
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    for pool in ("antigravity_gemini", "antigravity_claude"):
+        path = agy_mod.usage_cache_path(pool, env)
+        record = json.loads(path.read_text())
+        for key in ("good", "mismatch"):
+            del record["payload"][key]
+        path.write_text(json.dumps(record))
+
+    adapter = _adapter(env, accounts[:2], Recorder(returncode=75, stdout=""))
+    snaps = _by_id(adapter.snapshot(NOW + 200))
+    assert all(s.windows and s.staleness_s(NOW + 200) == 200 for s in snaps.values())
+
+
+def test_a_malformed_last_good_reading_is_not_served(env, tmp_path):
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    for pool in ("antigravity_gemini", "antigravity_claude"):
+        path = agy_mod.usage_cache_path(pool, env)
+        record = json.loads(path.read_text())
+        record["payload"]["good"]["observed_at_s"] = "yesterday"
+        path.write_text(json.dumps(record))
+
+    adapter = _adapter(env, accounts[:2], explode, live=False)
+    snaps = _by_id(adapter.snapshot(NOW + 30))
+    assert all(s.windows == () for s in snaps.values())
+    assert any("malformed" in w for w in adapter.warnings), adapter.warnings
+
+
+def test_a_mismatch_holds_until_a_read_confirms_the_account(env, tmp_path):
+    """A timeout after a mismatch says nothing about the login, so the pool stays benched."""
+    _config_obj, accounts = _accounts(env, tmp_path)
+    _adapter(env, accounts[:2], Recorder()).snapshot(NOW)
+    _adapter(env, accounts[:2], Recorder(signed_in="b@example.com")).snapshot(NOW + 200)
+
+    timeout = Recorder(error=subprocess.TimeoutExpired(["agy"], 30.0))
+    adapter = _adapter(env, accounts[:2], timeout)
+    snaps = _by_id(adapter.snapshot(NOW + 400))
+    assert all(s.windows == () and s.available is False for s in snaps.values())
+    assert any("b@example.com" in w for w in adapter.warnings), adapter.warnings
+
+    snaps = _by_id(_adapter(env, accounts[:2], Recorder()).snapshot(NOW + 600))
+    assert all(s.windows and s.available is True for s in snaps.values())
+    assert all(s.staleness_s(NOW + 600) == 0 for s in snaps.values())
 
 
 def test_the_offline_flag_keeps_status_from_spawning(env, tmp_path):

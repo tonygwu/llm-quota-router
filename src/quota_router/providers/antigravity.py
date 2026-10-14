@@ -74,8 +74,20 @@ the last reading from the per-account usage cache the Claude reader already keep
 (:func:`~quota_router.providers.claude_oauth.usage_cache_path`, same record shape, same
 120 s reuse window and 5 h stale bound), reported as ``source="cache"`` with its age. A
 live read is ``source="live"``. ``QUOTA_ROUTER_USAGE_OFFLINE`` keeps even ``status``
-from spawning. A failed live read is written to the cache too, so ``pick`` reports the
-same failure ``status`` saw instead of serving the reading before it.
+from spawning.
+
+A FAILED READ SERVES THE LAST CONFIRMED READING
+-----------------------------------------------
+About 3% of reads fail at Google's side, before ``/usage`` runs: the sign-in or the
+eligibility check stalls until the timeout, or answers 503 (measured 2026-10-12 to
+10-14, almost always one poll at a time). Each pool's cache record therefore keeps the
+last successful reading whose log confirmed the pool's account, beside the latest
+attempt. When the latest attempt failed, or its log named no address, ``status`` and
+``pick`` both serve that reading as ``source="cache"`` with the time it was READ, so
+its age is honest, and a warning names the failure. Past the 5 h stale bound nothing is
+served. A read that named another account is different: it drops the kept reading,
+and the pool stays unavailable until a later read confirms the declared account. See
+:class:`_Record`.
 
 Each live read has its own timeout (:data:`DEFAULT_USAGE_TIMEOUT_S`). The child starts
 in its own session and the whole process group is signalled on timeout, because the
@@ -588,17 +600,9 @@ class _Reading:
     source: str
     observed_at_s: float
     identity: str  # the address agy's log signed in as
-
-
-@dataclass(frozen=True, slots=True)
-class _Cached:
-    """One pool's cache record, judged."""
-
-    response: Any | None
-    fetched_at_s: float | None
-    error: str | None
-    problem: str | None  # why the record cannot be served at all
-    served: tuple[str, ...] = ()  # the addresses that read's log signed in as
+    #: Set when the latest read could not be used and these windows are the last
+    #: confirmed reading, served in its place.
+    instead_of_latest: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -608,6 +612,65 @@ class _Live:
     response: Any | None
     error: str | None
     served: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _Good:
+    """A successful reading, kept with the addresses its log named and when it was read."""
+
+    response: Any
+    served: tuple[str, ...]
+    observed_at_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Record:
+    """One pool's cache record: the latest attempt, and the last outcome that counted.
+
+    ``good`` is the last successful reading confirmed for this pool, and ``mismatch``
+    holds the addresses and time of the last read whose log named another account. A
+    read that confirms the account clears ``mismatch``; a read that names another account
+    clears ``good``; anything else (a failure, or a log with no address) carries both
+    forward. So a failed read serves the last confirmed numbers, and a timeout after a
+    mismatch does not quietly make the pool routable again.
+    """
+
+    fetched_at_s: float
+    response: Any | None
+    error: str | None
+    served: tuple[str, ...]
+    good: _Good | None
+    mismatch: tuple[tuple[str, ...], float] | None
+
+    def payload(self, launch: list[Any]) -> dict[str, Any]:
+        return {
+            "launch": launch,
+            "response": self.response,
+            "error": self.error,
+            "served": list(self.served),
+            "good": None if self.good is None else {
+                "response": self.good.response,
+                "served": list(self.good.served),
+                "observed_at_s": self.good.observed_at_s,
+            },
+            "mismatch": None if self.mismatch is None else {
+                "served": list(self.mismatch[0]),
+                "observed_at_s": self.mismatch[1],
+            },
+        }
+
+
+def _addresses(value: Any) -> tuple[str, ...] | None:
+    """A stored address list, or ``None`` when it is not one."""
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(value)
+    return None
+
+
+def _stored_time(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 class AntigravityAdapter(ProviderAdapter):
@@ -748,36 +811,61 @@ class AntigravityAdapter(ProviderAdapter):
     def _cache_path(self, account_id: str) -> Path:
         return usage_cache_path(account_id, self._env)
 
-    def _cached(self, pool: _Pool) -> _Cached:
+    def _cached(self, pool: _Pool) -> tuple[_Record | None, str | None]:
+        """``(record, None)``, or ``(None, why the record cannot be used at all)``."""
         payload, fetched_at_s, _not_before = _read_usage_cache(self._cache_path(pool.id))
         if payload is None or fetched_at_s is None:
-            return _Cached(None, None, None, "no cached /usage reading")
+            return None, "no cached /usage reading"
         if not isinstance(payload, Mapping) or payload.get("launch") != pool.key:
-            return _Cached(
-                None, fetched_at_s, None,
-                "the cached /usage reading was made with a different launch recipe",
-            )
-        served = payload.get("served")
-        if not isinstance(served, list) or not all(isinstance(e, str) for e in served):
-            return _Cached(
-                None, fetched_at_s, None,
-                "the cached /usage reading predates the identity check",
-            )
+            return None, "the cached /usage reading was made with a different launch recipe"
+        served = _addresses(payload.get("served"))
+        if served is None:
+            return None, "the cached /usage reading predates the identity check"
         error = payload.get("error")
-        if isinstance(error, str) and error:
-            return _Cached(None, fetched_at_s, error, None, tuple(served))
-        if payload.get("response") is None:
-            return _Cached(None, fetched_at_s, None, "the cached /usage record holds no response")
-        return _Cached(payload.get("response"), fetched_at_s, None, None, tuple(served))
+        error = error if isinstance(error, str) and error else None
+        response = payload.get("response")
+        if "good" not in payload:
+            # Written before the last good reading was kept. Such a record held one read,
+            # made at ``fetched_at_s``: it is its own last good reading if it succeeded.
+            good = _Good(response, served, fetched_at_s) if error is None and response is not None else None
+            return _Record(fetched_at_s, response, error, served, good, None), None
+        malformed = "the cached /usage record is malformed"
+        good = None
+        raw = payload.get("good")
+        if raw is not None:
+            if not isinstance(raw, Mapping):
+                return None, malformed
+            g_served, g_at = _addresses(raw.get("served")), _stored_time(raw.get("observed_at_s"))
+            if g_served is None or g_at is None or raw.get("response") is None:
+                return None, malformed
+            good = _Good(raw["response"], g_served, g_at)
+        mismatch = None
+        raw = payload.get("mismatch")
+        if raw is not None:
+            if not isinstance(raw, Mapping):
+                return None, malformed
+            m_served, m_at = _addresses(raw.get("served")), _stored_time(raw.get("observed_at_s"))
+            if not m_served or m_at is None:
+                return None, malformed
+            mismatch = (m_served, m_at)
+        return _Record(fetched_at_s, response, error, served, good, mismatch), None
 
-    def _write(self, pools: Sequence[_Pool], fetched_at_s: float, read: _Live) -> None:
-        for pool in pools:
-            _write_usage_cache(
-                self._cache_path(pool.id),
-                {"launch": pool.key, "response": read.response, "error": read.error,
-                 "served": list(read.served)},
-                fetched_at_s,
-            )
+    @staticmethod
+    def _next_record(pool: _Pool, previous: _Record | None, read: _Live, now_s: float) -> _Record:
+        """The record one live read leaves for one pool. See :class:`_Record`."""
+        good = previous.good if previous is not None else None
+        mismatch = previous.mismatch if previous is not None else None
+        confirmed, mismatched, _unconfirmed = _identity_split([pool], read.served)
+        if confirmed:
+            mismatch = None  # the log names the declared account, whatever the read did
+            if read.error is None and read.response is not None:
+                good = _Good(read.response, read.served, now_s)
+        elif mismatched:
+            good, mismatch = None, (read.served, now_s)
+        return _Record(now_s, read.response, read.error, read.served, good, mismatch)
+
+    def _write(self, pool: _Pool, record: _Record) -> None:
+        _write_usage_cache(self._cache_path(pool.id), record.payload(pool.key), record.fetched_at_s)
 
     # -- reading -------------------------------------------------------------------------
 
@@ -827,30 +915,67 @@ class AntigravityAdapter(ProviderAdapter):
             return _Live(None, str(exc), served)
         return _Live(response, None, served)
 
-    @staticmethod
-    def _confirm(
-        pools: Sequence[_Pool],
-        served: Sequence[str],
-        error: str | None,
+    def _judge(
+        self,
+        pool: _Pool,
+        record: _Record,
+        now_s: float,
+        just_read: bool,
         refused: dict[str, str],
         warnings: list[str],
-    ) -> list[_Pool]:
-        """The pools a reading may be mapped to; a mismatch lands in ``refused``.
+    ) -> tuple[_Good, str, bool] | None:
+        """What one pool may show: ``(reading, source, instead of the latest)``, or nothing.
 
-        A mismatch is reported whatever the read's outcome. ``error`` set means the
-        caller reports the failure itself, so an unconfirmed pool is not reported twice.
+        The identity checks run against the pool's current ``identity_email``, so a
+        record written under an older config is judged by the config in force now.
         """
-        confirmed, mismatched, unconfirmed = _identity_split(pools, served)
-        for account_id, message in mismatched.items():
-            refused[account_id] = message
+        age_s = now_s - record.fetched_at_s
+        mismatch_served, mismatch_at = record.mismatch or (record.served, record.fetched_at_s)
+        _confirmed, mismatched, _unconfirmed = _identity_split([pool], mismatch_served)
+        if pool.id in mismatched:
+            message = mismatched[pool.id]
+            if mismatch_at < record.fetched_at_s:
+                message += (
+                    f" (read {now_s - mismatch_at:.0f}s ago; no read since has confirmed "
+                    f"the account)"
+                )
+            refused[pool.id] = message
             warnings.append(
-                f"{account_id}: {message}; its /usage numbers are dropped and the pool is "
+                f"{pool.id}: {message}; its /usage numbers are dropped and the pool is "
                 f"unavailable until that login is fixed"
             )
-        if error is None:
-            for account_id, message in unconfirmed.items():
-                warnings.append(f"{account_id}: no /usage reading: {message}")
-        return confirmed
+            return None
+
+        confirmed, _mismatched, unconfirmed = _identity_split([pool], record.served)
+        if record.error is None and record.response is not None and confirmed:
+            if age_s >= self._stale_max_s:
+                warnings.append(
+                    f"{pool.id}: the cached /usage reading is {age_s:.0f}s old, past the "
+                    f"{self._stale_max_s:.0f}s bound; not served"
+                )
+                return None
+            reading = _Good(record.response, record.served, record.fetched_at_s)
+            return reading, (SOURCE_LIVE if just_read else SOURCE_CACHE), False
+
+        cause = record.error or unconfirmed.get(pool.id) or "the read was not used"
+        lead = (
+            f"{pool.id}: no /usage reading: {cause}"
+            if just_read
+            else f"{pool.id}: the last /usage read, {age_s:.0f}s ago, failed: {cause}"
+        )
+        good = record.good
+        if good is None or not _identity_split([pool], good.served)[0]:
+            warnings.append(lead)
+            return None
+        good_age_s = now_s - good.observed_at_s
+        if good_age_s >= self._stale_max_s:
+            warnings.append(
+                f"{lead}; the last confirmed reading is {good_age_s:.0f}s old, past the "
+                f"{self._stale_max_s:.0f}s bound, so none is served"
+            )
+            return None
+        warnings.append(f"{lead}; serving the last confirmed reading, {good_age_s:.0f}s old")
+        return good, SOURCE_CACHE, True
 
     def _readings(
         self, now_s: float, warnings: list[str]
@@ -860,13 +985,22 @@ class AntigravityAdapter(ProviderAdapter):
         offline = (self._environ().get(USAGE_OFFLINE_ENV) or "").strip().lower() in _TRUTHY
         live = self._live and not offline
 
-        cached = {pool.id: self._cached(pool) for pools in groups for pool in pools}
+        records: dict[str, _Record] = {}
+        problems: dict[str, str] = {}
+        for pools in groups:
+            for pool in pools:
+                record, problem = self._cached(pool)
+                if record is not None:
+                    records[pool.id] = record
+                else:
+                    problems[pool.id] = problem or "no cached /usage reading"
 
         def fresh(pool: _Pool) -> bool:
-            record = cached[pool.id]
+            record = records.get(pool.id)
             return (
-                record.response is not None
-                and record.fetched_at_s is not None
+                record is not None
+                and record.error is None
+                and record.response is not None
                 and now_s - record.fetched_at_s < self._ttl_s
             )
 
@@ -878,53 +1012,38 @@ class AntigravityAdapter(ProviderAdapter):
             ) as executor:
                 results = list(executor.map(self._read_live, to_read))
 
+        just_read: set[str] = set()
+        for pools, read in zip(to_read, results):
+            for pool in pools:
+                record = self._next_record(pool, records.get(pool.id), read, now_s)
+                self._write(pool, record)
+                records[pool.id] = record
+                problems.pop(pool.id, None)
+                just_read.add(pool.id)
+
         readings: dict[str, _Reading] = {}
         refused: dict[str, str] = {}
-        for pools, read in zip(to_read, results):
-            self._write(pools, now_s, read)
-            confirmed = self._confirm(pools, read.served, read.error, refused, warnings)
-            if read.error is not None:
-                failed = [pool.id for pool in pools if pool.id not in refused]
-                if failed:
-                    warnings.append(f"{', '.join(failed)}: no /usage reading: {read.error}")
-                continue
-            self._map(read.response, confirmed, now_s, SOURCE_LIVE, read.served, readings,
-                      warnings)
-
-        read_ids = {pool.id for pools in to_read for pool in pools}
         for pools in groups:
-            servable: dict[float, list[_Pool]] = {}
+            batches: dict[tuple[str, float, tuple[str, ...], bool], list[_Pool]] = {}
+            served_by: dict[tuple[str, float, tuple[str, ...], bool], _Good] = {}
             for pool in pools:
-                if pool.id in read_ids:
-                    continue
-                record = cached[pool.id]
-                if record.problem is not None:
+                if pool.id in problems:
                     hint = "" if live else "; `quotapick status` reads one (the poller runs it every 120s)"
-                    warnings.append(f"{pool.id}: {record.problem}{hint}")
+                    warnings.append(f"{pool.id}: {problems[pool.id]}{hint}")
                     continue
-                assert record.fetched_at_s is not None
-                age_s = now_s - record.fetched_at_s
-                confirmed = self._confirm([pool], record.served, record.error, refused, warnings)
-                if record.error is not None:
-                    if pool.id not in refused:
-                        warnings.append(
-                            f"{pool.id}: the last /usage read, {age_s:.0f}s ago, failed: "
-                            f"{record.error}"
-                        )
+                judged = self._judge(
+                    pool, records[pool.id], now_s, pool.id in just_read, refused, warnings
+                )
+                if judged is None:
                     continue
-                if not confirmed:
-                    continue
-                if age_s >= self._stale_max_s:
-                    warnings.append(
-                        f"{pool.id}: the cached /usage reading is {age_s:.0f}s old, past the "
-                        f"{self._stale_max_s:.0f}s bound; not served"
-                    )
-                    continue
-                servable.setdefault(record.fetched_at_s, []).append(pool)
-            for fetched_at_s, same in servable.items():
-                record = cached[same[0].id]
-                self._map(record.response, same, fetched_at_s, SOURCE_CACHE, record.served,
-                          readings, warnings)
+                good, source, instead = judged
+                key = (source, good.observed_at_s, good.served, instead)
+                batches.setdefault(key, []).append(pool)
+                served_by.setdefault(key, good)
+            for key, same in batches.items():
+                good = served_by[key]
+                self._map(good.response, same, good.observed_at_s, key[0], good.served,
+                          readings, warnings, instead_of_latest=key[3])
         return readings, refused
 
     @staticmethod
@@ -936,6 +1055,8 @@ class AntigravityAdapter(ProviderAdapter):
         served: Sequence[str],
         readings: dict[str, _Reading],
         warnings: list[str],
+        *,
+        instead_of_latest: bool = False,
     ) -> None:
         """Map a reading onto pools whose declared account its log already confirmed."""
         if not pools:
@@ -947,7 +1068,9 @@ class AntigravityAdapter(ProviderAdapter):
             return
         warnings.extend(notes)
         for account_id, windows in mapped.items():
-            readings[account_id] = _Reading(windows, source, observed_at_s, served[0])
+            readings[account_id] = _Reading(
+                windows, source, observed_at_s, served[0], instead_of_latest
+            )
 
     # -- protocol -------------------------------------------------------------------------
 
@@ -982,6 +1105,8 @@ class AntigravityAdapter(ProviderAdapter):
                     else f"agy /usage, cached reading {age_s:.0f}s old"
                 )
                 parts.append(f"signed in as {reading.identity} (agy's own log), as declared")
+                if reading.instead_of_latest:
+                    parts.append("the latest read failed; serving the last confirmed reading")
             elif account_id in refused:
                 parts.append(f"{refused[account_id]}; numbers dropped")
             elif account is None:

@@ -108,8 +108,10 @@ That read takes longer than the 3s `cl` and `cdx` give a whole pick, so only
 `quotapick status` makes it, which the launchd poller runs every 120s. It is reused
 for 120s, and every other command serves it from the usage cache with its age
 (`source: cache`), or reports no reading when the cache is missing, older than 5h,
-made with a different launch recipe, or recorded a failed read. A pool without a
-reading behaves exactly as before: no windows, `confidence=0.0`.
+or made with a different launch recipe. About 3% of reads fail at Google's side,
+almost always one poll at a time. A failed read keeps the last confirmed reading and
+serves it with the age of when it was read, plus a warning that names the failure.
+A pool without a reading behaves exactly as before: no windows, `confidence=0.0`.
 
 Antigravity is the one provider that is **not** configured by default, because
 reaching each Google account needs a launch recipe only you can state. Declare the
