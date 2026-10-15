@@ -191,6 +191,23 @@ Interactive `cl` and work pinned to a Claude model cannot.
 rate; (c) an early-reset hazard per provider, measured from `waste.jsonl`, that brings
 the effective deadline forward. Then re-run the replay gate with cross-provider routing.
 
+## 5. A `run` client cannot tell from an attempt whether it was billed
+
+A client may route a failed `quotapick run` call some other way only if nothing was
+spent. Today it has to infer that from each attempt's `outcome` and `cost_usd`. Two cases
+make the inference fragile. First, `auth` means either a refused login (nothing ran) or a
+finished call whose `apiKeySource` was not the expected one (the call ran and was billed);
+only a non-zero `cost_usd` tells them apart. Second, a timed-out credit-pool call has
+`cost_usd: null`, while the ledger books an estimated spend for it. The first client
+(2026-10-15) falls back only when every attempt ended `exhausted`, `no_candidate` or
+`auth` with no positive cost, and treats an unknown cost as unknown. That is correct
+today because Claude Code reports `total_cost_usd` on every finished call, even a $0.000125
+subscription call. It stops being correct if that field is ever missing.
+
+**What would close it:** a per-attempt `spent: true | false | null` in the `run`
+response, set from what the router observed: the child produced a result event, or the
+ledger booked a spend. Clients would then fall back on `spent: false` alone.
+
 ---
 
 ## Closed
