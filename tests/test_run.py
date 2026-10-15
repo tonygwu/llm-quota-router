@@ -241,3 +241,22 @@ def test_the_library_returns_what_the_cli_prints(env) -> None:
     result = run_call(_request(), env=env, now_s=NOW, deps=deps, cwd=_NO_CONFIG_FILES)
     assert result["ok"] is True
     assert result["run_contract"] == 1
+
+
+def test_the_response_names_the_effort_that_ran(env) -> None:
+    # A client checks identity, not liveness: the effort it was served must be readable
+    # from the response, and must be the one the child was given.
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(effort="low"), runner)
+    argv = runner.calls[0]["argv"]
+    assert argv[argv.index("--effort") + 1] == "low", err
+    assert payload["served"]["effort"] == "low"
+    assert payload["attempts"][0]["effort"] == "low"
+
+
+def test_no_effort_is_reported_as_none(env) -> None:
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, _err = _run(env, _request(), runner)
+    assert "--effort" not in runner.calls[0]["argv"]
+    assert payload["served"]["effort"] is None
+    assert payload["attempts"][0]["effort"] is None

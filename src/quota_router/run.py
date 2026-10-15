@@ -244,12 +244,15 @@ class Attempt:
     usage: Mapping[str, Any] = field(default_factory=dict)
     models_seen: tuple[str, ...] = ()
     auth: str | None = None
+    #: The ``--effort`` the child was given; None when it was given none.
+    effort: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "account": self.account,
             "pool_kind": self.pool_kind,
             "model": self.model,
+            "effort": self.effort,
             "outcome": self.outcome,
             "duration_ms": self.duration_ms,
             "cost_usd": self.cost_usd,
@@ -563,6 +566,7 @@ def execute(
                     target.account, target.kind, target.model,
                     "timeout" if is_timeout else "cli_error", elapsed, None,
                     scrub(f"{type(exc).__name__}: {exc}")[:300],
+                    effort=target.effort,
                 )
                 attempts.append(attempt)
                 final = attempt
@@ -604,6 +608,7 @@ def execute(
             usage=result.get("usage") or {},
             models_seen=tuple(sorted((result.get("modelUsage") or {}).keys())),
             auth=(parsed.init or {}).get("apiKeySource"),
+            effort=target.effort,
         )
         attempts.append(attempt)
         final = attempt
@@ -634,6 +639,7 @@ def execute(
             "model": final.models_seen[0] if len(final.models_seen) == 1 else final.model,
             "model_requested": final.model,
             "models_seen": list(final.models_seen),
+            "effort": final.effort,
             "auth": {"none": "oauth", "ANTHROPIC_API_KEY": "api_key"}.get(
                 final.auth or "", final.auth
             ),

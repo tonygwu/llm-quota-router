@@ -1115,9 +1115,11 @@ echo '{"capability":"premium","system":"Reply in JSON.","prompt":"...",
 | `client`, `request_id` | tags, echoed back and logged |
 
 The response carries `run_contract: 1` (pick's `contract_version` is untouched), `ok`,
-`outcome`, `text`, `structured`, `served {account, provider, pool_kind, model, auth}`,
-`usage`, `cost_usd`, `cost_pse`, `attempts[]` and `decision {reason, objective,
-fallback}`. Exit 0 whenever the request parsed, whatever the outcome; exit 2 for a
+`outcome`, `text`, `structured`, `served {account, provider, pool_kind, model,
+model_requested, models_seen, effort, auth}`, `usage`, `cost_usd`, `cost_pse`,
+`attempts[]` and `decision {reason, objective, fallback}`. `served.effort` is the
+`--effort` the child was given (the router's translation of a capability request), or
+null when it was given none; each attempt carries its own. Exit 0 whenever the request parsed, whatever the outcome; exit 2 for a
 request or config refused before anything was spent. Outcomes: `ok`, `exhausted`,
 `wrong_model`, `auth`, `transient`, `timeout`, `schema_invalid`, `cli_error`,
 `no_candidate`, `bad_request`.
