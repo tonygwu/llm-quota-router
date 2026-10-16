@@ -208,6 +208,27 @@ subscription call. It stops being correct if that field is ever missing.
 response, set from what the router observed: the child produced a result event, or the
 ledger booked a spend. Clients would then fall back on `spent: false` alone.
 
+## 6. A credit-pool `run` records a pick on a subscription that never ran
+
+`run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
+then compares that choice against the credit pools. When a pool wins, the subscription
+pick is already written. A probe on 2026-10-16 (the credit test fixture, pool served)
+showed all three effects: a history line with `chosen` set to the subscription, a pileup
+reservation on it in `state.json`, and a sticky `selection` entry for it. The reservation
+makes the next decisions in the pileup window (60 s by default) see load that never ran.
+The sticky entry favors an account that served nothing. The history line adds a pick
+with no burn behind it, and `quotapick calibrate` divides recorded picks by observed burn.
+Every pool-served `run` repeats this, and five pools are live.
+
+Partly closed: when `--only`/`--exclude` allow no subscription, `run` no longer records
+the pick (`test_only_a_pool_never_falls_back_to_a_subscription`).
+
+**What would close it:** split the recording tail out of `_prepare` (`record_pick`, the
+selection writeback, and `chosen` on the history line), let `run` call `_prepare` with
+`write_state=False`, and record only after the target is known, for a subscription
+target alone. The risk is in `_prepare`, which every `pick` runs; the pick goldens must
+stay byte-identical.
+
 ---
 
 ## Closed
