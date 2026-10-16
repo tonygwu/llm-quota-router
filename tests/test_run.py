@@ -89,10 +89,11 @@ def env(tmp_path):
     }
 
 
-def _run(env, request, runner, *, snapshots=None):
+def _run(env, request, runner, *, snapshots=None, flags=()):
     deps = cli.Deps(load_snapshots=lambda **kw: (list(snapshots or _snapshots()), []),
                     run=runner)
-    code, out, err = run(["run"], env, deps=deps, cwd=_NO_CONFIG_FILES, stdin=json.dumps(request))
+    code, out, err = run(["run", *flags], env, deps=deps, cwd=_NO_CONFIG_FILES,
+                         stdin=json.dumps(request))
     return code, (json.loads(out) if out.strip() else None), err
 
 
@@ -260,3 +261,84 @@ def test_no_effort_is_reported_as_none(env) -> None:
     assert "--effort" not in runner.calls[0]["argv"]
     assert payload["served"]["effort"] is None
     assert payload["attempts"][0]["effort"] is None
+
+
+# ======================================================================================
+# Flags: `run` takes only the ones it honors
+# ======================================================================================
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--dry-run"],
+        ["--explain"],
+        ["--model", MODEL],
+        ["--min-remaining", "0.1"],
+        ["--no-sticky"],
+        ["--now", "2026-10-14T00:00:00Z"],
+        ["--timeout-ms", "100"],
+    ],
+)
+def test_a_flag_run_cannot_honor_is_refused_before_anything_runs(env, flags) -> None:
+    # On 2026-10-16 `run --dry-run` was accepted, ignored, and spent a real call.
+    runner = FakeRunner((0, _stream(), ""))
+    code, payload, err = _run(env, _request(), runner, flags=flags)
+    assert code == cli.EXIT_USAGE
+    assert payload is None
+    assert flags[0] in err
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("account_id", ["claude", "claude_b"])
+def test_only_runs_on_the_named_account(env, account_id) -> None:
+    runner = FakeRunner((0, _stream(), ""))
+    code, payload, err = _run(env, _request(), runner, flags=["--only", account_id])
+    assert code == cli.EXIT_OK, err
+    assert payload["served"]["account"] == account_id
+    assert [a["account"] for a in payload["attempts"]] == [account_id]
+
+
+@pytest.mark.parametrize("account_id, other", [("claude", "claude_b"), ("claude_b", "claude")])
+def test_exclude_keeps_run_off_an_account(env, account_id, other) -> None:
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(), runner, flags=["--exclude", account_id])
+    assert payload["served"]["account"] == other, err
+
+
+def test_only_never_retries_outside_the_named_accounts(env) -> None:
+    exhausted = _stream(is_error=True, subtype="error_during_execution",
+                        text="Claude AI usage limit reached|1792030000")
+    runner = FakeRunner((1, exhausted, ""), (0, _stream(), ""))
+    _code, payload, _err = _run(env, _request(), runner, flags=["--only", "claude_b"])
+    assert len(runner.calls) == 1
+    assert payload["ok"] is False
+    assert [a["account"] for a in payload["attempts"]] == ["claude_b"]
+
+
+@pytest.mark.parametrize(
+    "flags, fragment",
+    [
+        (["--only", "codex"], "codex"),
+        (["--exclude", "no_such_account"], "no_such_account"),
+        (["--only", "claude", "--exclude", "claude"], "no account or pool"),
+    ],
+)
+def test_only_or_exclude_that_run_cannot_route_is_a_bad_request(env, flags, fragment) -> None:
+    runner = FakeRunner((0, _stream(), ""))
+    code, payload, _err = _run(env, _request(), runner, flags=flags)
+    assert code == cli.EXIT_USAGE
+    assert payload["outcome"] == "bad_request"
+    assert fragment in payload["error"]
+    assert runner.calls == []
+
+
+def test_the_library_takes_only_and_exclude(env) -> None:
+    from quota_router import run_call
+
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(_snapshots()), []),
+                    run=FakeRunner((0, _stream(), ""), (0, _stream(), "")))
+    assert run_call(_request(), env=env, now_s=NOW, deps=deps, cwd=_NO_CONFIG_FILES,
+                    only=["claude"])["served"]["account"] == "claude"
+    assert run_call(_request(), env=env, now_s=NOW, deps=deps, cwd=_NO_CONFIG_FILES,
+                    exclude=["claude"])["served"]["account"] == "claude_b"

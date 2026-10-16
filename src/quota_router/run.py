@@ -24,6 +24,9 @@ What is checked rather than assumed, from the CLI's own stream-json output:
 Exhaustion, auth and transient failures, and a wrong served model, retry on another
 account with the failed one excluded; a timeout does not retry. History gets one
 ``event: "run"`` line with the outcome and cost: never the prompt, never a key.
+
+``only`` and ``exclude`` name subscription accounts and credit pools alike. A retry never
+leaves the set they allow, and an id ``run`` cannot route to is a bad request.
 """
 
 from __future__ import annotations
@@ -369,6 +372,8 @@ def execute(
     deps: Any,
     cwd: str | None,
     config_path: str | None = None,
+    only: Sequence[str] = (),
+    exclude: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Pick, run, check, retry, book. Returns the response object."""
     from . import cli as cli_mod
@@ -389,9 +394,20 @@ def execute(
     claude_ids = [
         account.id for account in config.enabled_accounts() if account.provider == "claude"
     ]
+    routable = claude_ids + [pool.id for pool in config.credit_pools.values() if pool.enabled]
+    unknown = [item for item in (*only, *exclude) if item not in routable]
+    if unknown:
+        raise BadRequest(
+            f"--only/--exclude name {', '.join(unknown)}, which `run` cannot route to; "
+            f"it routes only to {', '.join(routable)}"
+        )
+    allowed = [item for item in routable if (not only or item in only) and item not in exclude]
+    if not allowed:
+        raise BadRequest("--only and --exclude leave no account or pool to run on")
     request_id = request.request_id or uuid.uuid4().hex
     attempts: list[Attempt] = []
-    excluded: list[str] = []
+    # Seeded with what --only/--exclude rule out, so a retry never leaves the allowed set.
+    excluded: list[str] = [item for item in routable if item not in allowed]
     warnings: list[str] = []
     decision_info: dict[str, Any] = {}
     started = time.monotonic()
@@ -422,8 +438,10 @@ def execute(
             now=None,
             job_pse=None,
         )
+        # With no subscription allowed, the pick below only builds the joint projection
+        # the pools are ranked by; its choice is discarded, so it is not recorded.
         prepared = cli_mod._prepare(
-            args, env, now_s, deps, cwd, event="run", write_state=True,
+            args, env, now_s, deps, cwd, event="run", write_state=bool(sub_ids),
             objective="joint", job_stream=joint_mod.STREAM_RUN,
         )
         warnings.extend(w for w in prepared.warnings if w not in warnings)

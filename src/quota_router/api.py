@@ -260,9 +260,12 @@ def run_call(
     deps: Any = None,
     cwd: str | None = None,
     config: str | None = None,
+    only: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Execute one tool-less call; the same response ``quotapick run`` prints.
 
+    ``only`` and ``exclude`` are ``run --only/--exclude``: account or credit pool ids.
     Raises ``ValueError`` (``quota_router.run.BadRequest``) for a request or config the
     router refuses before spending anything.
     """
@@ -278,6 +281,8 @@ def run_call(
         deps=_cli.Deps.resolve(deps),
         cwd=cwd,
         config_path=config,
+        only=tuple(only or ()),
+        exclude=tuple(exclude or ()),
     )
     payload["generated_at"] = _cli._iso(now)
     return payload

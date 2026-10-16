@@ -3241,10 +3241,34 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
-    subparsers.add_parser(
+    run_parser = subparsers.add_parser(
         "run",
-        parents=[common],
         help="execute one tool-less call from a JSON request on stdin; print what served it",
+    )
+    # Only the flags `run` honors, so argparse refuses the rest. The model, effort and
+    # timeout belong in the request, and a run always spends: on 2026-10-16 a shared
+    # --dry-run was accepted, ignored, and a real call ran.
+    run_parser.add_argument(
+        "--only",
+        action="append",
+        metavar="IDS",
+        help="run only on these accounts or credit pools (comma-separated, repeatable)",
+    )
+    run_parser.add_argument(
+        "--exclude",
+        action="append",
+        metavar="IDS",
+        help="never run on these accounts or credit pools (comma-separated, repeatable)",
+    )
+    run_parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="additional config file, applied last (must exist)",
+    )
+    run_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="accepted for symmetry; the response is always JSON",
     )
     credits_parser = subparsers.add_parser(
         "credits",
@@ -4191,6 +4215,8 @@ def _cmd_run(
         payload = run_mod.execute(
             request, env=env, now_s=now_s, deps=deps, cwd=cwd,
             config_path=getattr(args, "config", None),
+            only=_split_list(getattr(args, "only", None)),
+            exclude=_split_list(getattr(args, "exclude", None)),
         )
     except run_mod.BadRequest as exc:
         request_id = data.get("request_id") if isinstance(data, Mapping) else None

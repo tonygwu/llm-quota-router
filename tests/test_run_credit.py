@@ -97,13 +97,14 @@ def _secret_reader(calls):
     return read
 
 
-def _run(env, request, runner, *, secrets_read=None):
+def _run(env, request, runner, *, secrets_read=None, flags=()):
     deps = cli.Deps(
         load_snapshots=lambda **kw: (list(_drained_subscriptions()), []),
         run=runner,
         read_secret=_secret_reader(secrets_read if secrets_read is not None else []),
     )
-    code, out, err = run(["run"], env, deps=deps, cwd=_NO_CONFIG_FILES, stdin=json.dumps(request))
+    code, out, err = run(["run", *flags], env, deps=deps, cwd=_NO_CONFIG_FILES,
+                         stdin=json.dumps(request))
     return code, json.loads(out), err
 
 
@@ -182,6 +183,40 @@ def test_a_subscription_auth_on_a_credit_run_is_refused(env) -> None:
     _code, payload, _err = _run(env, _request(), runner)
     assert payload["attempts"][0]["outcome"] == "auth"
     assert "apiKeySource" in payload["attempts"][0]["detail"]
+
+
+def test_only_a_pool_never_falls_back_to_a_subscription(env) -> None:
+    refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
+                      text="Your credit balance is too low to access the Anthropic API.",
+                      api_key_source="ANTHROPIC_API_KEY")
+    runner = FakeRunner((1, refused, ""), (0, _stream(), ""))
+    _code, payload, _err = _run(env, _request(), runner, flags=["--only", "anthropic_api_d"])
+    assert len(runner.calls) == 1
+    assert payload["ok"] is False
+    assert [a["account"] for a in payload["attempts"]] == ["anthropic_api_d"]
+    # No subscription served, so none is recorded as picked: a phantom pick would read
+    # as load on that account in the next decision.
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    chosen = [json.loads(line).get("chosen") for line in history.read_text().splitlines()]
+    assert not {"claude_b", "claude_d"} & set(chosen)
+
+
+def test_excluding_the_pool_keeps_the_job_on_a_subscription_and_reads_no_key(env) -> None:
+    reads = []
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(), runner, secrets_read=reads,
+                               flags=["--exclude", "anthropic_api_d"])
+    assert payload["served"]["pool_kind"] == "subscription", err
+    assert reads == []
+
+
+def test_only_a_subscription_reads_no_key(env) -> None:
+    reads = []
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(), runner, secrets_read=reads,
+                               flags=["--only", "claude_b"])
+    assert payload["served"]["account"] == "claude_b", err
+    assert reads == []
 
 
 # ======================================================================================

@@ -1141,6 +1141,14 @@ What it guarantees, each checked from the CLI's own stream-json rather than assu
   retry on another account with the failed one excluded; a timeout does not retry.
 - **History records the outcome, never the prompt.**
 
+**Flags.** `run --only` and `--exclude` name subscription accounts and credit pools
+alike, so `--only anthropic_api_c` proves one pool's key end to end. A retry never leaves
+the set they allow, and an id `run` cannot route to is refused with exit 2. `run` also
+takes `--config`, and `--json`, which changes nothing because the response is always
+JSON. It refuses every other `pick` flag, `--dry-run` included: the model, effort and
+timeout belong in the request, and a run always spends. `run_call` takes `only` and
+`exclude` the same way.
+
 `run` ranks with the joint objective (below) and the job in the `run` stream, whatever
 `pick` defaults to; without a usable forecast it falls back to `own_waste` and says so
 in `decision.fallback`. `[engine] usd_per_pse` is required. From Python:
