@@ -1208,7 +1208,22 @@ def _early_events(records: Sequence[ResetRecord]) -> list[dict[str, Any]]:
     ]
 
 
-def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
+def _blank_rescale(capacity: float) -> dict[str, Any]:
+    return {
+        "capacity": capacity,
+        "rows": 0,
+        "rows_without_scale": 0,
+        "logged_scales": set(),
+        "wasted_pse_logged": 0.0,
+        "wasted_pse_at_capacity": 0.0,
+        "forfeited_pse_logged": 0.0,
+        "forfeited_pse_at_capacity": 0.0,
+    }
+
+
+def summarize(
+    records: Iterable[ResetRecord], *, capacities: Mapping[str, float] | None = None
+) -> dict[str, Any]:
     """Per account per window, what expired unused, with totals in PSE.
 
     Reads :func:`current_records`, so a corrected occurrence counts once.
@@ -1221,6 +1236,16 @@ def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
     Early resets are totalled separately as well, as *forfeited* rather than wasted,
     and grouped into ``early_events``. See the module docstring for why. A version-1 row
     with no ``kind`` stays in the waste total and is counted as ``unclassified``.
+
+    ``capacities`` is the operator's configured ``capacity`` per account, in PSE. A row
+    written while the account was sized differently keeps its logged figure -- the file
+    is never rewritten -- and is reported again under ``rescaled``: per account, how
+    many account-wide rows were logged at another ``tier_scale``, the logged PSE and
+    the PSE at the configured capacity (``wasted_pse`` is linear in ``tier_scale``, so
+    the row's own ``k`` and ``tier_scale`` make the conversion exact). A row with no
+    ``tier_scale`` cannot be rescaled and is counted, never guessed.
+    ``totals_at_capacity`` is the account-wide waste and forfeit totals with every such
+    row rescaled; without ``capacities`` it equals the logged totals.
     """
     current = current_records(records)
     accounts: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1229,6 +1254,9 @@ def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
     early_totals = _blank_early_bucket()
     early_scoped_totals = _blank_early_bucket()
     span: list[float] = []
+    configured = dict(capacities or {})
+    rescaled: dict[str, dict[str, Any]] = {}
+    at_capacity = {"wasted_pse": 0.0, "forfeited_pse": 0.0}
 
     for record in current:
         bucket = accounts.setdefault(record.account, {}).setdefault(
@@ -1245,6 +1273,35 @@ def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
             _absorb(scoped_totals if record.scoped else totals, record)
         span.append(record.reset_at_s)
 
+        if record.scoped or record.wasted_pse is None:
+            continue
+        value = record.wasted_pse
+        capacity = configured.get(record.account)
+        if capacity is not None:
+            entry = rescaled.setdefault(record.account, _blank_rescale(capacity))
+            scale = record.tier_scale
+            if scale is None or scale <= 0.0:
+                entry["rows_without_scale"] += 1
+            elif abs(scale - capacity) > 1e-9:
+                value = record.wasted_pse * capacity / scale
+                entry["rows"] += 1
+                entry["logged_scales"].add(scale)
+                if record.kind == KIND_EARLY:
+                    entry["forfeited_pse_logged"] += record.wasted_pse
+                    entry["forfeited_pse_at_capacity"] += value
+                else:
+                    entry["wasted_pse_logged"] += record.wasted_pse
+                    entry["wasted_pse_at_capacity"] += value
+        at_capacity["forfeited_pse" if record.kind == KIND_EARLY else "wasted_pse"] += value
+
+    for entry in rescaled.values():
+        entry["logged_scales"] = sorted(entry["logged_scales"])
+    rescaled = {
+        account_id: entry
+        for account_id, entry in rescaled.items()
+        if entry["rows"] or entry["rows_without_scale"]
+    }
+
     return {
         "accounts": accounts,
         "totals": totals,
@@ -1252,6 +1309,8 @@ def summarize(records: Iterable[ResetRecord]) -> dict[str, Any]:
         "early_totals": early_totals,
         "early_scoped_totals": early_scoped_totals,
         "early_events": _early_events(current),
+        "rescaled": rescaled,
+        "totals_at_capacity": at_capacity,
         "first_reset_at_s": min(span) if span else None,
         "last_reset_at_s": max(span) if span else None,
     }

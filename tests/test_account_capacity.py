@@ -195,3 +195,104 @@ def test_a_configured_capacity_is_stamped_on_the_waste_row(tmp_path) -> None:
     assert rows[0].tier == "max_20x"
     assert rows[0].tier_scale == pytest.approx(MEASURED)
     assert rows[0].wasted_pse == pytest.approx(0.55 * 6.25 * MEASURED)
+
+
+# ======================================================================================
+# Rows already logged at another size (BACKLOG #9 step 6)
+# ======================================================================================
+
+
+def _row(account_id, *, wasted, scale, kind=waste.KIND_SCHEDULED, reset_at_s=T0 + SEVEN_DAYS):
+    return waste.ResetRecord(
+        account=account_id,
+        window="7d",
+        reset_at_s=reset_at_s,
+        scheduled_reset_at_s=reset_at_s,
+        observed=True,
+        remaining_fraction=0.5,
+        wasted_pse=wasted,
+        tier="unknown",
+        tier_scale=scale,
+        k=6.25,
+        kind=kind,
+        provider="antigravity",
+    )
+
+
+def test_summarize_rescales_rows_logged_at_another_size_and_leaves_the_file_alone() -> None:
+    """The series is never rewritten. A row written while an account was sized at the
+    placeholder keeps its logged figure; the report rescales it to the configured
+    capacity (``wasted_pse`` is linear in ``tier_scale``) and says how many rows it
+    rescaled, per account, with both figures. A row with no ``tier_scale`` cannot be
+    rescaled and is counted as such, never guessed.
+    """
+    rows = (
+        _row("antigravity_claude", wasted=2.0, scale=1.0),
+        _row("antigravity_claude", wasted=1.0, scale=1.0, kind=waste.KIND_EARLY,
+             reset_at_s=T0 + 2 * SEVEN_DAYS),
+        _row("antigravity_claude", wasted=0.044, scale=MEASURED, reset_at_s=T0 + 3 * SEVEN_DAYS),
+        _row("claude", wasted=3.0, scale=1.0),
+        _row("codex", wasted=1.5, scale=None),
+    )
+    capacities = {"antigravity_claude": MEASURED, "codex": 0.5}
+
+    summary = waste.summarize(rows, capacities=capacities)
+
+    rescaled = summary["rescaled"]
+    assert set(rescaled) == {"antigravity_claude", "codex"}
+    entry = rescaled["antigravity_claude"]
+    assert entry["capacity"] == pytest.approx(MEASURED)
+    assert entry["rows"] == 2
+    assert entry["logged_scales"] == [1.0]
+    assert entry["wasted_pse_logged"] == pytest.approx(2.0)
+    assert entry["wasted_pse_at_capacity"] == pytest.approx(2.0 * MEASURED)
+    assert entry["forfeited_pse_logged"] == pytest.approx(1.0)
+    assert entry["forfeited_pse_at_capacity"] == pytest.approx(1.0 * MEASURED)
+    assert entry["rows_without_scale"] == 0
+    assert rescaled["codex"]["rows"] == 0
+    assert rescaled["codex"]["rows_without_scale"] == 1
+
+    # The logged totals are what they always were; the rescaled totals sit beside them.
+    assert summary["totals"]["wasted_pse"] == pytest.approx(2.0 + 0.044 + 3.0 + 1.5)
+    assert summary["early_totals"]["forfeited_pse"] == pytest.approx(1.0)
+    assert summary["totals_at_capacity"]["wasted_pse"] == pytest.approx(
+        2.0 * MEASURED + 0.044 + 3.0 + 1.5
+    )
+    assert summary["totals_at_capacity"]["forfeited_pse"] == pytest.approx(1.0 * MEASURED)
+
+    # Without configured capacities nothing is rescaled and the two totals agree.
+    plain = waste.summarize(rows)
+    assert plain["rescaled"] == {}
+    assert plain["totals_at_capacity"]["wasted_pse"] == pytest.approx(plain["totals"]["wasted_pse"])
+
+
+def test_the_waste_command_reports_rows_logged_at_a_placeholder_size(tmp_path) -> None:
+    env = _env(tmp_path)
+    write = waste.append_records(
+        [
+            _row("antigravity_claude", wasted=2.0, scale=1.0),
+            _row("antigravity_claude", wasted=0.99, scale=1.0, reset_at_s=T0 + 2 * SEVEN_DAYS),
+        ],
+        env=env,
+    )
+    assert write.appended == 2, write
+    path = _config(
+        tmp_path, '[accounts.antigravity_claude]\nprovider = "antigravity"\ncapacity = 0.088\n'
+    )
+
+    code, out, _ = _run(["waste", "--config", str(path)], env, [], T0)
+    assert code == cli.EXIT_OK
+    assert "2.99 PSE expired unused" in out, "the logged total is still the logged total"
+    assert "logged at another size" in out
+    assert "antigravity_claude: 2 row(s) at tier_scale 1, configured capacity 0.088" in out
+    assert "0.26 PSE wasted" in out
+
+    code, out, _ = _run(["waste", "--config", str(path), "--json"], env, [], T0)
+    payload = json.loads(out)
+    assert payload["rescaled"]["antigravity_claude"]["rows"] == 2
+    assert payload["totals"]["wasted_pse"] == pytest.approx(2.99)
+    assert payload["totals_at_capacity"]["wasted_pse"] == pytest.approx(2.99 * MEASURED)
+
+    code, out, _ = _run(["waste"], env, [], T0)
+    assert code == cli.EXIT_OK
+    assert "another size" not in out, "nothing configured, nothing rescaled"

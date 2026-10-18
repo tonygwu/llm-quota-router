@@ -1395,6 +1395,12 @@ Early resets, kept out of the total above: 2 across 1 event(s), 9.94 PSE forfeit
   2026-10-11 03:57 - 03:59            codex, codex_b               3.0d-3.1d       9.94  2 accounts at once
 ```
 
+A row is written at the capacity the account had at the time, and the file is never
+rewritten. When an account's configured `capacity` later differs from a row's logged
+`tier_scale`, the report adds a section naming, per account, how many rows that is and
+what they come to at the configured size (`rescaled` and `totals_at_capacity` in
+`--json`). The logged totals above it stay as logged.
+
 One line per window reset per account, written by `quotapick status` — which the poller
 already runs, so a reset is at most one poll interval stale when it is seen. Never on
 `pick`: scanning retained history costs ~130 ms once history is a month deep, and the

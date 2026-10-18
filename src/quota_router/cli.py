@@ -3108,7 +3108,7 @@ def _cmd_waste(
     path = waste_mod.waste_path(env)
     records, read_warnings = waste_mod.read_records(env=env)
     warnings.extend(read_warnings)
-    summary = waste_mod.summarize(records)
+    summary = waste_mod.summarize(records, capacities=config.capacities())
     totals = summary["totals"]
     scoped = summary["scoped_totals"]
 
@@ -3208,6 +3208,38 @@ def _cmd_waste(
                 f"{'  ' + str(len(event['accounts'])) + ' accounts at once' if event['shared'] else ''}"
                 f"\n"
             )
+
+    rescaled = summary["rescaled"]
+    if rescaled:
+        # The series is never rewritten, so a row written while an account was sized
+        # at a placeholder keeps its logged figure. The report says, per account, how
+        # many rows that is and what they come to at the configured size.
+        stdout.write(
+            "\nRows logged at another size than the account's configured capacity. The file "
+            "is never rewritten; each figure below rescales the logged PSE by "
+            "configured capacity / logged tier_scale:\n"
+        )
+        for account_id in sorted(rescaled):
+            entry = rescaled[account_id]
+            scales = ", ".join(f"{scale:g}" for scale in entry["logged_scales"])
+            line = (
+                f"  {account_id}: {entry['rows']} row(s) at tier_scale {scales}, configured "
+                f"capacity {entry['capacity']:g}: {entry['wasted_pse_at_capacity']:.2f} PSE "
+                f"wasted and {entry['forfeited_pse_at_capacity']:.2f} forfeited at that size "
+                f"(logged {entry['wasted_pse_logged']:.2f} and "
+                f"{entry['forfeited_pse_logged']:.2f})"
+            )
+            if entry["rows_without_scale"]:
+                line += (
+                    f"; {entry['rows_without_scale']} row(s) carry no tier_scale and "
+                    f"cannot be rescaled"
+                )
+            stdout.write(line + "\n")
+        at_capacity = summary["totals_at_capacity"]
+        stdout.write(
+            f"  With every such row rescaled: {at_capacity['wasted_pse']:.2f} PSE expired "
+            f"unused, {at_capacity['forfeited_pse']:.2f} PSE forfeited.\n"
+        )
     for warning in dict.fromkeys(warnings):
         stderr.write(f"! {warning}\n")
     return EXIT_OK
