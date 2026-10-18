@@ -381,7 +381,7 @@ stay byte-identical.
 
 ---
 
-### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[claimed by: #1]`
 
 **Background.** The 2026-10-12 measurement read k = 15.0 for both Antigravity Gemini pools
 (details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
