@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -242,6 +243,86 @@ def test_status_shows_the_pools(env) -> None:
     code, out, err = run(["status"], env, snapshots=real_capture(), cwd=_NO_CONFIG_FILES)
     assert "anthropic_api_d" in out
     assert "quotapick run" in out
+
+
+@pytest.mark.parametrize(
+    "zone, stamp",
+    [
+        ("America/Los_Angeles", "Sun 2026-10-18 17:00 PDT (65.2d)"),
+        ("UTC", "Mon 2026-10-19 00:00 UTC (65.2d)"),
+        (":Asia/Tokyo", "Mon 2026-10-19 09:00 JST (65.2d)"),
+    ],
+)
+def test_the_tables_print_expires_on_the_readers_clock(env, zone, stamp) -> None:
+    # The Console date 2026-10-19 was recorded as 00:00Z: 5pm the day before in
+    # California. Read as "the 19th" it overstates the time left by up to a day.
+    env = {**env, "TZ": zone}
+    code, out, err = run(["credits"], env, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert stamp in out
+    assert "2026-10-19T00:00:00Z" not in out
+    code, out, err = run(["status"], env, snapshots=real_capture(), cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert stamp in out
+
+
+def test_json_keeps_expires_in_utc_whatever_the_zone(env) -> None:
+    env = {**env, "TZ": "America/Los_Angeles"}
+    code, out, err = run(["credits", "--json"], env, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert json.loads(out)["credit_pools"][0]["expires"] == "2026-10-19T00:00:00Z"
+    code, out, err = run(["status", "--json"], env, snapshots=real_capture(),
+                         cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert json.loads(out)["credit_pools"][0]["expires"] == "2026-10-19T00:00:00Z"
+
+
+def test_an_expiry_past_a_daylight_saving_change_gets_its_own_offset(env) -> None:
+    # California leaves PDT on 2026-11-01. An offset taken from "now" (PDT in August)
+    # would print 17:00 PDT here, an hour off.
+    code, out, err = run(
+        ["credits", "set", "anthropic_api_d", "--remaining", "200",
+         "--expires", "2026-11-16T00:00:00Z"],
+        {**env, "TZ": "America/Los_Angeles"}, cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    assert "Sun 2026-11-15 16:00 PST" in out
+
+
+@pytest.mark.parametrize(
+    "machine_zone, expires, stamp",
+    [
+        ("Asia/Tokyo", "2026-10-19T00:00:00Z", "Mon 2026-10-19 09:00 JST (65.2d)"),
+        # PDT now, PST at the expiry: the machine's zone is also read per instant.
+        ("America/Los_Angeles", "2026-11-16T00:00:00Z", "Sun 2026-11-15 16:00 PST (93.2d)"),
+    ],
+)
+def test_with_no_tz_the_table_uses_this_machines_zone(
+    env, monkeypatch, machine_zone, expires, stamp
+) -> None:
+    # macOS sets no TZ; the zone comes from /etc/localtime through the C library. The
+    # process zone stands in for it here, and is restored before the next test.
+    assert "TZ" not in env
+    monkeypatch.setenv("TZ", machine_zone)
+    time.tzset()
+    try:
+        code, out, err = run(
+            ["credits", "set", "anthropic_api_d", "--remaining", "200", "--expires", expires],
+            env, cwd=_NO_CONFIG_FILES,
+        )
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert code == cli.EXIT_OK, err
+    assert stamp in out
+
+
+def test_a_tz_that_names_no_zone_prints_utc_and_says_so(env) -> None:
+    code, out, err = run(["credits"], {**env, "TZ": "Mars/Olympus_Mons"},
+                         cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert "Mon 2026-10-19 00:00 UTC (65.2d)" in out
+    assert "TZ='Mars/Olympus_Mons' is not an IANA zone name, so times print in UTC" in err
 
 
 def test_pick_never_mentions_a_pool(env) -> None:

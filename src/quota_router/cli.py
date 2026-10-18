@@ -51,9 +51,10 @@ import sys
 import time
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Final, TextIO
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import explain as explain_mod
 from . import forecast as forecast_mod
@@ -374,6 +375,32 @@ def _iso(epoch_s: float) -> str:
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
+
+
+def _display_zone(env: Mapping[str, str]) -> tuple[tzinfo | None, str | None]:
+    """The zone a human-readable table prints an absolute time in, and a note if any.
+
+    ``TZ`` in the env wins; without it, ``None`` means this machine's own zone, which
+    the C library reads from ``/etc/localtime`` (macOS sets no ``TZ``). A ``TZ`` that is
+    not an IANA zone name prints UTC, and the note says so: never a guessed zone. JSON
+    output is UTC whatever this returns, because scripts on other machines read it.
+    """
+    raw = (env.get("TZ") or "").strip().removeprefix(":")
+    if not raw:
+        return None, None
+    try:
+        return ZoneInfo(raw), None
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return timezone.utc, f"TZ={raw!r} is not an IANA zone name, so times print in UTC"
+
+
+def _wall_stamp(epoch_s: float, zone: tzinfo | None) -> str:
+    """``Sun 2026-10-18 17:00 PDT``: one instant on the reader's clock.
+
+    Each instant gets its own offset, so a stamp past a daylight-saving change is right.
+    """
+    moment = datetime.fromtimestamp(epoch_s, tz=timezone.utc).astimezone(zone)
+    return moment.strftime("%a %Y-%m-%d %H:%M %Z")
 
 
 def _parse_now(value: str | None) -> float | None:
@@ -2432,7 +2459,10 @@ def _cmd_status(
         _write_status_compact(prepared, now_s, model_class, stdout)
     pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True)
     if pools:
-        stdout.write("\n" + _credit_pool_table(pools, now_s))
+        zone, zone_note = _display_zone(env)
+        stdout.write("\n" + _credit_pool_table(pools, now_s, zone))
+        if zone_note:
+            pool_notes = [*pool_notes, zone_note]
     for note in pool_notes:
         stderr.write(f"! {note}\n")
 
@@ -4109,20 +4139,24 @@ def _credit_pool_rows(
     return rows, notes
 
 
-def _credit_pool_table(rows: Sequence[Mapping[str, Any]], now_s: float) -> str:
+def _credit_pool_table(
+    rows: Sequence[Mapping[str, Any]], now_s: float, zone: tzinfo | None
+) -> str:
+    """The pools for a person: ``expires`` on the reader's clock (``_display_zone``)."""
     lines = [
         "API credit pools (reachable only through `quotapick run`):",
         f"{'pool':<20} {'linked':<10} {'left':>9} {'of':>7} {'PSE':>6}  "
-        f"{'expires':<26} {'source':<9} note",
+        f"{'expires':<33} {'source':<9} note",
     ]
     for row in rows:
         days = (row["expires_s"] - now_s) / 86400.0
         pse = f"{row['remaining_pse']:.3f}" if row["remaining_pse"] is not None else "-"
+        expires = f"{_wall_stamp(row['expires_s'], zone)} ({days:.1f}d)"
         lines.append(
             f"{row['id']:<20} {row['linked_account']:<10} "
             f"{'$' + format(row['remaining_usd'], '.2f'):>9} "
             f"{'$' + format(row['grant_usd'], '.0f'):>7} {pse:>6}  "
-            f"{row['expires'] + f' ({days:.1f}d)':<26} {row['source']:<9} {row['note']}"
+            f"{expires:<33} {row['source']:<9} {row['note']}"
         )
     return "\n".join(lines) + "\n"
 
@@ -4182,7 +4216,10 @@ def _cmd_credits(
     if not rows:
         stdout.write("no credit pools configured ([credit_pools.<id>] in the config)\n")
     else:
-        stdout.write(_credit_pool_table(rows, now_s))
+        zone, zone_note = _display_zone(env)
+        stdout.write(_credit_pool_table(rows, now_s, zone))
+        if zone_note:
+            notes = [*notes, zone_note]
     for note in notes:
         stderr.write(f"! {note}\n")
     return EXIT_OK

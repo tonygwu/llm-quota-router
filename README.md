@@ -1200,7 +1200,9 @@ card_on_file = false               # true requires hard_cap_usd
 - **Plan ends.** Credits already granted keep their own expiry after the linked plan ends
   (Anthropic's docs); only renewal stops.
 - **Visible.** `status` and `credits` show each pool's balance in dollars and PSE, its
-  expiry and source; `status` records what each period had left when it expired, and
+  expiry and source. The table prints the expiry on the reader's clock (`TZ`, else this
+  machine's zone), so a Console date of the 19th reads as 5pm on the 18th in
+  California; `--json` keeps UTC. `status` records what each period had left when it expired, and
   `doctor` flags an unconfirmed or week-old balance, imminent expiry, and a missing
   Keychain item.
 - **Fail-loud config.** A value that looks like a key, an unknown linked account, an id a
