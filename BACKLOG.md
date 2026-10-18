@@ -120,21 +120,12 @@ the counterfactual says.
 
 ---
 
-### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`  `[claimed by: #1]`
+### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`
 
 Workable bullets come first. The last one waits on an operator decision and is marked
 so; do not start it. One bullet was closed by the operator on 2026-10-18:
 `min_remaining_configured` stays as designed. The `fable_fraction = 0.5` note was
 dropped by the author because it asked for no work; `pse.py:59-64` carries it.
-
-- **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
-  `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
-  "Spend ceiling the router enforces when a card is on file" (`config.py:817`). No code
-  outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
-  pool with a card on file could spend past its cap through `run`. No money is at risk
-  while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
-  (`run.py:383-413`) admits a card-on-file pool only while its booked spend plus the
-  call's cap stays under `hard_cap_usd`, with a test. #12 depends on this.
 
 - **Reported waste double-counts the operator's working time across accounts.**
   `pse.wasted_pse` credits every account with the whole working rate over its own
@@ -270,7 +261,7 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   2026-10-18 one snapshot scored 0.8000 at weight 1.0 and 0.4000 at weight 0.5 with a
   `seven_day` window, and 4.6650 at both weights with a `7d` window. Nothing warns, as
   `tier_override_warnings` does for `[tiers]`. The defaults are not neutral:
-  `config.py:1262` ships claude 1.0, codex 0.7, cursor 0.5 and antigravity 0.3, and the
+  `config.py:1261` ships claude 1.0, codex 0.7, cursor 0.5 and antigravity 0.3, and the
   live `engine_cfg` carries exactly those. They date from `7386ddc` (2026-08-14), and the
   PSE path has ignored them since `de80483` (2026-08-15). So every live pick since then
   has scored Codex at weight 1.0, and every pick since `8151c71` gave the Antigravity
@@ -390,7 +381,7 @@ stay byte-identical.
 
 ---
 
-### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[BLOCKED: the operator approves step 1's price basis before any quota is spent]`
+### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
 
 **Background.** The 2026-10-12 measurement read k = 15.0 for both Antigravity Gemini pools
 (details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
@@ -428,9 +419,10 @@ now credits a fallback-only provider with, both read 0.000, so the mis-sizing sh
 quality on the standard tier's real work.
 
 **Operator decision 2026-10-18: measure the size first, then set k and capacity
-together** (the third option below). Step 1's price basis is still to be shown to the
-operator before any quota is spent. How the decision was reached: on 2026-10-13 the
-operator questioned holding back
+together** (the third option below). **Operator decision 2026-10-18:** step 1's price
+basis is approved: list-price dollars, the same basis as the 2026-10-12 measurement.
+
+How the size-first decision was reached: on 2026-10-13 the operator questioned holding back
 a measured k. The measuring agent agreed that k = 15 is correct and that
 6.25 only hides part of the capacity error. Its proposal is the third option below:
 
@@ -440,8 +432,8 @@ a measured k. The measuring agent agreed that k = 15 is correct and that
 - *Keep 6.25.* Routing stays as it is today, on a k known to be wrong.
 - *Apply k = 15 and a measured capacity together. This is the recommendation, and the
   operator's decision of 2026-10-18.* Both numbers are measured when routing changes. It
-  costs a size measurement, and #9 shipped on 2026-10-18. The one thing it still waits on
-  is the operator's approval of step 1's price basis.
+  costs a size measurement. #9 shipped on 2026-10-18, and the operator approved step 1's
+  price basis the same day, so nothing blocks it.
 
 **Hazards for whoever measures it:**
 
@@ -480,14 +472,14 @@ switches a pool between the two behaviors, and whether the first use fixes the b
 is unknown. Find out before relying on either. Both scheduled Antigravity rows in
 `waste.jsonl` come from pools that the 2026-10-12 measurement used part-way and then left.
 
-**What would close it:** the operator's choice. *Keep 6.25* closes when the config says
-why in a comment. *Apply alone* closes with step 3 using `capacity` left unset.
-*Together* closes with steps 1 to 3:
+**What would close it:** the operator chose *Together* on 2026-10-18 (above), and it
+closes with steps 1 to 4. For the record, *Keep 6.25* would have closed when the config
+said why in a comment, and *Apply alone* with step 3 using `capacity` left unset.
+The steps:
 
-1. Agree with the operator how Flash work compares with Claude work. The proposal is
+1. Done 2026-10-18: the operator approved comparing Flash work with Claude work in
    list-price dollars, the same basis as the 2026-10-12 measurement, where one PSE is about
    $283 of Opus 5.5 work.
-   Show the method before spending quota.
 2. Measure the size of both Gemini pools, reading only one replica. Start
    from `harness2.py` and `analyze2.py` in `measurements/agy-capacity-2026-10-12/`, in the
    checkout container beside the checkouts (outside git).
@@ -722,9 +714,8 @@ Two other designs were rejected:
    - Resolve the model and effort for the chosen target the way `run`'s `model_for` does
      (`run.py:513-521`), and insert `--model` and `--effort` for every target. When
      `model_for` returns no effort, insert no `--effort`.
-   - **Card-on-file pools.** Nothing enforces `hard_cap_usd` today (#2). Until a shared
-     admission check enforces it for `run` and exec alike, card-on-file pools sit out of
-     exec, with a warning. A refusal would fail exactly the runs where credit wins.
+   - **Card-on-file pools.** The config refuses `card_on_file = true` since 2026-10-18
+     (#2, operator decision: promotional credit only), so exec never meets one.
 3. **A pool target.**
    - **Environment.** Strip `STRIP_ENV` (`run.py:72-80`) and `QUOTA_ROUTER_*`, and set
      `CLAUDE_CONFIG_DIR` to the pool's credit home.
@@ -833,7 +824,7 @@ Two other designs were rejected:
    - SIGKILL of the wrapper ends the child's group through the watchdog. The watchdog
      holds no output open, and the exit codes are 124 and 128 + signal.
    - The settings merge refuses each forbidden key. A pool sits out when the consumer's
-     `--settings` has no `permissions` block, and so does a card-on-file pool.
+     `--settings` has no `permissions` block.
    - The inserted `--model` and `--effort` match `model_for`, and a consumer `--effort` is
      refused.
    - Stdout passes through byte-identical.
@@ -868,15 +859,15 @@ cannot bite.
   MCP servers and the operator's settings. A job that silently depended on them behaves
   differently, so a consumer opts in per job.
 - **Budget stops.** The cap must sit above the job's p99 cost. The costliest measured
-  agent runs exceed today's `max_usd_per_call` default of $10 (`config.py:833`), so agent
+  agent runs exceed today's `max_usd_per_call` default of $10 (`config.py:832`), so agent
   runs need their own cap key. Step 0c's overshoot figure sets the margin.
 - **Concurrency.** Several runs hold against one pool at once, so admission must count
   the other holds.
 - **A renewal that did not happen.** A monthly pool past its expiry is assumed renewed at
   confidence 0.6. If it was not, the first model call fails with "credit balance is too
   low" before any tool runs. A refused request bills nothing, so `spent` reads `false`.
-- **Card-on-file pools** sit out of exec until `hard_cap_usd` is enforced (step 2).
-  Today nothing enforces it for `run` either; #2 carries that gap.
+- **Card-on-file pools** cannot be configured since 2026-10-18. If a pool ever needs a
+  card, a spending cap that `run` and exec both enforce comes first.
 - **Credit-home growth.** Session files with persistence on accumulate. Give them a
   retention rule (step 0e).
 - **The usage dashboard.** API-key runs leave no subscription windows behind, so
@@ -897,8 +888,6 @@ cannot bite.
 - **#5.** This item adds `spent` to the exec report. Implement it once, in code that `run`
   and `exec` share.
 - **#6.** Exec also prepares with `write_state=True`, so fix #6 first, or exec repeats it.
-- **#2's `hard_cap_usd` bullet.** It is needed before card-on-file pools can serve
-  agent runs.
 
 **Touch points:**
 
@@ -917,7 +906,7 @@ cannot bite.
 - `forecast.py:19-24`, `forecast.py:45` (`FORECAST_VERSION`), `forecast.py:69-98`
   (`GroupForecast`), `forecast.py:132-157` and `forecast.py:334-378`.
 - `replay.py:545-546` and `replay.py:634`.
-- `config.py:798-833` and `config.py:928-933` (`max_usd_per_agent_run` and its parser).
+- `config.py:797-832` and `config.py:927-932` (`max_usd_per_agent_run` and its parser).
 - `doctor.py` (rotation flag, checkpoint request), a new `credit-key` command, new
   `tests/test_exec_credit.py` with a fake-`claude` script, and the README sections
   "Running a call — quotapick run" and "API credit pools".
@@ -952,8 +941,8 @@ The rest of the router inherits the single-grant view:
   balance that rests on the config or an assumed renewal, and on expiry within a day
   (`check_credit_pools`, `doctor.py:496-534`). It has no notion of when a grant is due,
   and its remedy text asks for `credits set ... --expires` (`doctor.py:509-514`).
-- **Config.** A pool's keys are a closed set (`config.py:787-801`). An unknown key is
-  warned about and ignored (`config.py:877-881`).
+- **Config.** A pool's keys are a closed set (`config.py:787-800`). An unknown key is
+  warned about and ignored (`config.py:875-879`).
 
 **Observed 2026-10-18.** One Max 5x pool's Console listed two grants at once (UTC dates,
 as the Console shows them):
@@ -1053,7 +1042,7 @@ every month the operator has to read the Console and correct the pool by hand.
      learned schedule, so one observation can be acted on.
      - Both are required together: one without the other fails loud.
      - Each is 1-28 or `last`.
-     - Add both to `_CREDIT_POOL_KEYS` (`config.py:787-801`). Otherwise they are warned
+     - Add both to `_CREDIT_POOL_KEYS` (`config.py:787-800`). Otherwise they are warned
        about and ignored.
    - `grant_usd` keeps its meaning: the amount of one monthly grant, used for assumed
      and predicted grants.
@@ -1111,8 +1100,6 @@ every month the operator has to read the Console and correct the pool by hand.
   should say so.
 - **A one-off first grant.** One granted when the Console org was linked may not follow
   the cadence, which is why learning needs two agreeing grants.
-- **The hard cap.** Once #2's `hard_cap_usd` check exists, it applies to the pool's
-  total booked spend across all grants. Test that per-grant balances leave it unchanged.
 
 *Why high, not medium:* it changes the ledger's meaning, with a versioned migration that
 existing ledgers must survive. The change spans `credits.py`, `cli.py`, `run.py`,
@@ -1130,8 +1117,8 @@ This item rewrites `balance()`, so whichever item lands second must re-read the 
 `cli.py:4422-4485` (`_cmd_credits`) and `cli.py:4335-4421` (`_credit_pool_rows`,
 `_credit_pool_table`, including `cli.py:4380-4385`); `run.py:341-380`, `run.py:383-413`,
 `run.py:547`, `run.py:564-579` and `run.py:599`; `joint.py:213-237`;
-`doctor.py:460-462` and `doctor.py:496-534`; `config.py:787-801` (`_CREDIT_POOL_KEYS`),
-`config.py:805-850` (`CreditPoolConfig`) and `config.py:856-941` (`_build_credit_pools`);
+`doctor.py:460-462` and `doctor.py:496-534`; `config.py:787-800` (`_CREDIT_POOL_KEYS`),
+`config.py:804-847` (`CreditPoolConfig`) and `config.py:854-940` (`_build_credit_pools`);
 `tests/test_credits.py` and `tests/test_run_credit.py`; and the README section "API
 credit pools".
 
@@ -1146,7 +1133,7 @@ are what that audit left open. This is an umbrella item: finish one bullet, dele
 
 - **Nothing walks a new operator from clone to first routed call.** There is no `setup`
   or `init` command, and no example config file: the README carries config examples
-  inline (`README.md:123-137`), but no one complete file. `quotapick doctor` exists, but it
+  inline (`README.md:155-165`), but no one complete file. `quotapick doctor` exists, but it
   checks that routing is in force on a configured machine (`doctor.py:1-30`); it does not
   name every account it looked for, where it looked, what it found, and the single next
   action for each one that failed. Closing it: that first-run check, in `doctor` or a
@@ -1250,9 +1237,9 @@ folder in the checkout container. No code.
 
 ### 17. A mistyped key in an account section is ignored silently  `[difficulty: low]`  `[filed: 2026-10-18]`
 
-**Background:** `_build_accounts` (`config.py:1362`) reads the keys it knows from each
+**Background:** `_build_accounts` (`config.py:1361`) reads the keys it knows from each
 `[accounts.<id>]` table and ignores the rest. `[engine]` (`config.py:708`) and
-`[credit_pools]` (`config.py:877`) warn on an unknown key; account sections do not.
+`[credit_pools]` (`config.py:875`) warn on an unknown key; account sections do not.
 Reproduced on 2026-10-18 while shipping #9: `capacty = 0.088` loads with no warning and
 `Config.capacities()` is empty.
 
@@ -1261,11 +1248,11 @@ Reproduced on 2026-10-18 while shipping #9: `capacty = 0.088` loads with no warn
 and says nothing. The operator finds out from routing, if at all.
 
 **Fix:** keep the account keys as a closed set the way `_CREDIT_POOL_KEYS` is
-(`config.py:787-801`), and append one warning per unknown key naming the known ones, as
+(`config.py:787-800`), and append one warning per unknown key naming the known ones, as
 the credit-pool loader does. A test loads a section with one misspelled key and asserts
 the warning; another loads every known key and asserts none.
 
-**Touch points:** `config.py:1362-1574` (`_build_accounts`), `config.py:787-801` for the
+**Touch points:** `config.py:1361-1571` (`_build_accounts`), `config.py:787-800` for the
 pattern, and `tests/test_engine_config.py` or a new `tests/test_account_config.py`.
 
 ---
