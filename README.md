@@ -55,6 +55,22 @@ an artifact of being last in line: the Antigravity pools measure 0.005 PSE/h, an
 that rate their placeholder-sized pools would read as the biggest waste in the fleet and
 take every capability pick.
 
+`tier_scale` comes from the plan tier, and an account whose tier the router cannot read
+(an Antigravity pool, for one) gets the neutral 1.0. When you have measured the real size
+of an account's five-hour window in PSE, set it per account and the tier's ratio is
+replaced everywhere at once: scoring, the joint projection, `status` and the waste row
+all read the same number, and the tier is still reported as it was.
+
+```toml
+# ~/.config/quota-router/config.toml
+[accounts.antigravity_claude]
+capacity = 0.088   # one agy Claude 5h window, measured 2026-10-12 (see docs/measurements)
+```
+
+The value must be finite and greater than zero, or the config is refused. Set it only from
+a measurement: it divides every PSE figure for the account, and a guessed value mis-sizes
+the whole pool the way the placeholder did.
+
 Four details that are easy to get wrong:
 
 - **Fable is a constraint, not a pile.** Fable work draws down its own sub-cap

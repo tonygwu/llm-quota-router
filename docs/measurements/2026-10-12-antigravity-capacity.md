@@ -31,8 +31,9 @@ measured.
 **What uses these numbers today:**
 - `weekly_to_session = 2.0` is in the operator config for both Antigravity Claude/GPT
   pools.
-- The router still sizes every Antigravity window at capacity 1.0, because no config key
-  can hold 0.088. See BACKLOG item 9.
+- A per-account `capacity` key holds the measured size (BACKLOG item 9 added it). Until
+  the operator config sets `capacity = 0.088` on a pool, the router still sizes that
+  pool's windows at the placeholder 1.0.
 - Gemini k = 15 is not applied. See BACKLOG item 10.
 
 ## Method

@@ -182,6 +182,14 @@ def _as_number(
     return out
 
 
+def _as_positive_number(value: Any, section: str, key: str) -> float:
+    """A finite number strictly greater than zero, or :class:`ConfigError`."""
+    out = _as_number(value, section, key)
+    if out <= 0.0:
+        raise ConfigError(f"{_where(section, key)} must be greater than 0, got {out}")
+    return out
+
+
 def _as_int(value: Any, section: str, key: str, *, minimum: int | None = None) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ConfigError(f"{_where(section, key)} must be an integer, got {value!r}")
@@ -367,6 +375,14 @@ class AccountConfig:
             on the account counts as ending no later than this; from then on the account
             is out of routing. Unset means the plan is not ending. See
             :mod:`quota_router.plan_end`.
+        capacity: The measured size of this account's five-hour window in PSE, replacing
+            the ratio the plan tier implies (``max_20x`` 1.0, ``max_5x`` 0.25, unknown
+            1.0). Set it only from a measurement: it is the denominator of every PSE
+            figure for the account, in scoring, the joint projection, ``status`` and the
+            waste series alike, and the tier stays as reported. Must be finite and
+            greater than zero. Unset means the tier decides. The Antigravity Claude pools
+            measured about 0.088 on 2026-10-12
+            (``docs/measurements/2026-10-12-antigravity-capacity.md``).
     """
 
     id: str
@@ -391,6 +407,7 @@ class AccountConfig:
     #: failed falls back to this. Unset (the default): a window-less account never wins.
     unmetered: str | None = None
     plan_ends_s: float | None = None
+    capacity: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "provider", self.provider or provider_for_account_id(self.id))
@@ -1024,6 +1041,14 @@ class Config:
             if account.plan_ends_s is not None
         }
 
+    def capacities(self) -> dict[str, float]:
+        """The measured ``capacity`` of every enabled account that sets one, in PSE."""
+        return {
+            account.id: account.capacity
+            for account in self.enabled_accounts()
+            if account.capacity is not None
+        }
+
     def deprioritized_accounts(self) -> tuple[str, ...]:
         """Ids of every enabled account that sets ``deprioritize = true``, in config order."""
         return tuple(
@@ -1396,6 +1421,14 @@ def _build_accounts(
                     body["calls_per_window"], section, "calls_per_window", minimum=1e-9
                 )
                 if body.get("calls_per_window") is not None
+                else None
+            ),
+            capacity=(
+                # The size of one five-hour window in PSE, from a measurement. Zero or
+                # less is not a size, and the value divides every PSE figure, so it is
+                # refused here as loudly as a k below 1.
+                _as_positive_number(body["capacity"], section, "capacity")
+                if body.get("capacity") is not None
                 else None
             ),
             env=extra_env,

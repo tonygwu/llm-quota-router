@@ -543,6 +543,30 @@ def _unclaimed_account_warnings(
     return out
 
 
+def _apply_configured_capacity(
+    snapshots: tuple[AccountSnapshot, ...], config: Config
+) -> tuple[AccountSnapshot, ...]:
+    """Give each snapshot the ``capacity`` its account config measured, if any.
+
+    Applied once, here, before anything reads a snapshot and before history records it.
+    Scoring, the joint projection, ``status`` and the waste writer all read
+    :attr:`AccountSnapshot.capacity`, and the waste writer reads it back out of the
+    history record, so one application point is what makes the four agree. Unlike the
+    manual reserve and ``plan_ends`` below, this one MUST reach history: the waste row's
+    ``tier_scale`` is the recorded capacity, and a row written at the tier's placeholder
+    would misstate what expired by the same factor routing used to be wrong by.
+    """
+    capacities = config.capacities()
+    if not capacities:
+        return snapshots
+    return tuple(
+        replace(snapshot, capacity_override=capacities[snapshot.id])
+        if snapshot.id in capacities
+        else snapshot
+        for snapshot in snapshots
+    )
+
+
 def _fetch_snapshots(
     config: Config,
     deps: Deps,
@@ -1804,8 +1828,11 @@ def _prepare(
 
     # Only `status` may wait on a slow live read: the launchd poller runs it, nobody is
     # waiting, and it keeps the cache that every pick then reads.
-    snapshots = _fetch_snapshots(
-        config, deps, env, now_s, warnings, degraded, slow_reads=event == "status"
+    snapshots = _apply_configured_capacity(
+        _fetch_snapshots(
+            config, deps, env, now_s, warnings, degraded, slow_reads=event == "status"
+        ),
+        config,
     )
 
     for snapshot in snapshots:

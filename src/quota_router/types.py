@@ -794,6 +794,12 @@ class AccountSnapshot:
         note: Free-text explanation, surfaced in ``--json`` output.
         identity: The account's real identity. Accounts key by identity, never by config
             directory; ``None`` means the source could not determine it.
+        capacity_override: The size of this account's five-hour window in PSE, when the
+            operator has measured it and set ``capacity`` in the account's config. It
+            replaces the tier's ratio in :attr:`capacity` and leaves :attr:`tier` as
+            reported. ``None`` (the default) means the tier decides. Must be finite and
+            greater than zero: a zero-sized pool is not a size, and the value is the
+            denominator of every PSE figure for the account.
     """
 
     id: str
@@ -805,6 +811,7 @@ class AccountSnapshot:
     available: bool = True
     note: str | None = None
     identity: Identity | None = None
+    capacity_override: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _as_text(self.id, "AccountSnapshot.id"))
@@ -826,6 +833,13 @@ class AccountSnapshot:
         )
         object.__setattr__(self, "confidence", _as_confidence(self.confidence))
         object.__setattr__(self, "available", bool(self.available))
+        if self.capacity_override is not None:
+            override = _as_finite(self.capacity_override, "AccountSnapshot.capacity_override")
+            if override <= 0.0:
+                raise ValueError(
+                    f"AccountSnapshot.capacity_override must be greater than 0, got {override!r}"
+                )
+            object.__setattr__(self, "capacity_override", override)
         if self.note is not None:
             object.__setattr__(
                 self,
@@ -841,7 +855,15 @@ class AccountSnapshot:
 
     @property
     def capacity(self) -> float:
-        """Tier capacity ratio for this account (see :data:`TIER_CAPACITY`)."""
+        """The size of one five-hour window in PSE.
+
+        The operator's measured :attr:`capacity_override` when set, else the tier's
+        ratio (see :data:`TIER_CAPACITY`). Everything that converts this account's
+        fractions into PSE reads this one property, and :meth:`to_dict` records it, so
+        scoring, the joint projection, ``status`` and the waste series agree on it.
+        """
+        if self.capacity_override is not None:
+            return self.capacity_override
         return capacity_for_tier(self.tier)
 
     @property
