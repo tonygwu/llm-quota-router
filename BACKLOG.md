@@ -190,6 +190,14 @@ the counterfactual says.
   session started before 20:50Z would look the same. Closes when the consumer's launch
   path is traced to a pick or to a fixed account. A fix in that repo goes in that repo's
   backlog.
+- **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
+  `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
+  "Spend ceiling the router enforces when a card is on file" (`config.py:800`). No code
+  outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
+  pool with a card on file could spend past its cap through `run`. No money is at risk
+  while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
+  (`run.py:334-364`) admits a card-on-file pool only while its booked spend plus the
+  call's cap stays under `hard_cap_usd`, with a test. #12 depends on this.
 
 ---
 
@@ -554,6 +562,376 @@ an Antigravity pool while its reset slides.
 
 **Touch points:** `cli.py:2308-2320`, `cli.py:2381`, `waste.py:730-800`, `waste.py:1060`
 (`update_from_history`), and the waste tests.
+
+---
+
+## 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`
+
+**Background.** A credit pool is reachable only through `quotapick run`, and `run`
+executes one tool-less call. The child always gets `--tools "" --no-session-persistence
+--strict-mcp-config --safe-mode` and never `--max-turns` (`run.py:159-189`). A pool child
+also gets `--bare --max-budget-usd <min(balance, max_usd_per_call)>`, runs in the
+router-owned config dir `credit-homes/<pool>`, and receives the key as
+`ANTHROPIC_API_KEY` in its environment (`run.py:531-548`). The init event's `apiKeySource`
+must then read `ANTHROPIC_API_KEY` (`run.py:294-296`). The key in the environment is safe
+only because the child has no tools.
+
+Four more things keep credit away from agent runs:
+
+- **The joint objective lets credit serve the `run` stream only.** `SERVES` maps
+  `STREAM_OTHER` to subscriptions alone (`joint.py:57-60`). The projection walks the two
+  streams in a fixed order (`joint.py:295`).
+- **The forecast counts only two streams.** It counts `run` from history lines with
+  `event == "run"`, and puts everything else in `other`, including every agent run routed
+  by `pick` (`forecast.py:19-24`, `forecast.py:334-352`). `replay.py:541-542` and
+  `replay.py:630` hardcode the same two streams.
+- **`quotapick exec` has no pool path, no timeout and no output parsing.** It picks a
+  subscription with pick's own objective (`cli.py:2559`) and runs the caller's command
+  to completion (`cli.py:2640`).
+- **Holds expire.** A ledger hold stops counting after `HOLD_TTL_S = 3600` s
+  (`credits.py:44`, `credits.py:214-223`), whether or not its call has finished.
+
+**Where the demand is.** The operator's config declares four pools that renew monthly at
+a $200 grant each, $800 a month. At `usd_per_pse = 305` that is 2.6 PSE, about 3% of the
+current fleet's monthly capacity. The README says a Max 5x plan grants $100, so one of the
+four grants needs a Console check. Tool-less work rarely spends this credit: a client's
+scheduled tool-less calls are few and cheap, and only a manual batch moves real money.
+One did on 2026-10-18.
+
+Scheduled headless work is mostly agentic: multi-turn runs that use Bash, file tools,
+web tools and MCP servers. On the operator's machine those runs, priced at API rates from
+the `total_cost_usd` that Claude Code reports even on subscription runs, cost a few
+dollars each. They would spend the four renewing pools in a few days. Consumers launch
+them in the following ways:
+
+- **Stream format.** Some use `--output-format stream-json`, and some use `json`.
+- **Context.** Some depend on the cwd's CLAUDE.md and skills, or on user-level MCP servers
+  from the account's `.claude.json`.
+- **Session file.** One proves that no tools ran by reading Claude Code's own session
+  file under the account's config dir.
+- **Side effects.** Some run several at once, and some commit and push.
+
+Do not price runs from transcript `usage`. Its `output_tokens` average about 12 per API
+message, which is too few for tool calls and looks recorded at stream start.
+
+The consumer inventory, per-job costs and the scripts that measured them are in
+`measurements/agent-credit-2026-10-18/` in the checkout container, beside the checkouts.
+That folder is not in git, because it describes private projects.
+
+**Impact.** The pools were added on 2026-10-15, so there is no month of data yet. On the
+evidence above, most of each month's credit will expire unspent, because the scheduled
+work that could spend it cannot reach it.
+
+The loss would show in tight weeks. In two of the four weeks from 2026-09-14 to
+2026-10-14, demand ran at 113% and 112% of the current fleet's weekly capacity
+(`measurements/fleet-sizing-2026-10-14/` in the container). That is measured consumption,
+not proven need. The credit could have served part of the excess instead of queueing it
+or falling back from Fable to Opus.
+
+*Root cause:* `run` was designed around three facts that hold only without tools:
+
+- **The key can live in the environment.** With Bash, every tool subprocess may inherit
+  `ANTHROPIC_API_KEY`. The key could then reach a transcript, a log or a commit, and some
+  consumers' agents commit and push. The 2.1.302 binary contains a
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` setting, with `=0` to opt out. What it scrubs, and
+  when, is UNVERIFIED; step 0a measures it.
+- **The context can be empty.**
+  - `claude --help` (2.1.302) says `--bare` skips hooks, LSP, plugin sync, attribution,
+    auto-memory, background prefetches, keychain reads and CLAUDE.md auto-discovery.
+  - Context must then come from `--system-prompt[-file]`, `--append-system-prompt[-file]`,
+    `--add-dir`, `--mcp-config`, `--settings`, `--agents` and `--plugin-dir`. Skills still
+    resolve through `/skill-name`.
+  - The credit home also has no `.claude.json`, so user-level MCP servers do not exist
+    there.
+  - It has no `settings.json`, so it has none of the operator's `permissions` allow, deny
+    and ask rules, no `defaultMode` and no `env` block.
+- **A call can be retried and costs little.** An agent run costs from under a dollar to
+  more than ten. It can stop on `--max-budget-usd` partway, with files, rows or commits
+  already written, so a failure after the first tool call must never be retried
+  elsewhere.
+
+**Fix:** a credit-capable `quotapick exec` for agent runs. The consumer keeps its own
+`claude -p` argv, cwd, tools and output parsing. The router owns the account choice, the
+model, the key, the budget and the ledger.
+
+Two other designs were rejected:
+
+- **`pick` hands back a credit exec plan and the consumer spawns the run.** Then the router
+  never sees the cost. The ledger would need a report-back call, and a consumer that
+  crashes never sends one, so the booked balance drifts above the real one.
+- **`run` gains agentic fields** (tools, cwd, MCP config, add-dirs, max turns). Its request
+  schema would then mirror Claude Code's whole flag surface, and consumers would lose their
+  stream.
+
+0. **Prove the Claude Code facts first, then decide.** Run cheap Haiku probes on one pool,
+   and record the commands and raw output in the container's `measurements/` folder.
+   Probe output sits next to a key, so it does not go in this repo.
+   - **0a. Auth without the key in the environment.** Run `claude -p --bare --settings
+     '{"apiKeyHelper": "<absolute path>"}'` with no `ANTHROPIC_API_KEY` set, and record the
+     init event's `apiKeySource`. Then have a Bash tool call run
+     `env | grep -c '^ANTHROPIC_API_KEY='`. Repeat with the key in the environment, which
+     must print 1, to show the probe can see a leak. Repeat that with
+     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` unset, `=1` and `=0`.
+     - Record how often Claude Code calls the helper. The 2.1.302 binary reads
+       `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, and its default is UNVERIFIED.
+     - Probe `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, also in the binary, as a way to hand
+       over the key without a helper. Check whether tool subprocesses inherit the
+       descriptor.
+   - **0b. Context under `--bare`.** Does `--add-dir <cwd>` load that directory's
+     CLAUDE.md? Do `--mcp-config` servers load with `--strict-mcp-config`? Do
+     `permissions` and `defaultMode` from a `--settings` JSON apply?
+   - **0c. The budget stop.**
+     - Run a multi-turn task with `--max-budget-usd 0.05`. Record the result record
+       (`subtype`, `is_error`, `total_cost_usd`), the exit code, and how far
+       `total_cost_usd` overshoots the budget.
+     - When `--max-budget-usd` appears twice, which value wins?
+   - **0d. JSON output.** Does `--output-format json` carry `apiKeySource` anywhere? If it
+     does not, a credit agent run must use stream-json.
+   - **0e. Session files.** Where does the session file land under a credit home with
+     persistence on, and how fast does that folder grow?
+   - **0f. Price.** After at least 10 probe runs, compare the ledger's summed
+     `total_cost_usd` with the Console balance, and check whether WebSearch fees are in
+     `total_cost_usd`.
+   - **0g. Init before spend.** Is the stream-json init event written before the first API
+     request starts? Measure it with a probe that kills the child as the init arrives,
+     then check the Console for a charge. If that cannot be shown, a kill on init reports
+     `spent: null`, not `false`.
+
+   **Gate:** if 0a shows that the key reaches tool subprocesses under every auth method
+   and scrub setting, stop and escalate to the operator. Agent runs stay off credit until
+   the key can be kept out of them. If 0b shows that `permissions` from `--settings` do not
+   apply under `--bare`, drop the permissions guard in step 3 and its consumer
+   prerequisite, and say so in the README.
+1. **Interface.** `quotapick exec --allow-credit --expected-cost-usd X --timeout S
+   (--model ID | --capability C) [--effort E] [--report PATH] [--only/--exclude] --
+   claude -p ...`.
+   - Without `--allow-credit`, nothing changes, and the existing exec tests pin that.
+   - With it, `--expected-cost-usd` and `--timeout` are required, because a missing job
+     size or deadline must not default.
+   - **Refusals.** Exit 2, before anything is spent, with nothing written to the ledger,
+     when:
+     - the command is not `claude`, or lacks `-p`/`--print`;
+     - the argv passes its own `--model`, `--effort` or `--fallback-model`;
+     - the argv uses `text` output, which has no init or result event, or a format
+       that step 0d rules out. A missing `--output-format` counts as `text`, because
+       that is the default;
+     - `--only` names nothing that is a Claude subscription or an `anthropic_api` pool.
+   - Like `run` (`run.py:424-429`), exec narrows the candidates to Claude subscriptions
+     and `anthropic_api` pools on its own, so a call without `--only` is not refused for
+     the Codex and Antigravity accounts in the default set.
+2. **Routing.** Rank as `run` does (`run.py:445`, `run.py:479-485`): the joint objective,
+   on the new `agent` stream.
+   - **One deliberate difference: the job size.** `run` passes `job_pse=None`
+     (`run.py:439`), which becomes `default_job_pse`, 0.003 PSE (`config.py:670`). An
+     agent run costs far more, so exec uses `job_pse = expected_cost_usd / usd_per_pse`.
+   - Without a usable forecast, fall back to `own_waste` across subscriptions only. Say so
+     in the report's `decision.fallback`, as `run` does.
+   - Admit a pool only when its final cap from step 3 is at least
+     `expected × admission_margin`, and its expiry is at least `--timeout` away. The cap
+     uses `remaining_usd`, which already nets the other holds (`credits.py:224`). A large
+     balance is not enough when `max_usd_per_agent_run` or the consumer's budget is below
+     that figure. The admission logic belongs in `_pool_targets` (`run.py:334-364`),
+     shared with `run`.
+   - Resolve the model and effort for the chosen target the way `run`'s `model_for` does
+     (`run.py:459-467`), and insert `--model` and `--effort` for every target. When
+     `model_for` returns no effort, insert no `--effort`.
+   - **Card-on-file pools.** Nothing enforces `hard_cap_usd` today (#2). Until a shared
+     admission check enforces it for `run` and exec alike, card-on-file pools sit out of
+     exec, with a warning. A refusal would fail exactly the runs where credit wins.
+3. **A pool target.**
+   - **Environment.** Strip `STRIP_ENV` (`run.py:67-75`) and `QUOTA_ROUTER_*`, and set
+     `CLAUDE_CONFIG_DIR` to the pool's credit home.
+   - **Flags.** Insert `--bare --settings <router-written JSON> --max-budget-usd <cap>`,
+     plus whatever step 0b shows is needed to keep the cwd's CLAUDE.md.
+   - **The cap** is `min(remaining_usd, max_usd_per_agent_run, the consumer's own
+     --max-budget-usd if lower)`. The consumer's lower value is kept, never overridden.
+   - **`max_usd_per_agent_run`** is a new key in each `[credit_pools.<id>]`, with no
+     default. A pool without it sits out of agent runs, with a warning.
+   - **Settings.** The router-written settings carry `apiKeyHelper`. A consumer's own
+     `--settings` JSON is merged in. The merge is refused if that JSON sets `apiKeyHelper`
+     or any `env` key named in `STRIP_ENV`, `QUOTA_ROUTER_*`, `CLAUDE_CONFIG_DIR`,
+     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` or `CLAUDE_CODE_API_KEY_*`. The router copies
+     nothing from the operator's user settings.
+   - **Operator decision before the build:** should the operator's `permissions` and
+     `defaultMode` rails be copied into credit runs?
+     - The recommendation is no: the consumer passes what it needs, so the run is
+       explicit and testable.
+     - The cost of no is that a job migrated without its own rails would run without the
+       deny and ask rules. So a pool sits out of a run, with a warning, when the
+       consumer's `--settings` has no `permissions` block. The loss cannot then happen
+       silently.
+     - The guard forces a deliberate choice; it does not carry the rails. An empty
+       `{"permissions": {}}` passes it. Permission flags such as
+       `--dangerously-skip-permissions`, `--allowedTools` and `--permission-mode` do not
+       count, so a consumer that sets permissions only by flag must add the block.
+   - **The key** reaches Claude Code only through the helper (step 4), never in the
+     child's environment.
+4. **Key helper.** `quotapick credit-key <pool> --token-file F` prints the pool's key only
+   when F holds the token that `exec` wrote for this run.
+   - **The token is valid until exec exits, not single-use.** Claude Code calls the helper
+     again when its TTL runs out (step 0a), and a single-use token would fail a long run
+     partway.
+   - **What the token protects.** It narrows exposure to the run's lifetime: after exit
+     the file is gone, and the helper prints nothing. It does not stop a same-user
+     process from reading the command line from `ps` and running the helper while the run
+     is live. The file's mode 0600 blocks other users only.
+   - The settings JSON names the helper by absolute path, because launchd's PATH lacks
+     `~/.local/bin`.
+   - The helper exits non-zero, with no output, on a missing item or a wrong token.
+5. **Running, pass-through and checks.** These apply to subscription targets too when
+   `--allow-credit` is set. A subscription target's environment is unchanged, and its argv
+   gains only the router's `--model` and `--effort` from step 2.
+   - Copy stdout and stderr through byte for byte, and parse a copy.
+   - **Process layout.** Exec first starts a watchdog as the leader of a new process
+     group, with stdin, stdout and stderr on `/dev/null`, so it cannot hold the consumer's
+     output open. It then starts the child in that group with `process_group`. It does
+     not use `start_new_session`, which would put the child in a session the watchdog
+     cannot share.
+   - At `--timeout`, send the group SIGTERM, then SIGKILL after 10 s.
+   - **A dead wrapper must not leave the child running.** On SIGTERM, SIGINT or SIGHUP,
+     exec forwards the signal to the group, then exits once the child has exited. Exec
+     waits for the child, not the group.
+   - SIGKILL cannot be caught. The watchdog therefore holds the read end of a pipe whose
+     write end only exec keeps open. When the pipe reaches EOF, it kills the group. It
+     exits on SIGTERM.
+   - **Exit codes.** Exec exits 124 on its own timeout, 128 plus the signal number after
+     a forwarded signal, and the child's code otherwise. The report's `outcome` names
+     which.
+   - Consumers stop a run with SIGTERM and wait for exec to exit before they retry. The
+     README states this contract.
+   - From the init event, check `apiKeySource` against the target's expected value. On a
+     mismatch, kill the child's group, and report `auth` with `spent` set from 0g.
+   - From the result event, read `total_cost_usd`, `modelUsage` and `session_id`.
+   - If the key appears in the copy, report it loudly and have `quotapick doctor` flag the
+     pool for rotation. Do not rewrite the consumer's output.
+6. **Ledger, report and history.**
+   - Book a hold for the cap at start. Give it an expiry of `--timeout` plus 5 minutes,
+     not `HOLD_TTL_S`. Book a spend of `total_cost_usd` at the end.
+   - When there is no result record, book the hold as an estimated spend with `spent: null`.
+     That covers a killed child, a timeout, and a wrapper that was itself killed: an exec
+     hold that expires unsettled becomes an estimated spend, never a silent release.
+   - `quotapick doctor` asks for a Console checkpoint (`quotapick credits set`) once a
+     pool's estimated spends since its last checkpoint pass $20 or 10% of its grant,
+     whichever is lower.
+   - `--report PATH` writes `{target_kind, target, pool, model, config_dir, session_id,
+     cost_usd, spent, apiKeySource, outcome, decision}`. The exit code passes through.
+   - Never retry on another target once the child has started.
+   - Once the child has exited, write one history line with `event == "exec"` and an
+     `exec` block: `{stream: "agent", target, pool_kind, cost_usd, cost_pse, fable,
+     group, outcome}`. Never record a pick on a subscription the run did not use (#6).
+7. **Joint projection, forecast and replay.**
+   - Add `STREAM_AGENT`, served by subscription and credit, to `SERVES`, and to the
+     stream walk at `joint.py:295`. Walk the subscription-only `other` first, then
+     `agent`, then `run`. That order is a judgment call; test that it does not starve
+     `run`.
+   - Measure `agent` from the `exec` lines in `forecast.py`, the same way as `run`. Add it
+     to `GroupForecast` and `to_dict` (`forecast.py:69-98`), and bump `FORECAST_VERSION`
+     (`forecast.py:45`) so a cached forecast without it is not read. Subtract
+     subscription-served agent work from `other`, as subscription-served `run` work is
+     (`forecast.py:19-24`), so a consumer that moves from `pick` to `exec` is counted once.
+   - Teach `replay.py:541-542` and `replay.py:630` the new stream.
+8. **Tests.** Use a real fake-`claude` script that streams stream-json lines over time and
+   can block or ignore SIGTERM. The `run` tests' `FakeRunner` (`tests/test_run.py:48`)
+   returns whole output, so it cannot test pass-through or kills.
+   - The pool target's argv, environment and settings: no `ANTHROPIC_API_KEY` in the
+     environment, and the helper named with a token file.
+   - Each refusal, with the ledger untouched.
+   - Admission: a pool sits out when its final cap is below `expected × margin`, even
+     with a large balance. For example, with `max_usd_per_agent_run` at $5, an expected
+     cost of $4 and a $150 balance, the pool sits out.
+   - An `apiKeySource` mismatch kills the child.
+   - The budget stop books a spend.
+   - A timeout and a killed wrapper each book the hold as an estimated spend.
+   - SIGKILL of the wrapper ends the child's group through the watchdog. The watchdog
+     holds no output open, and the exit codes are 124 and 128 + signal.
+   - The settings merge refuses each forbidden key. A pool sits out when the consumer's
+     `--settings` has no `permissions` block, and so does a card-on-file pool.
+   - The inserted `--model` and `--effort` match `model_for`, and a consumer `--effort` is
+     refused.
+   - Stdout passes through byte-identical.
+   - Without `--allow-credit`, the `--dry-run --json` output is byte-identical to today's.
+     With it, a pool target's dry run shows the plan, never the key.
+   - The joint objective serves `agent` from credit, still keeps `other` on subscriptions,
+     and a fixture forecast counts a moved consumer once.
+9. **README.** Add an agent-runs section next to "API credit pools". It covers the
+   interface, what `--bare` and the empty credit home remove, the consumer prerequisites
+   below, and the key-handling limits under the risks.
+
+**Consumer prerequisites.** Each consumer decides these; they are not this item's code.
+
+- **User-level MCP servers.** A consumer that uses them must pass `--mcp-config`, plus the
+  context flags from step 0b.
+- **Permission rails.** A consumer that needs them passes them in its own `--settings`.
+- **Proof from the session file.** A consumer that proves something from Claude Code's
+  session file needs `config_dir` and `session_id` from the report.
+- **Contracts.** A consumer whose results are tied to a harness contract must treat a
+  credit agent run as a new harness.
+- **JSON output.** A consumer on `--output-format json` depends on step 0d.
+
+A good pilot is one scheduled job whose runs cost a few dollars at most, so the cap
+cannot bite.
+
+*Risks and edge cases:*
+
+- **Key handling.** A tool-using agent runs as the same macOS user, so it can read the
+  Keychain item itself. The aim is no accidental leak into the environment, logs,
+  transcripts or commits, not secrecy against a determined agent. Say so in the README.
+- **Fidelity.** `--bare` and the empty credit home drop hooks, plugins, auto-memory, user
+  MCP servers and the operator's settings. A job that silently depended on them behaves
+  differently, so a consumer opts in per job.
+- **Budget stops.** The cap must sit above the job's p99 cost. The costliest measured
+  agent runs exceed today's `max_usd_per_call` default of $10 (`config.py:816`), so agent
+  runs need their own cap key. Step 0c's overshoot figure sets the margin.
+- **Concurrency.** Several runs hold against one pool at once, so admission must count
+  the other holds.
+- **A renewal that did not happen.** A monthly pool past its expiry is assumed renewed at
+  confidence 0.6. If it was not, the first model call fails with "credit balance is too
+  low" before any tool runs. A refused request bills nothing, so `spent` reads `false`.
+- **Card-on-file pools** sit out of exec until `hard_cap_usd` is enforced (step 2).
+  Today nothing enforces it for `run` either; #2 carries that gap.
+- **Credit-home growth.** Session files with persistence on accumulate. Give them a
+  retention rule (step 0e).
+- **The usage dashboard.** API-key runs leave no subscription windows behind, so
+  `quotapick status` must show credit agent spend from the ledger. Otherwise the fleet
+  looks idler than it is.
+
+*Why xhigh, not high:*
+
+- It wires exec, run, the ledger, the joint projection, the forecast and replay together
+  in a new way.
+- It handles a secret, under a Claude Code behavior (0a) that is unverified and gates the
+  whole design.
+- It adds a pass-through wrapper with kill semantics that must not alter output.
+- A mistake bills real money or leaks a key.
+
+**Depends on:**
+
+- **#5.** This item adds `spent` to the exec report. Implement it once, in code that `run`
+  and `exec` share.
+- **#6.** Exec also prepares with `write_state=True`, so fix #6 first, or exec repeats it.
+- **#2's `hard_cap_usd` bullet.** It is needed before card-on-file pools can serve
+  agent runs.
+
+**Touch points:**
+
+- `cli.py:2550-2649` (`_cmd_exec`), `cli.py:2559`, `cli.py:2640`, `cli.py:3095` (its
+  parser), `cli.py:1066-1076` (stream wiring), and the `status` rendering for credit agent
+  spend.
+- `run.py:67-75` (`STRIP_ENV`), `run.py:159-189`, `run.py:266-302` (`judge`, the outcome
+  classification to share), `run.py:334-364` (`_pool_targets`, admission),
+  `run.py:424-429` (candidate narrowing), `run.py:439` (job size), `run.py:445` and
+  `run.py:459-467` (`model_for`), `run.py:479-485` (joint routing), `run.py:531-548`
+  (credit target) and `run.py:562-643` (ledger hold, spend and release).
+- `credits.py:44` and `credits.py:214-223` (hold expiry).
+- `joint.py:53-60` (streams and `SERVES`), `joint.py:213` (`credit_stock`) and
+  `joint.py:295` (the stream walk).
+- `forecast.py:19-24`, `forecast.py:45` (`FORECAST_VERSION`), `forecast.py:69-98`
+  (`GroupForecast`), `forecast.py:132-157` and `forecast.py:334-378`.
+- `replay.py:541-542` and `replay.py:630`.
+- `config.py:781-816` and `config.py:911-916` (`max_usd_per_agent_run` and its parser).
+- `doctor.py` (rotation flag, checkpoint request), a new `credit-key` command, new
+  `tests/test_exec_credit.py` with a fake-`claude` script, and the README sections
+  "Running a call — quotapick run" and "API credit pools".
 
 ---
 
