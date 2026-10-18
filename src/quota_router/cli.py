@@ -556,7 +556,10 @@ def _apply_configured_capacity(
     ``tier_scale`` is the recorded capacity, and a row written at the tier's placeholder
     would misstate what expired by the same factor routing used to be wrong by.
     """
-    capacities = config.capacities()
+    # Every configured account, not only the enabled ones: ``--only``/``--exclude``
+    # disable accounts for routing, but the cache fallback still rebuilds and re-records
+    # them, and a pool's size does not change with its eligibility.
+    capacities = config.capacities(enabled_only=False)
     if not capacities:
         return snapshots
     return tuple(

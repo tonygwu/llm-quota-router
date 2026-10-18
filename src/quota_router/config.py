@@ -1374,7 +1374,12 @@ def _build_accounts(
         if raw_tier is not None:
             text = _as_str(raw_tier, section, "tier")
             tier = normalize_tier(text)
-            if tier == TIER_UNKNOWN and text:
+            if tier == TIER_UNKNOWN and text and body.get("capacity") is not None:
+                warnings.append(
+                    f"[{section}] tier {text!r} is not a tier this router knows; its "
+                    f"configured capacity applies and the tier is reported as unknown"
+                )
+            elif tier == TIER_UNKNOWN and text:
                 warnings.append(
                     f"[{section}] tier {text!r} is not a tier this router knows; "
                     f"treating capacity as unknown (1.0)"

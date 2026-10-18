@@ -383,3 +383,88 @@ def test_the_waste_command_reports_rows_logged_at_a_placeholder_size(tmp_path) -
     code, out, _ = _run(["waste"], env, [], T0)
     assert code == cli.EXIT_OK
     assert "another size" not in out, "nothing configured, nothing rescaled"
+
+
+# ======================================================================================
+# Round-2 review: the override must not depend on routing eligibility
+# ======================================================================================
+
+
+def test_the_cache_path_records_the_configured_capacity_for_an_excluded_account(tmp_path) -> None:
+    """``--only``/``--exclude`` disable the other accounts for routing. The cache fallback
+    still replays every account in the last record and rebuilds each from its tier, and
+    whatever it rebuilds is recorded again. A pool's size does not change with its
+    eligibility, so the override must reach every configured account, or a cache-path
+    pick writes the placeholder size back into history and the next waste row reads it.
+    """
+    from quota_router.history import history_path
+
+    env = _env(tmp_path)
+    path = _config(
+        tmp_path, '[accounts.antigravity_claude]\nprovider = "antigravity"\ncapacity = 0.088\n'
+    )
+
+    def fresh(account_id):
+        return account(
+            account_id,
+            window("5h", 0.0, length_s=FIVE_HOURS, resets_in_s=3600.0),
+            window("7d", 0.0, resets_in_s=3 * 24 * 3600.0),
+            tier="unknown",
+        )
+
+    code, _, err = run(
+        ["status", "--config", str(path), "--json"],
+        env,
+        snapshots=(fresh("claude_b"), fresh("antigravity_claude")),
+        cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+
+    def oracle_down(**_kw):
+        raise RuntimeError("oracle down")
+
+    code, out, err = run(
+        ["pick", "--config", str(path), "--only", "claude_b", "--dry-run", "--json"],
+        env,
+        deps=cli.Deps(load_snapshots=oracle_down),
+        cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    payload = json.loads(out)
+    assert payload["decision"]["account"] == "claude_b"
+    assert any("replaying the history snapshot" in w for w in payload["warnings"]), payload["warnings"]
+
+    last = json.loads(history_path(env).read_text(encoding="utf-8").splitlines()[-1])
+    recorded = {entry["id"]: entry for entry in last["accounts"]}
+    assert recorded["antigravity_claude"]["source"] == "cache"
+    assert recorded["antigravity_claude"]["capacity"] == pytest.approx(MEASURED), (
+        "the cache-path pick re-recorded the excluded pool at the tier's size"
+    )
+
+
+def test_an_unknown_tier_with_a_configured_capacity_is_not_called_neutral(tmp_path) -> None:
+    """Two strings said the capacity was the neutral 1.0 whatever the config set."""
+    env = _env(tmp_path)
+    snap = account(
+        "antigravity_claude",
+        window("5h", 0.0, length_s=FIVE_HOURS, resets_in_s=3600.0),
+        window("7d", 0.0, resets_in_s=3 * 24 * 3600.0),
+        tier="unknown",
+    )
+
+    code, out, _ = run(["pick", "--dry-run", "--json"], env, snapshots=(snap,), cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK
+    assert any("capacity assumed neutral" in w for w in json.loads(out)["warnings"])
+
+    path = _config(
+        tmp_path,
+        '[accounts.antigravity_claude]\nprovider = "antigravity"\ntier = "agy_free"\ncapacity = 0.088\n',
+    )
+    code, out, err = run(
+        ["pick", "--config", str(path), "--dry-run", "--json"], env, snapshots=(snap,), cwd=_NO_CONFIG_FILES
+    )
+    assert code == cli.EXIT_OK, err
+    warnings = json.loads(out)["warnings"]
+    assert not any("assumed neutral" in w for w in warnings), warnings
+    assert not any("(1.0)" in w for w in warnings), warnings
+    assert any("agy_free" in w and "capacity" in w for w in warnings), warnings

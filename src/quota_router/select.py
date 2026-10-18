@@ -854,7 +854,8 @@ def _quality_warnings(
             f"{snap.id}: confidence {snap.confidence:.2f}; score was shrunk "
             f"toward the field mean"
         )
-    if snap.tier == TIER_UNKNOWN:
+    if snap.tier == TIER_UNKNOWN and snap.capacity_override is None:
+        # A configured capacity is a measurement; only the tier's placeholder is a guess.
         notes.append(f"{snap.id}: tier unknown, capacity assumed neutral")
     if snap.source in _DUBIOUS_SOURCES:
         notes.append(f"{snap.id}: snapshot source is {snap.source!r}")
