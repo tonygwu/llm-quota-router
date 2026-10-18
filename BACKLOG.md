@@ -6,9 +6,16 @@ Open gaps, roughly by how much they matter. Each entry says what would close it,
 Kept free of machine-specific paths and account identities: publishing this repo is a
 live option, and a backlog is the file most likely to leak them.
 
+Items follow the `backlog-protocol` skill: a `### <ID>.` heading with its difficulty and
+filed tags, a `[claimed by: <handle>]` tag while an agent works it, and deletion on
+completion. The claim helper matches `### <ID>. ` exactly, so an item heading at any
+other level cannot be claimed.
+
 ---
 
-## 1. The core claim is now measurable, and not yet measured
+## Open items
+
+### 1. The core claim is now measurable, and not yet measured
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -63,7 +70,7 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-## 2. Small, but each one costs trust
+### 2. Small, but each one costs trust
 
 - **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
   configured floor from the identical built-in default. The semantics are coherent and
@@ -210,7 +217,7 @@ the counterfactual says.
 
 ---
 
-## 3. The joint objective stalls more than today's when the fleet is tight
+### 3. The joint objective stalls more than today's when the fleet is tight
 
 `[engine] objective = "joint"` ranks by projected fleet waste avoided and never scores
 unmet demand (operator decision 2026-10-14). `quotapick replay` (21 days to 2026-10-14,
@@ -237,7 +244,7 @@ to `own_waste` and carry no five-hour cap.
 
 ---
 
-## 4. The joint projection cannot move work across providers
+### 4. The joint projection cannot move work across providers
 
 The projection and the replay keep provider groups apart: Claude work stays on Claude
 accounts. That makes #3's stall figure an upper bound for work that could have run on
@@ -266,7 +273,7 @@ has no config key yet (#9). At capacity 1.0 the router overvalues those pools ab
 times; it does not undervalue them. The Gemini pools have a measured k = 15 that is not
 applied and a size nobody has measured (#10).
 
-## 5. A `run` client cannot tell from an attempt whether it was billed
+### 5. A `run` client cannot tell from an attempt whether it was billed
 
 A client may route a failed `quotapick run` call some other way only if nothing was
 spent. Today it has to infer that from each attempt's `outcome` and `cost_usd`. Two cases
@@ -283,7 +290,7 @@ subscription call. It stops being correct if that field is ever missing.
 response, set from what the router observed: the child produced a result event, or the
 ledger booked a spend. Clients would then fall back on `spent: false` alone.
 
-## 6. A credit-pool `run` records a pick on a subscription that never ran
+### 6. A credit-pool `run` records a pick on a subscription that never ran
 
 `run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
 then compares that choice against the credit pools. When a pool wins, the subscription
@@ -308,7 +315,7 @@ stay byte-identical.
 
 ---
 
-## 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`
 
 **Background.** Capacity, the size of one five-hour window in PSE, comes only from the
 plan tier. `AccountSnapshot.capacity` returns `capacity_for_tier(self.tier)`
@@ -456,7 +463,7 @@ projection and the waste writer, and it waits on an operator decision.
 
 ---
 
-## 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
 
 **Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools
 (details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
@@ -540,7 +547,7 @@ noisy meter.
 
 ---
 
-## 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
+### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
 
 **Background.** `_cmd_status` calls `_record_waste` (`cli.py:2381`; body at
 `cli.py:2308-2320`). It reads all retained history, rotated files included, and runs
@@ -578,7 +585,7 @@ an Antigravity pool while its reset slides.
 
 ---
 
-## 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`
+### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`
 
 **Background.** A credit pool is reachable only through `quotapick run`, and `run`
 executes one tool-less call. The child always gets `--tools "" --no-session-persistence
@@ -953,7 +960,7 @@ cannot bite.
 
 ---
 
-## 13. A credit pool holds one grant at a time, so overlapping grants are mispriced and the grant day is never learned  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 13. A credit pool holds one grant at a time, so overlapping grants are mispriced and the grant day is never learned  `[difficulty: high]`  `[filed: 2026-10-18]`
 
 **Background.** The ledger keeps one balance and one expiry per pool. `balance()` starts
 from the latest `grant` or `checkpoint` line, and each such line *replaces* the balance
