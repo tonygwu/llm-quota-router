@@ -1210,7 +1210,7 @@ linked_account = "claude_d"
 grant_usd = 200
 expires = "2026-10-19T00:00:00Z"   # the Console shows a UTC date; use its start
 renewal = "monthly"
-card_on_file = false               # true requires hard_cap_usd
+card_on_file = false               # required; true is refused (promotional credit only)
 ```
 
 - **Reachable only through `run`.** `pick` and `cl` never see a pool; pick output is
@@ -1238,7 +1238,9 @@ card_on_file = false               # true requires hard_cap_usd
   `doctor` flags an unconfirmed or week-old balance, imminent expiry, and a missing
   Keychain item.
 - **Fail-loud config.** A value that looks like a key, an unknown linked account, an id a
-  prefix could read as a subscription (`claude_*`), or a card without a cap is refused.
+  prefix could read as a subscription (`claude_*`), or any card on file
+  (`card_on_file = true`, even on a disabled pool) is refused: the router spends
+  promotional credit only and enforces no spending cap.
 
 ### The joint objective — `[engine]`, `forecast`, `replay`
 

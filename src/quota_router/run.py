@@ -348,7 +348,7 @@ def choose_credit_or_subscription(
     spend a pool, so its projected waste is close to certain, while a subscription's
     rests on a forecast of ``cl`` and interactive use, which can spend it any time. A tie
     at zero has no waste to save, so the nearer deadline decides it, as it does among
-    pools (``ranked_score``); credit-first there would only spend credit, or a card. On 2026-10-18 the
+    pools (``ranked_score``); credit-first there would only spend credit. On 2026-10-18 the
     deadline alone sent a full-size call to a subscription whose week reset in 11h over
     a pool expiring in 21h, although both avoided the whole job.
     """

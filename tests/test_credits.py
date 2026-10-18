@@ -6,7 +6,7 @@ keeps a ledger: a grant or an operator checkpoint, minus spend it booked, minus 
 for calls in flight. What must hold:
 
 * Config is fail-loud: a key that looks like a secret, an unknown linked account, a pool
-  id that could be read as a Claude account, a card on file without a hard cap, or a
+  id that could be read as a Claude account, any card on file, or a
   missing ``usd_per_pse`` is a ConfigError, never a default.
 * The balance arithmetic: checkpoint, spends, holds that age out, an exhaustion signal
   that zeroes the pool until the next grant, and monthly renewal that stops when the
@@ -74,7 +74,7 @@ def test_a_pool_parses(tmp_path) -> None:
         ('linked_account = "claude_d"', 'linked_account = "claude_z"', "claude_z"),
         ('provider = "anthropic_api"', 'provider = "openai_api"', "provider"),
         ('renewal = "monthly"', 'renewal = "weekly"', "renewal"),
-        ("card_on_file = false", "card_on_file = true", "hard_cap_usd"),
+        ("card_on_file = false", "card_on_file = true", "card_on_file = true is not supported"),
         ("grant_usd = 200", "grant_usd = 0", "grant_usd"),
         ('expires = "2026-10-19T00:00:00Z"', 'expires = "2026-10-19T00:00:00"', "zone"),
         ("[credit_pools.anthropic_api_d]", "[credit_pools.claude_api]", "claude"),
@@ -94,9 +94,33 @@ def test_a_pool_id_may_not_collide_with_an_account(tmp_path) -> None:
         _load(tmp_path, body)
 
 
-def test_a_card_with_a_hard_cap_is_accepted(tmp_path) -> None:
+def test_a_card_on_file_is_refused_even_with_a_hard_cap(tmp_path) -> None:
+    """No code enforces a spending cap, so a card-on-file pool could spend past its
+    credits onto the card. The router supports promotional credit only (operator
+    decision 2026-10-18), and a ``hard_cap_usd`` no longer makes a card acceptable.
+    """
     body = POOL.replace("card_on_file = false", "card_on_file = true\nhard_cap_usd = 50")
-    assert _load(tmp_path, body).credit_pools["anthropic_api_d"].hard_cap_usd == 50.0
+    with pytest.raises(ConfigError, match="card_on_file = true is not supported"):
+        _load(tmp_path, body)
+
+
+def test_a_card_on_file_is_refused_on_a_disabled_pool_too(tmp_path) -> None:
+    """Enabling the pool later must not be the step that admits a card."""
+    body = POOL.replace("card_on_file = false", "card_on_file = true\nenabled = false")
+    with pytest.raises(ConfigError, match="card_on_file = true is not supported"):
+        _load(tmp_path, body)
+
+
+def test_a_hard_cap_without_a_card_is_an_unknown_key(tmp_path) -> None:
+    """``hard_cap_usd`` is gone; a config that still sets it hears so and loads."""
+    body = POOL.replace("card_on_file = false", "card_on_file = false\nhard_cap_usd = 50")
+    config = _load(tmp_path, body)
+    assert "anthropic_api_d" in config.credit_pools
+    assert any(
+        "unknown key [credit_pools.anthropic_api_d] hard_cap_usd ignored" in w
+        for w in config.warnings
+    ), config.warnings
+    assert not hasattr(config.credit_pools["anthropic_api_d"], "hard_cap_usd")
 
 
 # ======================================================================================

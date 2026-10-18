@@ -280,8 +280,8 @@ def test_among_tied_pools_the_nearer_deadline_wins() -> None:
 
 
 def test_a_tie_at_zero_waste_keeps_the_nearer_deadline() -> None:
-    # Nothing is wasted either way, so credit-first has no reason to apply; a pool with a
-    # card on file would spend real money for no gain.
+    # Nothing is wasted either way, so credit-first has no reason to apply: spending the
+    # pool would use credit for no gain.
     from quota_router.run import choose_credit_or_subscription
     scores = _Scores({"claude_b": (0.0, 1.0), "anthropic_api_d": (0.0, 10.0)})
     assert choose_credit_or_subscription(scores, "claude_b", ["anthropic_api_d"]) == (

@@ -793,7 +793,6 @@ _CREDIT_POOL_KEYS: Final[frozenset[str]] = frozenset(
         "expires",
         "renewal",
         "card_on_file",
-        "hard_cap_usd",
         "admission_margin",
         "max_usd_per_call",
         "enabled",
@@ -812,9 +811,10 @@ class CreditPoolConfig:
         grant_usd: What one grant adds.
         expires_s: When the current grant expires (the Console shows a UTC date).
         renewal: ``monthly`` (a new grant each billing cycle) or ``none``.
-        card_on_file: Whether the org can charge a card past its credits. With one, a
-            hard cap is required, or the router could spend real money.
-        hard_cap_usd: Spend ceiling the router enforces when a card is on file.
+        card_on_file: Whether the org can charge a card past its credits. Must be
+            ``false``: the router supports promotional credit only and enforces no
+            spending cap, so a pool that could charge a card is refused at load
+            (operator decision 2026-10-18). Required, so the operator states it.
         admission_margin: A call starts on this pool only if the balance covers its
             expected cost times this.
         max_usd_per_call: Per-call budget passed to the CLI.
@@ -828,7 +828,6 @@ class CreditPoolConfig:
     expires_s: float
     renewal: str
     card_on_file: bool
-    hard_cap_usd: float | None = None
     admission_margin: float = 1.5
     max_usd_per_call: float = 10.0
     enabled: bool = True
@@ -842,7 +841,6 @@ class CreditPoolConfig:
             "expires_s": self.expires_s,
             "renewal": self.renewal,
             "card_on_file": self.card_on_file,
-            "hard_cap_usd": self.hard_cap_usd,
             "admission_margin": self.admission_margin,
             "max_usd_per_call": self.max_usd_per_call,
             "enabled": self.enabled,
@@ -904,15 +902,17 @@ def _build_credit_pools(
                 f"[{section}] renewal must be one of {', '.join(CREDIT_RENEWALS)}; got {renewal!r}"
             )
         card = _as_bool(body["card_on_file"], section, "card_on_file")
-        hard_cap = (
-            _as_number(body["hard_cap_usd"], section, "hard_cap_usd", minimum=1e-9)
-            if "hard_cap_usd" in body
-            else None
-        )
-        if card and hard_cap is None:
+        if card:
+            # Promotional credit only. Nothing in the router tracks spend against a
+            # ceiling, so a pool that can charge a card could spend past its credits
+            # onto it. Refused rather than accepted with a cap nothing reads, and
+            # refused on a disabled pool too: enabling it later must not be the step
+            # that silently admits a card.
             raise ConfigError(
-                f"[{section}] card_on_file = true needs hard_cap_usd: without one the router "
-                f"could spend past the credits onto the card"
+                f"[{section}] card_on_file = true is not supported: the router spends "
+                f"promotional credit only and enforces no spending cap, so this pool "
+                f"could charge the card once its credits run out. Leave the pool out, or "
+                f"remove the card from the org"
             )
         pools[pool_id] = CreditPoolConfig(
             id=pool_id,
@@ -923,7 +923,6 @@ def _build_credit_pools(
             expires_s=_as_instant(body["expires"], section, "expires"),
             renewal=renewal,
             card_on_file=card,
-            hard_cap_usd=hard_cap,
             admission_margin=_as_number(
                 body.get("admission_margin", 1.5), section, "admission_margin", minimum=1.0
             ),
