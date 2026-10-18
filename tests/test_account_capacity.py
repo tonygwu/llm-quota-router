@@ -29,6 +29,14 @@ MEASURED = 0.088
 
 
 def _env(tmp_path) -> dict[str, str]:
+    """An environment rooted in the test's temp dir.
+
+    Every ``load_config`` call here passes it, with ``cwd=_NO_CONFIG_FILES``.
+    ``load_config(env={})`` falls back to the real home directory and reads the
+    operator's live config (see ``_NO_CONFIG_FILES`` in ``tests/test_cli.py``); three
+    of this file's tests failed on the operator's machine the moment the live config
+    set ``capacity = 0.088``, while CI, which has no live config, stayed green.
+    """
     return {
         "HOME": str(tmp_path / "home"),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
@@ -52,14 +60,14 @@ def test_a_configured_capacity_round_trips_from_toml(tmp_path) -> None:
     path = _config(
         tmp_path, '[accounts.antigravity_claude]\nprovider = "antigravity"\ncapacity = 0.088\n'
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(env=_env(tmp_path), cwd=_NO_CONFIG_FILES, explicit_path=path)
     assert cfg.accounts["antigravity_claude"].capacity == pytest.approx(MEASURED)
     assert cfg.capacities() == {"antigravity_claude": pytest.approx(MEASURED)}
 
 
 def test_an_account_without_the_key_has_no_configured_capacity(tmp_path) -> None:
     path = _config(tmp_path, "[accounts.claude_c]\nweekly_to_session = 9.8\n")
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(env=_env(tmp_path), cwd=_NO_CONFIG_FILES, explicit_path=path)
     assert cfg.accounts["claude_c"].capacity is None
     assert cfg.capacities() == {}
 
@@ -73,7 +81,7 @@ def test_a_capacity_that_is_not_a_positive_finite_number_is_refused(tmp_path, ra
     """
     path = _config(tmp_path, f"[accounts.claude_c]\ncapacity = {raw}\n")
     with pytest.raises(ConfigError, match="capacity"):
-        load_config(env={}, explicit_path=path)
+        load_config(env=_env(tmp_path), cwd=_NO_CONFIG_FILES, explicit_path=path)
 
 
 # ======================================================================================
@@ -482,7 +490,7 @@ def test_capacities_always_include_disabled_accounts(tmp_path) -> None:
         tmp_path,
         '[accounts.antigravity_claude]\nprovider = "antigravity"\nenabled = false\ncapacity = 0.088\n',
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(env=_env(tmp_path), cwd=_NO_CONFIG_FILES, explicit_path=path)
     assert cfg.capacities() == {"antigravity_claude": pytest.approx(MEASURED)}
 
 
