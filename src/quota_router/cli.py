@@ -559,7 +559,7 @@ def _apply_configured_capacity(
     # Every configured account, not only the enabled ones: ``--only``/``--exclude``
     # disable accounts for routing, but the cache fallback still rebuilds and re-records
     # them, and a pool's size does not change with its eligibility.
-    capacities = config.capacities(enabled_only=False)
+    capacities = config.capacities()
     if not capacities:
         return snapshots
     return tuple(
@@ -3113,7 +3113,7 @@ def _cmd_waste(
     warnings.extend(read_warnings)
     # Every configured account, disabled ones included: a pool measured, configured and
     # then disabled still has rows in the series, and its size did not change.
-    summary = waste_mod.summarize(records, capacities=config.capacities(enabled_only=False))
+    summary = waste_mod.summarize(records, capacities=config.capacities())
     totals = summary["totals"]
     scoped = summary["scoped_totals"]
 
@@ -3226,25 +3226,27 @@ def _cmd_waste(
         )
         for account_id in sorted(rescaled):
             entry = rescaled[account_id]
-            scales = ", ".join(f"{scale:g}" for scale in entry["logged_scales"])
-            line = (
-                f"  {account_id}: {entry['rows']} row(s) at tier_scale {scales}, configured "
-                f"capacity {entry['capacity']:g}: {entry['wasted_pse_at_capacity']:.2f} PSE "
-                f"wasted and {entry['forfeited_pse_at_capacity']:.2f} forfeited at that size "
-                f"(logged {entry['wasted_pse_logged']:.2f} and "
-                f"{entry['forfeited_pse_logged']:.2f})"
-            )
+            parts = []
+            if entry["rows"]:
+                scales = ", ".join(f"{scale:g}" for scale in entry["logged_scales"])
+                parts.append(
+                    f"{entry['rows']} row(s) at tier_scale {scales}, configured capacity "
+                    f"{entry['capacity']:g}: {entry['wasted_pse_at_capacity']:.2f} PSE wasted "
+                    f"and {entry['forfeited_pse_at_capacity']:.2f} forfeited at that size "
+                    f"(logged {entry['wasted_pse_logged']:.2f} and "
+                    f"{entry['forfeited_pse_logged']:.2f})"
+                )
             if entry["rows_without_scale"]:
-                line += (
-                    f"; {entry['rows_without_scale']} row(s) carry no tier_scale and "
+                parts.append(
+                    f"{entry['rows_without_scale']} row(s) carry no tier_scale and "
                     f"cannot be rescaled"
                 )
             if entry["scoped_rows_not_rescaled"]:
-                line += (
-                    f"; {entry['scoped_rows_not_rescaled']} model-scoped row(s) at another "
+                parts.append(
+                    f"{entry['scoped_rows_not_rescaled']} model-scoped row(s) at another "
                     f"size stay as logged in the scoped totals"
                 )
-            stdout.write(line + "\n")
+            stdout.write(f"  {account_id}: " + "; ".join(parts) + "\n")
         at_capacity = summary["totals_at_capacity"]
         stdout.write(
             f"  With every such row rescaled: {at_capacity['wasted_pse']:.2f} PSE expired "

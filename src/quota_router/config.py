@@ -1041,16 +1041,19 @@ class Config:
             if account.plan_ends_s is not None
         }
 
-    def capacities(self, *, enabled_only: bool = True) -> dict[str, float]:
-        """The measured ``capacity`` of every account that sets one, in PSE.
+    def capacities(self) -> dict[str, float]:
+        """The measured ``capacity`` of every configured account that sets one, in PSE.
 
-        Routing reads the enabled accounts, like ``manual_rates`` and ``plan_ends``. The
-        waste report passes ``enabled_only=False``: a disabled pool's rows are still in
-        the series, and disabling it did not change its size.
+        Disabled accounts included, unlike ``manual_rates`` and ``plan_ends``: a pool's
+        size does not change with its eligibility. ``--only``/``--exclude`` disable
+        accounts for routing, yet the cache fallback still rebuilds and re-records them,
+        and the waste report still holds their rows. There is deliberately no
+        enabled-only form, so no caller can reach for one.
         """
-        accounts = self.enabled_accounts() if enabled_only else tuple(self.accounts.values())
         return {
-            account.id: account.capacity for account in accounts if account.capacity is not None
+            account.id: account.capacity
+            for account in self.accounts.values()
+            if account.capacity is not None
         }
 
     def deprioritized_accounts(self) -> tuple[str, ...]:

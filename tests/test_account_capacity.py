@@ -468,3 +468,33 @@ def test_an_unknown_tier_with_a_configured_capacity_is_not_called_neutral(tmp_pa
     assert not any("assumed neutral" in w for w in warnings), warnings
     assert not any("(1.0)" in w for w in warnings), warnings
     assert any("agy_free" in w and "capacity" in w for w in warnings), warnings
+
+
+# ======================================================================================
+# Round-3 review: no enabled-only default to fall back into, and no empty scale list
+# ======================================================================================
+
+
+def test_capacities_always_include_disabled_accounts(tmp_path) -> None:
+    """A pool's size does not change with its eligibility, so there is no enabled-only
+    form for a future caller to reach for and bring back the cache-path bug."""
+    path = _config(
+        tmp_path,
+        '[accounts.antigravity_claude]\nprovider = "antigravity"\nenabled = false\ncapacity = 0.088\n',
+    )
+    cfg = load_config(env={}, explicit_path=path)
+    assert cfg.capacities() == {"antigravity_claude": pytest.approx(MEASURED)}
+
+
+def test_the_waste_text_prints_no_empty_scale_list(tmp_path) -> None:
+    """An account whose only off-size rows lack a scale gets a line about those rows,
+    not ``0 row(s) at tier_scale ,``."""
+    env = _env(tmp_path)
+    waste.append_records([_row("codex", wasted=1.5, scale=None)], env=env)
+    path = _config(tmp_path, "[accounts.codex]\ncapacity = 0.5\n")
+
+    code, out, _ = _run(["waste", "--config", str(path)], env, [], T0)
+    assert code == cli.EXIT_OK
+    assert "tier_scale ," not in out, out
+    assert "0 row(s) at tier_scale" not in out, out
+    assert "codex: 1 row(s) carry no tier_scale and cannot be rescaled" in out, out
