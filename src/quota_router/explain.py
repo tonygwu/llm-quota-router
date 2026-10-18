@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Final
+from typing import Any, Final
 
 from .types import (
     PROVIDERS,
@@ -348,6 +348,28 @@ def format_excluded(decision: Decision) -> str:
     return _render_table(("account", "reason"), rows)
 
 
+def format_rates(rates: Mapping[str, Mapping[str, Any]]) -> str:
+    """One line per provider: the working rate the waste term used, and its provenance."""
+    lines: list[str] = []
+    for provider, report in sorted(rates.items()):
+        line = f"rate: {provider} {float(report['pse_per_h']):.3f} PSE/h {report['source']}"
+        if report.get("source") == "measured":
+            age = report.get("forecast_age_s")
+            if age is not None:
+                line += f" (forecast {format_duration(float(age))} old)"
+            if report.get("capped"):
+                line += (
+                    f", capped from the measured "
+                    f"{float(report['measured_pse_per_h']):.3f} PSE/h"
+                )
+            if report.get("reason"):
+                line += f"; {report['reason']}"
+        else:
+            line += f": {report.get('reason')}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def explain_verbose(
     decision: Decision,
     *,
@@ -355,10 +377,13 @@ def explain_verbose(
     show_windows: bool = True,
     deprioritized: Collection[str] = (),
     objective: str | None = None,
+    rates: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> str:
     """Full rendering: headline, ranked table, per-window arithmetic, exclusions.
 
     ``objective`` names what ranked the table; ``None`` is today's per-account waste.
+    ``rates`` is the working rate per provider that waste was computed at, rendered
+    under the objective line (it plays no part under the joint objective).
     """
     blocks: list[str] = [
         explain_decision(decision, margin=margin, deprioritized=deprioritized)
@@ -369,6 +394,8 @@ def explain_verbose(
         if objective == "joint"
         else "objective: PSE at risk of expiring before reset (tier-normalized)"
     )
+    if rates and objective != "joint":
+        blocks.append(format_rates(rates))
 
     table = format_ranked_table(decision)
     if table:

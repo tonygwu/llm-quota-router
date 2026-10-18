@@ -1126,6 +1126,9 @@ class ScoreBreakdown:
         reason: Human-readable explanation of the score or the exclusion.
         min_remaining: The regime-B objective before scaling, recorded for auditability.
             Optional so positional construction stays compatible with the field list above.
+        rate_pse_per_hour: The working rate the waste term credited this account with,
+            in PSE per hour, after the five-hour ceiling. ``None`` when the account
+            publishes no weekly window, so no rate took part in its score.
     """
 
     account_id: str
@@ -1140,6 +1143,7 @@ class ScoreBreakdown:
     eligible: bool = True
     reason: str = ""
     min_remaining: float | None = None
+    rate_pse_per_hour: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1179,6 +1183,12 @@ class ScoreBreakdown:
                 "min_remaining",
                 _as_finite(self.min_remaining, "ScoreBreakdown.min_remaining"),
             )
+        if self.rate_pse_per_hour is not None:
+            object.__setattr__(
+                self,
+                "rate_pse_per_hour",
+                _as_finite(self.rate_pse_per_hour, "ScoreBreakdown.rate_pse_per_hour"),
+            )
 
     @property
     def binding(self) -> WindowSlack | None:
@@ -1203,6 +1213,7 @@ class ScoreBreakdown:
             "per_window": [row.to_dict() for row in self.per_window],
             "eligible": self.eligible,
             "reason": self.reason,
+            "rate_pse_per_hour": self.rate_pse_per_hour,
         }
 
 

@@ -26,6 +26,7 @@
   },
   "generated_at": "<GENERATED_AT>",
   "ranked": [],
+  "rate": {},
   "warnings": [
     "oracle returned no accounts",
     "no candidates at all"

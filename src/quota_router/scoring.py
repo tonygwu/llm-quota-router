@@ -439,6 +439,49 @@ def stocks_from_snapshot(
     )
 
 
+def rate_for(cfg: Any, provider: str) -> float:
+    """The working rate, in PSE per hour, to credit an account of ``provider`` with.
+
+    Three sources; the first one present wins:
+
+    1. ``rate_pse_per_hour`` -- one explicit scalar for the whole field. The replay sets
+       it to score a day's decisions at that day's trailing demand.
+    2. ``rate_pse_per_hour_by_provider`` -- a mapping ``{provider: rate}``. The CLI
+       fills it from the demand forecast, one rate per provider group, so a
+       cross-provider capability pick credits each account with its own group's
+       measured demand.
+    3. :data:`DEFAULT_RATE_PSE_PER_HOUR` -- the guess documented above. The CLI reports
+       every fall-through to it, because the rate decides the whole ranking whenever
+       every pool looks too big to drain.
+
+    A rate that is present but not a finite, non-negative number raises: a silent
+    default here would turn a broken forecast into a quietly wrong ranking.
+    """
+    raw = cfg_get(cfg, "rate_pse_per_hour")
+    source = "rate_pse_per_hour"
+    if raw is None:
+        by_provider = cfg_get(cfg, "rate_pse_per_hour_by_provider")
+        if by_provider is not None:
+            if not isinstance(by_provider, Mapping):
+                raise ValueError(
+                    f"rate_pse_per_hour_by_provider must be a mapping of provider to "
+                    f"PSE/hour, got {by_provider!r}"
+                )
+            raw = by_provider.get(provider)
+            source = f"rate_pse_per_hour_by_provider[{provider!r}]"
+    if raw is None:
+        return DEFAULT_RATE_PSE_PER_HOUR
+    if isinstance(raw, bool):
+        raise ValueError(f"{source} must be a real number of PSE/hour, got {raw!r}")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source} must be a real number of PSE/hour, got {raw!r}") from exc
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{source} must be finite and >= 0 PSE/hour, got {raw!r}")
+    return value
+
+
 def pse_objective(
     stocks: Stocks, now_s: float, model_class: str | None, rate: float
 ) -> tuple[float, float, str]:
@@ -518,12 +561,14 @@ def account_score(
     # here -- doing so would scale a quantity that is already denominated in
     # 20x-equivalents and re-introduce the tier bias this change exists to remove.
     stocks = stocks_from_snapshot(snap, now_s, capacity, plan_for(cfg, snap.id))
+    applied_rate: float | None = None
     if stocks is not None:
-        # Unset in production, where DEFAULT_RATE_PSE_PER_HOUR applies; the replay sets
-        # it to score today's objective at a measured rate.
-        rate = cfg_get(cfg, "rate_pse_per_hour", default=DEFAULT_RATE_PSE_PER_HOUR)
-        score, waste_pse, label = pse_objective(stocks, now_s, model_class, float(rate))
+        # Per provider from the demand forecast (the CLI fills the map), one scalar from
+        # the replay, else the documented default. See rate_for.
+        rate = rate_for(cfg, snap.provider)
+        score, waste_pse, label = pse_objective(stocks, now_s, model_class, rate)
         objective = waste_pse
+        applied_rate = min(rate, MAX_SUSTAINED_RATE_PSE_PER_HOUR)
     else:
         objective = slack if resolved == REGIME_A else remaining
         label = "min_slack (no weekly window; cannot normalize)"
@@ -545,6 +590,7 @@ def account_score(
             f"(binding {binding}, tier scale {capacity:.2f})"
         ),
         min_remaining=remaining,
+        rate_pse_per_hour=applied_rate,
     )
 
 

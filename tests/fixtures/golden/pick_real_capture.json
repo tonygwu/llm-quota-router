@@ -57,6 +57,7 @@
       "source": "live"
     }
   ],
+  "rate": {},
   "warnings": [
     "account 'claude_d' is configured under provider 'claude' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the claude adapter does not read declared accounts",
     "account 'codex' is configured under provider 'codex' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the codex adapter does not read declared accounts",

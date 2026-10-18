@@ -189,6 +189,7 @@
       "source": "live"
     }
   ],
+  "rate": {},
   "warnings": [
     "antigravity_gemini: snapshot carries no usage windows",
     "antigravity_gemini_b: snapshot carries no usage windows",

@@ -89,8 +89,16 @@ the counterfactual says.
   horizon, so N accounts claim N times the hours that exist. Two accounts can each read
   "0.000 PSE nothing wasted" while one shared rate cannot absorb both pools, and
   `status` and `explain` under-report waste more as a fleet grows. **This is a reporting
-  bug, not a routing bug.** Under one shared rate, earliest-deadline-first already
-  minimises total waste, so the ranking the router produces today is the right order.
+  bug, not a routing bug, as long as the rate is the measured one.** Under one shared
+  rate, earliest-deadline-first already minimises total waste, so the ranking the router
+  produces today is the right order. With a rate far below demand it is not: on the
+  evening of 2026-10-17 PT the hardcoded 0.04 PSE/h left both `claude` (2.8 PSE, 41h to
+  reset) and
+  `claude_e` (1.5 PSE, 8h to reset) looking undrainable and ranked the bigger pile
+  first, while the measured 0.16 PSE/h drains `claude` in time and loses 0.27 PSE of
+  `claude_e`. `pick` now credits each provider with its forecast rate and reports every
+  fall-through to the default (`rate` in the payload); the double-counted *figure* is
+  still open.
   A fleet-aware *score* that ranks the account showing unavoidable waste first spends in
   the wrong order: it lets the earlier pool expire too. A first attempt did exactly that
   and broke `test_ranking_across_realistic_accounts_prefers_the_soonest_deadline_with_quota_at_risk`.
@@ -358,8 +366,10 @@ operator's Google accounts, so it is the only copy of the raw data.
    risk. With capacity patched to 0.088 in a scratch wrapper, it scored 0.000 and ranked
    last. At the true size, a full pool in a started week shows PSE at risk only in the
    last 5 to 10 hours of that week, depending on where its five-hour window stands. The
-   table uses `pse.wasted_pse` at the default rate of 0.04 PSE/h, with a fresh five-hour
-   window that resets in 5 hours:
+   table uses `pse.wasted_pse` at the old default rate of 0.04 PSE/h, with a fresh
+   five-hour window that resets in 5 hours. Since the evening of 2026-10-17 PT `pick`
+   credits a fallback-only provider at the 0.2 PSE/h ceiling instead, so routing sees
+   less at risk than this table; the sizes, not the rate, are the point here:
 
    | Hours to weekly reset | At risk, capacity 1.0 | At risk, capacity 0.088 |
    |---|---|---|
@@ -473,8 +483,10 @@ Gemini 4 Argon bullet in #2).
 Applied alone, it sizes each Gemini week at 15 PSE, which is 2.4 Max-20x weeks. Every
 standard pick then moves from Claude Sonnet to Gemini Flash on a size nobody measured.
 Even a pool whose reset slides 168 hours ahead, so that it never reaches the reset (#9),
-would read 8.28 PSE at risk: `pse.wasted_pse` gives 15 minus 0.04 PSE/h over 168 hours,
-where k = 6.25 gives 0.000. A Gemini week that expires would log 14.94 PSE instead of
+would read 8.28 PSE at risk at the old default rate: `pse.wasted_pse` gives 15 minus
+0.04 PSE/h over 168 hours, where k = 6.25 gives 0.000 (at the 0.2 PSE/h ceiling `pick`
+now credits a fallback-only provider with, both read 0.000, so the mis-sizing shows in
+`waste`, not in routing). A Gemini week that expires would log 14.94 PSE instead of
 6.23. Nobody has checked Flash's
 quality on the standard tier's real work.
 

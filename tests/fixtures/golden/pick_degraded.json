@@ -26,6 +26,7 @@
   },
   "generated_at": "<GENERATED_AT>",
   "ranked": [],
+  "rate": {},
   "warnings": [
     "oracle failed: RuntimeError: usage read exploded",
     "no candidates at all"

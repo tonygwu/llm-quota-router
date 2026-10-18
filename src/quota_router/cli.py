@@ -77,6 +77,7 @@ from .types import (
     PROVIDER_CURSOR,
     PROVIDERS,
     WINDOW_KEY_5H,
+    WINDOW_KEY_7D,
     normalize_model_class,
     QUOTA_ROUTER_CONTRACT_VERSION,
     SOURCE_CACHE,
@@ -486,6 +487,19 @@ class Prepared:
     #: What objective ranked this decision and why; ``None`` under today's default so
     #: no payload or history line changes.
     objective: dict[str, Any] | None = None
+    #: The working rate the waste term credited each candidate provider with, and its
+    #: provenance, as :func:`_working_rates` built it. Rendered as ``rate`` in the
+    #: payload; only providers whose candidates carry a weekly window appear. Under the
+    #: joint objective the block is informational: that scorer reads the forecast itself.
+    rates: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def rates_by_provider(self) -> dict[str, float]:
+        """The measured rates for the scorer; a provider left out scores at the default."""
+        return {
+            provider: float(report["measured_pse_per_h"])
+            for provider, report in self.rates.items()
+            if report.get("source") == "measured"
+        }
 
     @property
     def snapshot_map(self) -> dict[str, AccountSnapshot]:
@@ -1026,34 +1040,17 @@ def _build_joint(
     except ImportError as exc:  # pragma: no cover - the pure layer ships with the CLI
         return _joint_fallback(report, f"decision layer unavailable: {exc}", warnings)
 
-    cached, problem = forecast_mod.read_cache(env=env)
-    if cached is None:
-        return _joint_fallback(report, f"demand forecast unavailable: {problem}", warnings)
-    age = now_s - cached.computed_at_s
+    cached, age, problem = _usable_forecast(engine, now_s, env)
     report["forecast_age_s"] = age
-    if age < 0 or age > engine.forecast_max_age_s:
-        return _joint_fallback(
-            report,
-            f"demand forecast stale (computed {_format_age(age)} ago, limit "
-            f"{_format_age(engine.forecast_max_age_s)})",
-            warnings,
-        )
+    if cached is None:
+        return _joint_fallback(report, problem or "demand forecast unavailable", warnings)
     wanted = {
         joint_mod.GROUP_FOR_PROVIDER.get(snap.provider) for snap in candidates
     } - {None}
     for group in sorted(wanted):
-        measured = cached.groups.get(group)
-        if measured is None:
-            return _joint_fallback(
-                report, f"demand forecast has no {group} group", warnings
-            )
-        if measured.coverage < engine.forecast_min_coverage:
-            return _joint_fallback(
-                report,
-                f"demand forecast for {group} has coverage {measured.coverage:.0%}, "
-                f"below {engine.forecast_min_coverage:.0%}",
-                warnings,
-            )
+        group_problem = _group_problem(engine, cached, group)
+        if group_problem is not None:
+            return _joint_fallback(report, group_problem, warnings)
 
     # The projection sees the whole configured fleet; `--only`/`--exclude` narrow the
     # read, so the projection is then partial for any group the narrowing cut.
@@ -1124,6 +1121,171 @@ def _build_joint(
     )
     report["used"] = "joint" if wanted_objective == "joint" else "own_waste"
     return context, report
+
+
+def _usable_forecast(
+    engine: Any, now_s: float, env: Mapping[str, str]
+) -> tuple[Any, float | None, str | None]:
+    """The cached demand forecast, if it is fresh enough to act on.
+
+    Returns ``(forecast, age_s, problem)``: the forecast and its age when usable; the
+    age (when the file was readable) and why not otherwise. One gate for both readers
+    -- the joint objective and the working rate -- so they can never disagree about
+    which forecast is current.
+    """
+    cached, problem = forecast_mod.read_cache(env=env)
+    if cached is None:
+        return None, None, f"demand forecast unavailable: {problem}"
+    age = now_s - cached.computed_at_s
+    if age < 0 or age > engine.forecast_max_age_s:
+        return None, age, (
+            f"demand forecast stale (computed {_format_age(age)} ago, limit "
+            f"{_format_age(engine.forecast_max_age_s)})"
+        )
+    return cached, age, None
+
+
+def _group_problem(engine: Any, cached: Any, group: str) -> str | None:
+    """Why ``group``'s measured demand cannot be trusted, or ``None`` when it can."""
+    measured = cached.groups.get(group)
+    if measured is None:
+        return f"demand forecast has no {group} group"
+    if measured.coverage < engine.forecast_min_coverage:
+        return (
+            f"demand forecast for {group} has coverage {measured.coverage:.0%}, "
+            f"below {engine.forecast_min_coverage:.0%}"
+        )
+    return None
+
+
+def _working_rates(
+    config: Config,
+    candidates: Sequence[AccountSnapshot],
+    now_s: float,
+    env: Mapping[str, str],
+    warnings: list[str],
+) -> dict[str, dict[str, Any]]:
+    """The working rate to credit each candidate provider with, and where it came from.
+
+    The waste term is ``weekly left - rate x hours to reset``, so the rate decides
+    whether a long horizon can drain a big pool. The measured demand of the provider's
+    group (``quotapick forecast``, both streams) is that rate. The hardcoded default is
+    a guess for when nothing was measured, and every fall-through to it is reported,
+    as ``reason`` here and as a warning: on the evening of 2026-10-17 PT the default
+    left both ``claude`` (2.8 PSE, 41h to reset) and ``claude_e`` (1.5 PSE, 8h to reset)
+    looking undrainable and ranked the bigger pile first, while the measured 0.16 PSE/h
+    drains ``claude`` in time and loses 0.27 PSE of ``claude_e``.
+
+    ``config`` is the fleet as configured, before ``--only``/``--exclude`` flip accounts
+    off: those flags narrow the candidates, never the demand a fallback pool stands behind.
+
+    Two rules, both stated in the entry's ``reason``:
+
+    * Only providers whose candidates publish a weekly window appear. The rate is read
+      by nothing else (``scoring.stocks_from_snapshot`` returns ``None`` without one),
+      so a provider that cannot be normalized gets no entry and no warning.
+    * A provider whose enabled accounts are all ``unmetered = "fallback"`` is credited
+      with the demand it stands behind: the sum over the metered providers' groups,
+      capped at the five-hour ceiling. Its own measured demand is an artifact of being
+      last in line, not a forecast of what it could absorb. On this fleet the Antigravity
+      pools measure 0.005 PSE/h; at that rate their placeholder-sized pools (BACKLOG #9)
+      read as the biggest waste in the fleet and took every capability pick.
+    """
+    from . import joint as joint_mod  # type: ignore[attr-defined]
+    from . import scoring  # type: ignore[attr-defined]
+
+    engine = config.engine
+    ceiling = scoring.MAX_SUSTAINED_RATE_PSE_PER_HOUR
+    default = scoring.DEFAULT_RATE_PSE_PER_HOUR
+    cached, age, problem = _usable_forecast(engine, now_s, env)
+    normalizable = {
+        snap.provider
+        for snap in candidates
+        if any(window.key == WINDOW_KEY_7D for window in snap.windows)
+    }
+    metered: set[str] = set()
+    fallback: set[str] = set()
+    for account in config.enabled_accounts():
+        if getattr(account, "unmetered", None) == "fallback":
+            fallback.add(account.provider)
+        else:
+            metered.add(account.provider)
+    fallback_only = fallback - metered
+
+    def measured_for(group: str) -> tuple[float | None, str | None]:
+        if cached is None:
+            return None, problem
+        group_problem = _group_problem(engine, cached, group)
+        if group_problem is not None:
+            return None, group_problem
+        streams = cached.groups[group]
+        return streams.other.pse_per_h + streams.run.pse_per_h, None
+
+    # The demand every fallback pool stands behind: each metered group, counted once.
+    behind: dict[str, float] = {}
+    for provider in sorted(metered):
+        group = joint_mod.GROUP_FOR_PROVIDER.get(provider)
+        if group is None or group in behind:
+            continue
+        measured, _why = measured_for(group)
+        if measured is not None:
+            behind[group] = measured
+
+    rates: dict[str, dict[str, Any]] = {}
+    for provider in sorted(normalizable):
+        measured: float | None = None
+        if provider in fallback_only:
+            if behind:
+                measured = sum(behind.values())
+                reason: str | None = (
+                    "fallback pool: credited with the demand it stands behind ("
+                    + " + ".join(f"{group} {rate:.3f}" for group, rate in sorted(behind.items()))
+                    + " PSE/h), not with its own, which reaches it only when nothing "
+                    "measured fits"
+                )
+            else:
+                reason = (
+                    "fallback pool stands behind no measured demand "
+                    f"({problem or 'no metered provider has a usable forecast group'})"
+                )
+        else:
+            group = joint_mod.GROUP_FOR_PROVIDER.get(provider)
+            if group is None:
+                reason = f"no demand forecast group covers provider {provider}"
+            else:
+                measured, reason = measured_for(group)
+        capped = measured is not None and measured > ceiling
+        rates[provider] = {
+            "pse_per_h": default if measured is None else min(measured, ceiling),
+            "measured_pse_per_h": measured,
+            "source": "default" if measured is None else "measured",
+            "forecast_age_s": age,
+            "capped": capped,
+            "reason": reason,
+        }
+        if measured is None:
+            warnings.append(
+                f"{provider}: working rate defaulted to {default:.3f} PSE/h ({reason}); "
+                f"the waste term credits each {provider} account with that guess, not "
+                f"with measured demand"
+            )
+        elif capped and provider not in fallback_only:
+            # A fallback pool is expected to sit at the ceiling: it is credited with
+            # every metered group at once. Its entry still says ``capped``.
+            warnings.append(
+                f"{provider}: measured demand {measured:.3f} PSE/h exceeds the five-hour "
+                f"ceiling of {ceiling:.3f} PSE/h; the ceiling is applied"
+            )
+        elif measured < default:
+            # The forecast is a trailing average, so a week away reads as 0.000 with
+            # full coverage. Applied as measured -- it is the truth about demand -- but
+            # said, because at this rate the ranking is the bigger pile first again.
+            warnings.append(
+                f"{provider}: measured demand {measured:.3f} PSE/h over the forecast "
+                f"window is below the {default:.3f} PSE/h default; at this rate every "
+                f"{provider} pool reads as waste and the bigger pile ranks first"
+            )
+    return rates
 
 
 def _joint_fallback(
@@ -1198,9 +1360,14 @@ def _decide(
     selection_state: dict[str, Any] = dict(prepared.state.selection) if sticky else {}
     prepared.selection_state = selection_state
 
+    cfg = config.engine_cfg(sticky=sticky)
+    # One working rate per provider, measured by _working_rates from the demand
+    # forecast. A provider missing here scores at the documented default, and
+    # ``prepared.rates`` says which ones those were and why.
+    cfg["rate_pse_per_hour_by_provider"] = prepared.rates_by_provider()
     shared: dict[str, Any] = {
         "now_s": now_s,
-        "cfg": config.engine_cfg(sticky=sticky),
+        "cfg": cfg,
         "model_class": model_class,
         "state": selection_state if sticky else None,
         "record": record,
@@ -1773,6 +1940,16 @@ def _prepare(
         objective_override=objective,
         stream=job_stream,
     )
+    # The fleet BEFORE --only/--exclude: the demand a fallback pool stands behind is
+    # a property of the fleet, not of this pick's candidate set. `status` skips it: it
+    # surfaces no waste-term result, and it is the command that refreshes the forecast
+    # (below, after this returns), so its warning would tell the operator to run the
+    # command they are running.
+    rates = (
+        {}
+        if event == "status"
+        else _working_rates(base_config, partition.candidates, now_s, env, warnings)
+    )
 
     prepared = Prepared(
         config=config,
@@ -1790,6 +1967,7 @@ def _prepare(
         capability=capability_ctx,
         joint=joint_ctx,
         objective=objective_report,
+        rates=rates,
     )
 
     records_a_pick = bool(write_state and not getattr(args, "dry_run", False))
@@ -2029,6 +2207,10 @@ def _pick_payload(prepared: Prepared) -> dict[str, Any]:
         # Additive, and only when [engine] configures the joint objective or shadow
         # mode: today's payload is byte-identical (tests/test_contract_golden.py).
         payload["objective"] = dict(prepared.objective)
+    # Additive: the working rate the waste term credited each provider with, and where
+    # it came from. Always present -- the fall-through to the default is the thing a
+    # caller most needs to see, so it is not hidden behind a flag.
+    payload["rate"] = {provider: dict(report) for provider, report in prepared.rates.items()}
     ctx = prepared.capability
     if ctx is None:
         return payload
@@ -2178,6 +2360,7 @@ def _cmd_pick(
                 _decision_for_render(prepared),
                 margin=_effective_margin(prepared),
                 deprioritized=prepared.config.deprioritized_accounts(),
+                rates=prepared.rates,
             )
             + "\n"
             + _reserve_block(prepared)
@@ -2203,6 +2386,9 @@ def _cmd_explain(
         payload["warnings"] = list(dict.fromkeys(prepared.warnings))
         if prepared.objective is not None:
             payload["projection"] = _projection_payload(prepared)
+        payload["rate"] = {
+            provider: dict(report) for provider, report in prepared.rates.items()
+        }
         _dump_json(payload, stdout)
         return EXIT_OK
 
@@ -2212,6 +2398,7 @@ def _cmd_explain(
             margin=_effective_margin(prepared),
             deprioritized=prepared.config.deprioritized_accounts(),
             objective=(prepared.objective or {}).get("used"),
+            rates=prepared.rates,
         )
         + "\n"
         + _reserve_block(prepared)

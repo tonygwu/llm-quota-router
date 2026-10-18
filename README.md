@@ -39,6 +39,22 @@ waste      = max(0, weekly_remaining - absorbable)      ->  argmax
 **Spend from the pool carrying the most quota that will expire unused.** When no
 account will waste anything, drain the one whose window resets soonest.
 
+`your working rate` is measured, not assumed. `pick` reads the demand forecast that
+`status` keeps (`quotapick forecast`: both streams of the provider's group) and credits
+every account of that provider with it. When the forecast is missing, older than
+`[engine] forecast_max_age_s`, or below `[engine] forecast_min_coverage`, the rate falls
+back to 0.04 PSE/h, and the pick says so: a warning per provider, and a `rate` block in
+the JSON naming the rate applied, its source and the reason. The rate decides the whole
+ranking whenever every pool looks too big to drain. On the evening of 2026-10-17 PT
+the default put `claude` (2.8 PSE left, 41h to reset) above `claude_e` (1.5 PSE left,
+8h to reset), while the measured 0.16 PSE/h said `claude` would be drained anyway and
+`claude_e` would lose 0.27 PSE. One exception: a provider whose accounts are all
+`unmetered = "fallback"` is credited with the demand it stands behind, the sum over the
+metered providers' groups, capped at the five-hour ceiling. Its own measured demand is
+an artifact of being last in line: the Antigravity pools measure 0.005 PSE/h, and at
+that rate their placeholder-sized pools would read as the biggest waste in the fleet and
+take every capability pick.
+
 Four details that are easy to get wrong:
 
 - **Fable is a constraint, not a pile.** Fable work draws down its own sub-cap

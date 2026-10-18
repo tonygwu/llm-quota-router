@@ -197,6 +197,7 @@ def test_pick_payload_matches_the_golden_schema(env):
         "degraded",
         "warnings",
         "generated_at",
+        "rate",
     }
     assert set(payload["decision"]) == {
         "account",
