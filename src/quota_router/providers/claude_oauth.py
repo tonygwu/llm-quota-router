@@ -470,6 +470,16 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
             resets_at_s = weekly_reset_s or parse_timestamp(entry.get("resets_at"))
         else:
             resets_at_s = parse_timestamp(entry.get("resets_at"))
+            if (
+                resets_at_s is None
+                and entry.get("is_active") is False
+                and pct_to_fraction(entry.get("percent")) == 0.0
+            ):
+                # An idle account: the endpoint says no such window is running, so
+                # the whole of it is available. That is an answer, not missing data,
+                # and there is no deadline to give it. A scoped row is different: it
+                # inherits the weekly reset above.
+                continue
         window = make_window(
             key=key,
             used_fraction=pct_to_fraction(entry.get("percent")),

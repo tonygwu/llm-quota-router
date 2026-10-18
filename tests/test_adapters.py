@@ -1025,6 +1025,38 @@ def test_parse_usage_payload_survives_rows_it_cannot_use() -> None:
     assert "lacked percent or resets_at" in joined
 
 
+def test_a_session_that_has_not_started_is_skipped_without_a_warning() -> None:
+    """An idle account's session row is ``percent: 0, resets_at: null, is_active: false``.
+
+    That is a well-formed answer, not missing data: no 5h window is running, so the
+    account has its whole session budget. Observed on claude_c on 2026-10-18, where every
+    reading carried "limits[] row 'session' lacked percent or resets_at; dropped", a note
+    that reads like a parse failure.
+    """
+    payload = usage_payload()
+    payload["limits"][0] = {
+        "kind": "session", "group": "session", "percent": 0, "severity": "normal",
+        "resets_at": None, "scope": None, "is_active": False,
+    }
+    windows, warnings = parse_usage_payload(payload, observed_at_s=NOW)
+
+    assert "5h" not in [window.key for window in windows]
+    assert not any("session" in warning for warning in warnings), warnings
+
+
+def test_an_active_session_with_no_reset_time_still_warns() -> None:
+    """The negative half: only an explicitly idle row is quiet. A running one is broken."""
+    payload = usage_payload()
+    payload["limits"][0] = {
+        "kind": "session", "group": "session", "percent": 12, "severity": "normal",
+        "resets_at": None, "scope": None, "is_active": True,
+    }
+    windows, warnings = parse_usage_payload(payload, observed_at_s=NOW)
+
+    assert "5h" not in [window.key for window in windows]
+    assert any("lacked percent or resets_at" in warning for warning in warnings), warnings
+
+
 def test_parse_usage_payload_disambiguates_two_rows_that_want_the_same_key() -> None:
     """Two scoped rows for the same model must both survive, not silently collapse."""
     payload = usage_payload()

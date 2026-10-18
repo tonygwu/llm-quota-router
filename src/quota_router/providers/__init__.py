@@ -374,14 +374,16 @@ def collect_snapshots(
     merged: list[AccountSnapshot] = []
     for account_id in order:
         snapshot = best[account_id]
-        restored, notes = _restore_missing_windows(snapshot, seen_windows.get(account_id, {}))
+        restored, notes = _restore_missing_windows(
+            snapshot, seen_windows.get(account_id, {}), now_s
+        )
         warnings.extend(notes)
         merged.append(restored)
     return merged, warnings
 
 
 def _restore_missing_windows(
-    snapshot: AccountSnapshot, known: Mapping[str, Any]
+    snapshot: AccountSnapshot, known: Mapping[str, Any], now_s: float
 ) -> tuple[AccountSnapshot, list[str]]:
     """Put back any window the winning source could not see.
 
@@ -399,9 +401,17 @@ def _restore_missing_windows(
     The restored window keeps its original provenance, and confidence drops to the
     lower of the two, so a merged snapshot never claims more certainty than its
     weakest part.
+
+    A window whose reset time has passed is not restored: it constrains nothing. On
+    2026-10-18 an idle claude_c read no 5h window live, and an older 5h window that had
+    reset an hour earlier came back. Confidence fell to 0.6, the account scored 92% of
+    its session instead of 100%, and every poll warned. A window that has not reset is
+    still restored, because the live payload can itself be a few seconds stale.
     """
     have = {w.key for w in snapshot.windows}
-    missing = [w for key, w in known.items() if key not in have]
+    missing = [
+        w for key, w in known.items() if key not in have and w.resets_at_s > now_s
+    ]
     if not missing:
         return snapshot, []
 

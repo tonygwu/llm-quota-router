@@ -474,6 +474,79 @@ def test_a_source_that_cannot_see_the_fable_window_must_not_look_unconstrained()
     )
 
 
+class _Fixed:
+    """An adapter that reports fixed snapshots, for the merge tests below."""
+
+    name = "fixed"
+
+    def __init__(self, snaps):
+        self._snaps = snaps
+
+    def snapshot(self, now_s):
+        return list(self._snaps)
+
+
+def _idle_claude_c(source: str, *windows: Window, confidence: float) -> AccountSnapshot:
+    return AccountSnapshot(
+        id="claude_c", windows=windows, tier=TIER_MAX_5X, source=source,
+        confidence=confidence,
+    )
+
+
+def test_a_window_that_has_already_ended_is_not_restored() -> None:
+    """Nothing is hidden when the only other copy of a window has already reset.
+
+    Observed on claude_c, 2026-10-18 03:50Z. The account was idle, so the live read
+    had no 5h window: the endpoint's session row said ``is_active: false``. An older
+    reading still held a 5h window observed at 00:50Z that had reset at 02:50Z. The
+    merge restored it. Confidence fell to 0.6, the account scored 92% of its session
+    budget instead of 100%, and every poll warned "live cannot see window(s) 5h".
+    A window past its reset constrains nothing, so there is nothing to restore.
+    """
+    from quota_router.providers import collect_snapshots
+    from quota_router.types import SOURCE_CACHE
+
+    live = _idle_claude_c(
+        SOURCE_LIVE, _w("7d", 0.01, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR), confidence=1.0
+    )
+    older = _idle_claude_c(
+        SOURCE_CACHE,
+        _w("5h", 0.08, length_s=FIVE_HOUR_S, ttr_s=-1 * HOUR),
+        _w("7d", 0.01, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR),
+        confidence=0.6,
+    )
+
+    merged, warnings = collect_snapshots([_Fixed([live]), _Fixed([older])], NOW)
+    got = next(s for s in merged if s.id == "claude_c")
+
+    assert "5h" not in {w.key for w in got.windows}, [w.key for w in got.windows]
+    assert got.confidence == 1.0
+    assert not any("cannot see window" in w for w in warnings), warnings
+
+
+def test_a_window_still_running_elsewhere_is_restored() -> None:
+    """The negative half: the live payload can be a few seconds stale, so a 5h window
+    that another source saw and that has NOT reset is still a real constraint."""
+    from quota_router.providers import collect_snapshots
+    from quota_router.types import SOURCE_CACHE
+
+    live = _idle_claude_c(
+        SOURCE_LIVE, _w("7d", 0.01, length_s=SEVEN_DAY_S, ttr_s=140 * HOUR), confidence=1.0
+    )
+    newer_session = _idle_claude_c(
+        SOURCE_CACHE,
+        _w("5h", 0.30, length_s=FIVE_HOUR_S, ttr_s=4 * HOUR),
+        confidence=0.6,
+    )
+
+    merged, warnings = collect_snapshots([_Fixed([live]), _Fixed([newer_session])], NOW)
+    got = next(s for s in merged if s.id == "claude_c")
+
+    assert "5h" in {w.key for w in got.windows}
+    assert got.confidence == 0.6
+    assert any("cannot see window(s) 5h" in w for w in warnings), warnings
+
+
 def test_an_account_blind_to_a_scoped_limit_is_excluded_not_treated_as_free() -> None:
     """When no source can see an account's Fable window, it is UNMEASURED, not free.
 
