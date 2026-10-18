@@ -46,8 +46,8 @@ items.
 ```
 
 Items 1 to 6 and 14 predate this format: they carry no Background, Impact, Fix or Touch
-points structure, and some cite no `file:line`. Items 9 and 10 carry no Fix label and no
-Touch points either. Their difficulty and filed tags were added on 2026-10-18, with `filed` set to the
+points structure, and some cite no `file:line`. Item 10 carries no Fix label and no Touch
+points either. Their difficulty and filed tags were added on 2026-10-18, with `filed` set to the
 UTC date of the commit that first filed each one. The implementer derives the touch
 points from the text. The claim helper matches `### <ID>. ` exactly, so an item heading
 at any other level cannot be claimed. A paragraph starting **Operator decision** records
@@ -58,7 +58,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #9, #10 and one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #10 and one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -99,12 +99,14 @@ nobody published. See the README section "An early reset is not waste".
    what would have burned elsewhere. Without that third piece a replay compares one real
    trajectory against an imagined one and the difference is unfalsifiable. Worth
    designing before building.
-4. **Antigravity rows are logged at a placeholder size.** The first four rows, from
+4. **Antigravity rows were logged at a placeholder size.** The first four rows, from
    2026-10-13 to 2026-10-16, use capacity 1.0. For the Claude/GPT pools that is about 11
    times the measured size: their two scheduled rows log 2.99 PSE, and the measurement
-   gives 0.26. The two Gemini rows are early resets, so they stay out of the waste total,
-   but they inflate the forfeited figure by a factor nobody has measured. #9 and #10 fix
-   the sizes; fix them before the figure is stated.
+   gives 0.26. Since 2026-10-18 those pools carry `capacity = 0.088` (#9), and `quotapick
+   waste` rescales their old rows to that size in `totals_at_capacity` without rewriting
+   the file; that is the total to publish. The two Gemini rows are early resets, so they
+   stay out of the waste total, but they inflate the forfeited figure by a factor nobody
+   has measured. The Gemini size is #10, and it must land before the figure is stated.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
@@ -113,8 +115,8 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-**Operator decision 2026-10-18:** proceed. State the figure as soon as #9 and #10 have
-landed and the Antigravity series covers one full weekly cycle.
+**Operator decision 2026-10-18:** proceed. State the figure as soon as #10 has landed
+(#9 landed the same day) and the Antigravity series covers one full weekly cycle.
 
 ---
 
@@ -127,7 +129,7 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
 
 - **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
   `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
-  "Spend ceiling the router enforces when a card is on file" (`config.py:800`). No code
+  "Spend ceiling the router enforces when a card is on file" (`config.py:817`). No code
   outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
   pool with a card on file could spend past its cap through `run`. No money is at risk
   while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
@@ -222,7 +224,8 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   telemetry shows the model that actually served it.
 
 - **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
-  of the Antigravity measurement (see #9) records unrouted eval runs on that account at
+  of the Antigravity measurement (`docs/measurements/2026-10-12-antigravity-capacity.md`)
+  records unrouted eval runs on that account at
   09:31Z. They came from a checkout whose environment turns its router integration on.
   It also records five busy replay sessions at 21:27Z, from another checkout of the same
   consumer, with no router pick of `claude_c`. The 21:27Z case is not proven: the account
@@ -251,18 +254,23 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   threshold set just above the noise in that estimate and stated where it is set, the
   shrinkage effect above is confirmed or filed as its own item, and a test pins the rule.
   The one cost of a flip that remains is a cold prompt cache on the new account, which is
-  why the margin is small rather than zero.
+  why the margin is small rather than zero. Measured while #9 shipped (2026-10-18): under
+  `own_waste`, a 0.088 pool holding the seat with the same unscaled slack as a 1.0
+  challenger carrying 3.37 PSE at risk keeps it (`select.py`, the margin
+  `incumbent x 1.15 + 0.02` is unscaled), and releases it only after modest use, because a
+  small pool's fraction moves eleven times faster. Under `joint`, `objective_gap` releases
+  it at once. The rule above closes this case too.
 
 - *Operator decision pending.* **`[providers]` weights do nothing for an account with a weekly window.**
-  `account_score` computes the weight (`scoring.py:487`) but returns the PSE waste score
-  without it (`scoring.py:520-525`). Only the no-weekly-window fallback multiplies by it
-  (`scoring.py:530`). The tests that pin the weight, such as
+  `account_score` computes the weight (`scoring.py:531`) but returns the PSE waste score
+  without it (`scoring.py:564-572`). Only the no-weekly-window fallback multiplies by it
+  (`scoring.py:576`). The tests that pin the weight, such as
   `test_provider_weight_scales_the_score` (`tests/test_scoring.py:452`), build a
   `seven_day` window. That is not the `7d` key, so they exercise only the fallback. On
   2026-10-18 one snapshot scored 0.8000 at weight 1.0 and 0.4000 at weight 0.5 with a
   `seven_day` window, and 4.6650 at both weights with a `7d` window. Nothing warns, as
   `tier_override_warnings` does for `[tiers]`. The defaults are not neutral:
-  `config.py:1228` ships claude 1.0, codex 0.7, cursor 0.5 and antigravity 0.3, and the
+  `config.py:1262` ships claude 1.0, codex 0.7, cursor 0.5 and antigravity 0.3, and the
   live `engine_cfg` carries exactly those. They date from `7386ddc` (2026-08-14), and the
   PSE path has ignored them since `de80483` (2026-08-15). So every live pick since then
   has scored Codex at weight 1.0, and every pick since `8151c71` gave the Antigravity
@@ -271,8 +279,9 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   30% and every Codex score to 70%. Closes when the operator chooses between applying
   the weights on the PSE path, which changes what a PSE means, and removing them with a
   loud loader warning, and a test with a `7d` window pins the choice. The question is
-  separate from #9's capacity, which is decided: a weight and a capacity both scale what Antigravity scores, and they
-  must not be tuned to cancel each other.
+  separate from the Antigravity capacity, which #9 set on 2026-10-18: a weight and a
+  capacity both scale what Antigravity scores, and they must not be tuned to cancel each
+  other.
 
 ---
 
@@ -303,7 +312,7 @@ to `own_waste` and carry no five-hour cap.
 
 ---
 
-### 4. The joint projection cannot move work across providers  `[difficulty: xhigh]`  `[filed: 2026-10-14]`  `[BLOCKED: the Antigravity half of (a) waits on #9 and #10; (c) is #15]`
+### 4. The joint projection cannot move work across providers  `[difficulty: xhigh]`  `[filed: 2026-10-14]`  `[BLOCKED: the Antigravity half of (a) waits on #10; (c) is #15]`
 
 The projection and the replay keep provider groups apart: Claude work stays on Claude
 accounts. That makes #3's stall figure an upper bound for work that could have run on
@@ -327,14 +336,13 @@ rate; (c) an early-reset hazard per provider, measured from `waste.jsonl`, that 
 the effective deadline forward. Then re-run the replay gate with cross-provider routing.
 
 *Antigravity part of (a), as of 2026-10-18:* the Claude/GPT pools were measured on
-2026-10-12. Their k = 2.0 is now in the operator config, and their capacity of about 0.088
-has no config key yet (#9). At capacity 1.0 the router overvalues those pools about 11
-times; it does not undervalue them. The Gemini pools have a measured k = 15 that is not
-applied and a size nobody has measured (#10).
+2026-10-12. Their k = 2.0 and their capacity of 0.088 have been in the operator config
+since 2026-10-18 (#9, shipped), so the Claude/GPT half of this part is done. The Gemini
+pools have a measured k = 15 that is not applied and a size nobody has measured (#10).
 
 *Split 2026-10-18:* part (c), the early-reset hazard, is #15 and needs nothing from this
 item. The Codex half of (a) needs a Codex size measurement that no item carries yet.
-**Operator decision 2026-10-18:** proceed with the rest as soon as #9 and #10 land.
+**Operator decision 2026-10-18:** proceed with the rest as soon as #10 lands.
 
 ---
 
@@ -382,160 +390,9 @@ stay byte-identical.
 
 ---
 
-### 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`  `[claimed by: #1]`
+### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[BLOCKED: the operator approves step 1's price basis before any quota is spent]`
 
-**Background.** Capacity, the size of one five-hour window in PSE, comes only from the
-plan tier. `AccountSnapshot.capacity` returns `capacity_for_tier(self.tier)`
-(`types.py:843-845`). Antigravity pools have the tier `unknown`, which maps to
-`UNKNOWN_TIER_CAPACITY = 1.0` (`types.py:301`). `[tiers]` overrides do not reach scoring
-(`tier_override_warnings`, `config.py:1081`), and no per-account key exists. A status run
-on 2026-10-13 printed `antigravity_claude {'tier': 'unknown', 'capacity': 1.0}`.
-
-**An idle Antigravity pool's weekly reset behaves two ways, and nobody knows why.**
-
-- *Sliding.* Every poller record from 2026-10-18T01:24:21Z to 01:40:09Z shows all four
-  pools at `used 0.000`, with the weekly reset exactly 168.00 hours after the reading.
-  The reset moves forward with the clock. The Gemini pools slid like this straight
-  after their early resets on 2026-10-16.
-- *Fixed.* After `antigravity_claude`'s scheduled reset at 2026-10-13T16:01:20Z, the next
-  reset stayed fixed at 2026-10-20T16:01:20Z with `used 0.0` until about
-  2026-10-14T09:00Z. Then, still with no use, it jumped to 168 hours ahead
-  (`2026-10-21T09:01:36Z` at 09:01:29Z) and slid from then on. `antigravity_claude_b`
-  did the same for about 17 hours after its reset on 2026-10-15.
-
-So a sliding pool cannot reach its reset, and it loses nothing while it slides. What
-switches a pool between the two behaviors, and whether the first use fixes the boundary,
-is unknown. Find out before relying on either. Both scheduled Antigravity rows in
-`waste.jsonl` come from pools that the measurement below used part-way and then left.
-
-A measurement on 2026-10-12 sized the Antigravity Claude/GPT pools. Its results, method,
-per-rep numbers and assumptions are recorded in
-`docs/measurements/2026-10-12-antigravity-capacity.md`. The raw data, harness and analysis
-are in `measurements/agy-capacity-2026-10-12/` in the checkout container, beside
-`repo-prod`. The main file is `analysis2-final.json`, and `LEDGER.txt` lists every stop
-and exclusion. That directory is not in git, because hundreds of its files name the
-operator's Google accounts, so it is the only copy of the raw data.
-
-- **k = 2.0** on both Google accounts: 6 reps on `antigravity_claude` (sd 0.000005) and 2
-  on `antigravity_claude_b`. The operator config carries `weekly_to_session = 2.0` on both.
-- **A full weekly pool holds $50.07 of Opus 5.5 work at list price.** Antigravity input
-  was priced as cache writes at $5/M, and an input-heavy rep confirmed that rate. The
-  agy tool records a model code, not a name, and an earlier scan mapped that code to Opus 5.5.
-- **A Max-20x five-hour window holds about $283.** This came from `claude_c`, a Max-5x
-  account, at $0.708 per point of its five-hour bar over 3 clean reps ($0.761, $0.628 and
-  $0.751). One more rep was excluded as contaminated. A clean pilot rep at $0.624 was not
-  pooled; with it the mean is $0.691 and the session estimate below becomes about 0.091
-  PSE. The meter reads whole percents, so each rep carries about ±18%. The division by
-  the 0.25 tier scale is an assumption: `claude_c` reads k = 9.8 where 20x accounts read
-  6.25, so a 5x plan may not be exactly a quarter of a 20x plan.
-- **So one Antigravity Claude/GPT five-hour window is about 0.088 PSE**, with a range of
-  0.082 to 0.100 across reps. That is 8.8% of a Max-20x five-hour window. Its weekly pool
-  holds only 2 such windows, so it is about 0.177 PSE, or 2.8% of one Max-20x week, which
-  holds 6.25. Capacity 1.0 overstates the pool about 11 times.
-
-**Impact.**
-
-1. *Routing.* A premium dry run (`pick --dry-run --no-sticky --capability premium`, one
-   snapshot at 2026-10-13T03:03:47Z) ranked `antigravity_claude` third, at 0.702 PSE at
-   risk. With capacity patched to 0.088 in a scratch wrapper, it scored 0.000 and ranked
-   last. At the true size, a full pool in a started week shows PSE at risk only in the
-   last 5 to 10 hours of that week, depending on where its five-hour window stands. The
-   table uses `pse.wasted_pse` at the old default rate of 0.04 PSE/h, with a fresh
-   five-hour window that resets in 5 hours. Since the evening of 2026-10-17 PT `pick`
-   credits a fallback-only provider at the 0.2 PSE/h ceiling instead, so routing sees
-   less at risk than this table; the sizes, not the rate, are the point here:
-
-   | Hours to weekly reset | At risk, capacity 1.0 | At risk, capacity 0.088 |
-   |---|---|---|
-   | 24 | 1.040 | 0.000 |
-   | 8 | 1.680 | 0.035 |
-   | 1 | 1.960 | 0.136 |
-
-2. *The waste figure.* `waste.jsonl` records each expired window at the router's size
-   (`tier_scale=reading.tier_scale`, `waste.py:603`), and nothing skips Antigravity pools.
-   The first four rows all carry `tier_scale: 1.0`:
-
-   | Account | Reset | Kind | Remaining | Logged PSE | At 0.088 |
-   |---|---|---|---|---|---|
-   | `antigravity_claude` | 2026-10-13T16:01:20Z | scheduled | 0.576 | 1.151 | 0.101 |
-   | `antigravity_claude_b` | 2026-10-15T02:33:12Z | scheduled | 0.921 | 1.843 | 0.162 |
-   | `antigravity_gemini_b` | 2026-10-16T22:06:28Z | early | 0.994 | 6.216 | unknown (#10) |
-   | `antigravity_gemini` | 2026-10-16T22:15:24Z | early | 0.996 | 6.225 | unknown (#10) |
-
-   #1 plans to publish this figure.
-
-**Operator decision 2026-10-18: Encode 0.088.** The operator also mentioned a small bias
-toward Antigravity, such as 0.10 in place of 0.088; step 5 sets the measured value
-unless the operator asks for the bias in so many words. How the decision was reached:
-on 2026-10-12 the operator asked for Antigravity
-quota to be used more aggressively, because its app always shows the pools near full. The
-measuring agent first recommended keeping the overstatement for that reason. On
-2026-10-13 it withdrew that recommendation. The idle-reset finding above came later, on
-2026-10-18. It means a full meter in the app is not always losing quota, but the data do
-not yet say when it is. The options:
-
-- *Encode 0.088. This is the recommendation.* Ranking and waste rows become honest. The
-  Antigravity Claude pools then rank last almost always, so they mostly stay idle. While
-  Claude quota is also expiring, a call sent to Antigravity
-  saves Claude quota that then expires, so total work does not change. In the 2026-10-13
-  dry run `claude_b` carried 2.803 PSE at risk, and #1 counts 54.68 PSE expired unused
-  over eight weekly cycles. When the Claude accounts run short, they have nothing at risk
-  or do not fit, and the router picks Antigravity at its true size anyway. That case is
-  now more likely: `claude_d` (2.715 PSE at risk in that dry run) has been disabled since
-  its plan ended, per the operator config on 2026-10-18. #3 shows that a fleet with one
-  20x account fewer leaves demand unmet in bursts. A pool kept idle is full at that
-  moment.
-- *Keep 1.0.* Antigravity is picked early and its meter moves, which is what the
-  operator asked for. A pool used part-way and then left can expire with quota in it, as
-  both scheduled rows above did. It gets no extra work done while Claude quota expires,
-  it can leave the pools spent when the Claude accounts run short, and every Antigravity
-  row in the waste figure stays about 11 times too large.
-- *Prefer Antigravity regardless.* If the operator wants that, the honest tool is an
-  explicit preference, not a false size. None works today: `deprioritize` does the
-  opposite, and the `[providers]` weights are ignored on this path (see the bullet in
-  #2).
-
-**What would close it:** the operator's choice, then the steps for that choice. *Keep
-1.0* closes when the operator config says so in a comment and `quotapick waste` marks
-Antigravity rows as placeholder-sized, so #1 can state its figure without them. *Prefer
-Antigravity* closes with steps 1 to 6 below, plus a preference setting filed as its own
-item. *Encode 0.088* closes with steps 1 to 6:
-
-1. Add an optional per-account `capacity` to `AccountConfig`, next to `weekly_to_session`
-   (`config.py:378`). Refuse it unless it is finite and greater than 0, as loudly as
-   `plan_for` refuses a bad k (`scoring.py`).
-2. Make the configured value the snapshot's capacity wherever a snapshot is built for that
-   account. Scoring (`scoring.py:486`, `:520`), the joint projection (`joint.py:162-178`),
-   status output and the waste row's `tier_scale` must all read the same number. Keep
-   `tier` as reported, and change only capacity.
-3. Write the tests first and watch them fail. One test checks that a configured capacity
-   changes a real pick, built like `test_a_configured_k_reaches_a_real_pick`
-   (`tests/test_k_calibration.py:569`). Another checks that a waste row written for that
-   account carries the capacity. Use the window keys `5h` and `7d`. The old `five_hour`
-   and `seven_day` keys take the no-weekly-window fallback, so a test built on them tests
-   nothing.
-4. Ship from repo-prod and verify as `CLAUDE.md` says.
-5. When the operator says yes, back up the operator config and set `capacity = 0.088` on
-   both Antigravity Claude pools. Also rewrite its Antigravity comments, which still call
-   the pools a "last resort for capability picks only" that "serves when no measured
-   account fits". They have been stale since `8151c71` made the pools measured.
-6. Decide how to treat the rows already in `waste.jsonl`. They carry `k` and `tier_scale`,
-   so a report can rescale them. Rewriting a file that is never pruned needs its own
-   decision.
-
-*Risks and edge cases:* every capability pick that can land on Antigravity changes rank.
-Hysteresis compares unscaled slack (`select.py`), so check that the switch test does not
-start to favor the small pools. The replay gate in #3 reads capacity through the joint
-projection, so run it again after the change.
-
-*Why high, not medium:* the change crosses config, snapshot, scoring, the joint
-projection and the waste writer, and it waits on an operator decision.
-
----
-
-### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[BLOCKED: waits on #9; then show the measurement method before spending quota]`
-
-**Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools
+**Background.** The 2026-10-12 measurement read k = 15.0 for both Antigravity Gemini pools
 (details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
 The reads were consecutive and came from one `/usage` replica: 13 of 16 changes on
 `antigravity_gemini` (mean 15.0006) and 12 of 16 on `antigravity_gemini_b` (mean
@@ -544,9 +401,11 @@ sometimes jumps in one read, out of step with the weekly bar. Of seven flagged j
 five read 0.0100 to 0.0113 and two read 0.0009 and 0.0058. The operator
 config leaves both Gemini pools on the
 default 6.25. Their size in PSE was never measured, so their capacity stays at the
-placeholder 1.0 from #9.
+tier's placeholder 1.0; the per-account `capacity` key that #9 added on 2026-10-18 holds a
+measured size once there is one.
 
-The effect of applying k = 15 alone, in a standard dry run on the same snapshot as #9:
+The effect of applying k = 15 alone, in a standard dry run on the 2026-10-13T03:03:47Z
+snapshot that #9 used:
 
 | Config | Standard winner | Gemini PSE at risk | `claude_b` |
 |---|---|---|---|
@@ -559,7 +418,8 @@ Gemini 4 Argon bullet in #2).
 **Impact.** k = 15 is right and 6.25 is wrong, but k multiplies the placeholder capacity.
 Applied alone, it sizes each Gemini week at 15 PSE, which is 2.4 Max-20x weeks. Every
 standard pick then moves from Claude Sonnet to Gemini Flash on a size nobody measured.
-Even a pool whose reset slides 168 hours ahead, so that it never reaches the reset (#9),
+Even a pool whose reset slides 168 hours ahead, so that it never reaches the reset (see
+the note carried from #9 below),
 would read 8.28 PSE at risk at the old default rate: `pse.wasted_pse` gives 15 minus
 0.04 PSE/h over 168 hours, where k = 6.25 gives 0.000 (at the 0.2 PSE/h ceiling `pick`
 now credits a fallback-only provider with, both read 0.000, so the mis-sizing shows in
@@ -578,9 +438,10 @@ a measured k. The measuring agent agreed that k = 15 is correct and that
   move to Flash on a placeholder size, sliding Gemini pools read 8.28 PSE at risk, and
   waste rows grow 2.4 times.
 - *Keep 6.25.* Routing stays as it is today, on a k known to be wrong.
-- *Apply k = 15 and a measured capacity together, after #9 ships. This is the
-  recommendation.* Both numbers are measured when routing changes. It costs a size
-  measurement and waits on #9.
+- *Apply k = 15 and a measured capacity together. This is the recommendation, and the
+  operator's decision of 2026-10-18.* Both numbers are measured when routing changes. It
+  costs a size measurement, and #9 shipped on 2026-10-18. The one thing it still waits on
+  is the operator's approval of step 1's price basis.
 
 **Hazards for whoever measures it:**
 
@@ -589,7 +450,8 @@ a measured k. The measuring agent agreed that k = 15 is correct and that
   offsets that were not constant. The largest gap was 1.4% of the weekly pool, on one
   pair read during a rep, so lag may explain part of it. Never difference a reading
   against one from the other replica.
-- **An idle pool's weekly reset either slides with the clock or stays fixed** (#9), and
+- **An idle pool's weekly reset either slides with the clock or stays fixed** (carried from
+  #9, below), and
   nobody knows what decides it. Record the reset time on every reading during the run,
   so the analysis can tell which behavior applied.
 - **Both Gemini pools reset early on 2026-10-16**, at 22:06Z and 22:15Z, with 99.4% and
@@ -600,20 +462,45 @@ a measured k. The measuring agent agreed that k = 15 is correct and that
 - **The two Google accounts ran different agy versions** during the eval: 1.3.2 on `_b`
   and 1.3.3 on the primary.
 
+**Carried from #9 (shipped and deleted 2026-10-18): an idle Antigravity pool's weekly
+reset behaves two ways, and nobody knows why.**
+
+- *Sliding.* Every poller record from 2026-10-18T01:24:21Z to 01:40:09Z shows all four
+  pools at `used 0.000`, with the weekly reset exactly 168.00 hours after the reading.
+  The reset moves forward with the clock. The Gemini pools slid like this straight
+  after their early resets on 2026-10-16.
+- *Fixed.* After `antigravity_claude`'s scheduled reset at 2026-10-13T16:01:20Z, the next
+  reset stayed fixed at 2026-10-20T16:01:20Z with `used 0.0` until about
+  2026-10-14T09:00Z. Then, still with no use, it jumped to 168 hours ahead
+  (`2026-10-21T09:01:36Z` at 09:01:29Z) and slid from then on. `antigravity_claude_b`
+  did the same for about 17 hours after its reset on 2026-10-15.
+
+So a sliding pool cannot reach its reset, and it loses nothing while it slides. What
+switches a pool between the two behaviors, and whether the first use fixes the boundary,
+is unknown. Find out before relying on either. Both scheduled Antigravity rows in
+`waste.jsonl` come from pools that the 2026-10-12 measurement used part-way and then left.
+
 **What would close it:** the operator's choice. *Keep 6.25* closes when the config says
 why in a comment. *Apply alone* closes with step 3 using `capacity` left unset.
 *Together* closes with steps 1 to 3:
 
 1. Agree with the operator how Flash work compares with Claude work. The proposal is
-   list-price dollars, the same basis as #9, where one PSE is about $283 of Opus 5.5 work.
+   list-price dollars, the same basis as the 2026-10-12 measurement, where one PSE is about
+   $283 of Opus 5.5 work.
    Show the method before spending quota.
-2. After #9 ships, measure the size of both Gemini pools, reading only one replica. Start
-   from `harness2.py` and `analyze2.py` in the measurement directory.
+2. Measure the size of both Gemini pools, reading only one replica. Start
+   from `harness2.py` and `analyze2.py` in `measurements/agy-capacity-2026-10-12/`, in the
+   checkout container beside the checkouts (outside git).
 3. Set `weekly_to_session = 15.0` and the measured `capacity` on both Gemini pools in one
    config change, with a backup. Record the standard dry run before and after.
+4. Say in the closing commit which idle-reset behavior (sliding or fixed, see the note
+   carried from #9) each pool showed during the run, from the reset times recorded on
+   every reading. If the run cannot tell, file the open question as its own item before
+   deleting this one.
 
 *Risks and edge cases:* priced at list dollars, a cheap model may make the pool tiny, so
-Gemini rarely wins a pick. That is the honest answer, for the same reason as in #9.
+Gemini rarely wins a pick. That is the honest answer, for the same reason the Claude pools
+now rank last at 0.088.
 
 *Why high, not medium:* the method needs a judgment, and the run spends quota against a
 noisy meter.
@@ -622,12 +509,12 @@ noisy meter.
 
 ### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
 
-**Background.** `_cmd_status` calls `_record_waste` (`cli.py:2381`; body at
-`cli.py:2308-2320`). It reads all retained history, rotated files included, and runs
+**Background.** `_cmd_status` calls `_record_waste` (`cli.py:2625`; body at
+`cli.py:2552-2564`). It reads all retained history, rotated files included, and runs
 `detect_resets` (`waste.py:730`) over every pair of readings. The pair warnings
 (`waste.py:781-797`) have no cursor and no dedup, so each call emits again every warning
 the retained history can produce. The default `status` view already prints only a count
-of these history notes (`cli.py:2372-2380`), so the harm is in `--json`, `--verbose` and
+of these history notes (`cli.py:2689-2696`), so the harm is in `--json`, `--verbose` and
 the poller's log. The last record in the rotated poller log at 2026-10-18T01:21:53Z held
 12,203 warnings and was 3.04 MB as compact JSON:
 
@@ -637,7 +524,8 @@ the poller's log. The last record in the rotated poller log at 2026-10-18T01:21:
   to 2026-10-17.
 - 4,442 came from the four Antigravity `7d` windows. Only 10 of them are `incoherent pair`
   warnings, from the replica flips in #10. The rest are `reset time moved forward`. At
-  that time every pool's weekly reset sat 168 hours ahead and slid with the clock (#9).
+  that time every pool's weekly reset sat 168 hours ahead and slid with the clock (the
+  note carried from #9 into #10).
 
 **Impact.** Each poller log file holds about 7 records: the rotated file ran from
 01:04:32Z to 01:21:53Z, and the live file from 01:24:21Z to 01:37:47Z. The two together
@@ -653,7 +541,7 @@ still appears. Separately, decide whether a window whose boundary always slides 
 count as a stock while it slides. Two kinds exist: `codex_b/base_model_inference`, and
 an Antigravity pool while its reset slides.
 
-**Touch points:** `cli.py:2308-2320`, `cli.py:2381`, `waste.py:730-800`, `waste.py:1060`
+**Touch points:** `cli.py:2552-2564`, `cli.py:2625`, `waste.py:730-800`, `waste.py:1060`
 (`update_from_history`), and the waste tests.
 
 ---
@@ -676,11 +564,11 @@ Four more things keep credit away from agent runs:
   streams in a fixed order (`joint.py:295`).
 - **The forecast counts only two streams.** It counts `run` from history lines with
   `event == "run"`, and puts everything else in `other`, including every agent run routed
-  by `pick` (`forecast.py:19-24`, `forecast.py:334-352`). `replay.py:541-542` and
-  `replay.py:630` hardcode the same two streams.
+  by `pick` (`forecast.py:19-24`, `forecast.py:334-352`). `replay.py:545-546` and
+  `replay.py:634` hardcode the same two streams.
 - **`quotapick exec` has no pool path, no timeout and no output parsing.** It picks a
-  subscription with pick's own objective (`cli.py:2559`) and runs the caller's command
-  to completion (`cli.py:2640`).
+  subscription with pick's own objective (`cli.py:2806`) and runs the caller's command
+  to completion (`cli.py:2887`).
 - **Holds expire.** A ledger hold stops counting after `HOLD_TTL_S = 3600` s
   (`credits.py:44`, `credits.py:214-223`), whether or not its call has finished.
 
@@ -820,7 +708,7 @@ Two other designs were rejected:
    (`choose_credit_or_subscription`, `run.py:341`).
    - **The job size.** Since c5436d6, `run` sizes a job as `expected_cost_usd /
      usd_per_pse` when the request names a cost. Without one it falls back to
-     `default_job_pse`, 0.003 PSE (`config.py:670`, `run.py:488-493`). Exec uses the same
+     `default_job_pse`, 0.003 PSE (`config.py:687`, `run.py:488-493`). Exec uses the same
      formula but requires a positive, finite cost, because an agent run costs far more
      than the default, and `run` reads 0 as no cost.
    - Without a usable forecast, fall back to `own_waste` across subscriptions only. Say so
@@ -929,7 +817,7 @@ Two other designs were rejected:
      (`forecast.py:45`) so a cached forecast without it is not read. Subtract
      subscription-served agent work from `other`, as subscription-served `run` work is
      (`forecast.py:19-24`), so a consumer that moves from `pick` to `exec` is counted once.
-   - Teach `replay.py:541-542` and `replay.py:630` the new stream.
+   - Teach `replay.py:545-546` and `replay.py:634` the new stream.
 8. **Tests.** Use a real fake-`claude` script that streams stream-json lines over time and
    can block or ignore SIGTERM. The `run` tests' `FakeRunner` (`tests/test_run.py:48`)
    returns whole output, so it cannot test pass-through or kills.
@@ -980,7 +868,7 @@ cannot bite.
   MCP servers and the operator's settings. A job that silently depended on them behaves
   differently, so a consumer opts in per job.
 - **Budget stops.** The cap must sit above the job's p99 cost. The costliest measured
-  agent runs exceed today's `max_usd_per_call` default of $10 (`config.py:816`), so agent
+  agent runs exceed today's `max_usd_per_call` default of $10 (`config.py:833`), so agent
   runs need their own cap key. Step 0c's overshoot figure sets the margin.
 - **Concurrency.** Several runs hold against one pool at once, so admission must count
   the other holds.
@@ -1014,8 +902,8 @@ cannot bite.
 
 **Touch points:**
 
-- `cli.py:2550-2649` (`_cmd_exec`), `cli.py:2559`, `cli.py:2640`, `cli.py:3095` (its
-  parser), `cli.py:1066-1076` (stream wiring), and the `status` rendering for credit agent
+- `cli.py:2797-2896` (`_cmd_exec`), `cli.py:2806`, `cli.py:2887`, `cli.py:3383` (its
+  parser), `cli.py:1118-1127` (stream wiring), and the `status` rendering for credit agent
   spend.
 - `run.py:72-80` (`STRIP_ENV`), `run.py:166-196`, `run.py:273-310` (`judge`, the outcome
   classification to share), `run.py:383-413` (`_pool_targets`, admission),
@@ -1028,8 +916,8 @@ cannot bite.
   `joint.py:295` (the stream walk).
 - `forecast.py:19-24`, `forecast.py:45` (`FORECAST_VERSION`), `forecast.py:69-98`
   (`GroupForecast`), `forecast.py:132-157` and `forecast.py:334-378`.
-- `replay.py:541-542` and `replay.py:630`.
-- `config.py:781-816` and `config.py:911-916` (`max_usd_per_agent_run` and its parser).
+- `replay.py:545-546` and `replay.py:634`.
+- `config.py:798-833` and `config.py:928-933` (`max_usd_per_agent_run` and its parser).
 - `doctor.py` (rotation flag, checkpoint request), a new `credit-key` command, new
   `tests/test_exec_credit.py` with a fake-`claude` script, and the README sections
   "Running a call — quotapick run" and "API credit pools".
@@ -1057,15 +945,15 @@ The rest of the router inherits the single-grant view:
     (`run.py:564-579`).
 - **Waste series.** `expiries_due` writes one `expired` line per period end, de-duplicated
   by the expiry instant alone (`credits.py:251-273`).
-- **`quotapick credits grant --amount --expires`** exists (`cli.py:3314-3317`, handled at
-  `cli.py:4183-4210`), but its line replaces the balance. Recording a new grant erases
+- **`quotapick credits grant --amount --expires`** exists (`cli.py:3572-3575`, handled at
+  `cli.py:4441-4468`), but its line replaces the balance. Recording a new grant erases
   what the older one had left.
 - **`doctor`.** It warns on a checkpoint older than a week (`doctor.py:460-462`), on a
   balance that rests on the config or an assumed renewal, and on expiry within a day
   (`check_credit_pools`, `doctor.py:496-534`). It has no notion of when a grant is due,
   and its remedy text asks for `credits set ... --expires` (`doctor.py:509-514`).
-- **Config.** A pool's keys are a closed set (`config.py:770-784`). An unknown key is
-  warned about and ignored (`config.py:860-864`).
+- **Config.** A pool's keys are a closed set (`config.py:787-801`). An unknown key is
+  warned about and ignored (`config.py:877-881`).
 
 **Observed 2026-10-18.** One Max 5x pool's Console listed two grants at once (UTC dates,
 as the Console shows them):
@@ -1141,7 +1029,7 @@ every month the operator has to read the Console and correct the pool by hand.
      that pairs an expiry with an amount uses it, never the pool total:
      - doctor's "expires within a day" warning (`doctor.py:523-530`);
      - the `run` decision reason (`run.py:577-578`);
-     - the credits table (`cli.py:4122-4127`).
+     - the credits table (`cli.py:4380-4385`).
      Otherwise, on 2026-10-19 in the observed case, doctor would report "$198.81
      expires within a day" when only $98.81 does.
    - `quotapick credits` and `status` list each grant's amount left and expiry.
@@ -1165,7 +1053,7 @@ every month the operator has to read the Console and correct the pool by hand.
      learned schedule, so one observation can be acted on.
      - Both are required together: one without the other fails loud.
      - Each is 1-28 or `last`.
-     - Add both to `_CREDIT_POOL_KEYS` (`config.py:770-784`). Otherwise they are warned
+     - Add both to `_CREDIT_POOL_KEYS` (`config.py:787-801`). Otherwise they are warned
        about and ignored.
    - `grant_usd` keeps its meaning: the amount of one monthly grant, used for assumed
      and predicted grants.
@@ -1238,12 +1126,12 @@ This item rewrites `balance()`, so whichever item lands second must re-read the 
 
 **Touch points:** `credits.py:1-24`, `credits.py:41`, `credits.py:112-122`,
 `credits.py:125-146` (`Balance`), `credits.py:155-248` (`balance`) and
-`credits.py:251-273` (`expiries_due`); `cli.py:3304-3317` (the `credits` parser),
-`cli.py:4164-4227` (`_cmd_credits`) and `cli.py:4077-4163` (`_credit_pool_rows`,
-`_credit_pool_table`, including `cli.py:4122-4127`); `run.py:341-380`, `run.py:383-413`,
+`credits.py:251-273` (`expiries_due`); `cli.py:3562-3575` (the `credits` parser),
+`cli.py:4422-4485` (`_cmd_credits`) and `cli.py:4335-4421` (`_credit_pool_rows`,
+`_credit_pool_table`, including `cli.py:4380-4385`); `run.py:341-380`, `run.py:383-413`,
 `run.py:547`, `run.py:564-579` and `run.py:599`; `joint.py:213-237`;
-`doctor.py:460-462` and `doctor.py:496-534`; `config.py:770-784` (`_CREDIT_POOL_KEYS`),
-`config.py:788-833` (`CreditPoolConfig`) and `config.py:839-924` (`_build_credit_pools`);
+`doctor.py:460-462` and `doctor.py:496-534`; `config.py:787-801` (`_CREDIT_POOL_KEYS`),
+`config.py:805-850` (`CreditPoolConfig`) and `config.py:856-941` (`_build_credit_pools`);
 `tests/test_credits.py` and `tests/test_run_credit.py`; and the README section "API
 credit pools".
 
@@ -1265,8 +1153,8 @@ are what that audit left open. This is an umbrella item: finish one bullet, dele
   `setup` command.
 
 - **An empty home gets a warning that misdiagnoses itself.** `status` on a clean home
-  names every builtin account it could not read (`cli.py:523-528`) and ends with `no
-  candidates at all` (`cli.py:930`). The warning does not print the directory it looked
+  names every builtin account it could not read (`cli.py:537-542`) and ends with `no
+  candidates at all` (`cli.py:971`). The warning does not print the directory it looked
   in, and its hint says the adapter "does not read declared accounts", which blames the
   code when the directory is missing. Closing it: name the directory looked in, and drop
   the hint when a missing directory is the cause.
@@ -1357,6 +1245,57 @@ is close to everything they write.
 
 **Touch points:** `BACKLOG.md` #12 step 0 and its UNVERIFIED notes; the measurements
 folder in the checkout container. No code.
+
+---
+
+### 17. A mistyped key in an account section is ignored silently  `[difficulty: low]`  `[filed: 2026-10-18]`
+
+**Background:** `_build_accounts` (`config.py:1362`) reads the keys it knows from each
+`[accounts.<id>]` table and ignores the rest. `[engine]` (`config.py:708`) and
+`[credit_pools]` (`config.py:877`) warn on an unknown key; account sections do not.
+Reproduced on 2026-10-18 while shipping #9: `capacty = 0.088` loads with no warning and
+`Config.capacities()` is empty.
+
+**Impact:** a typo in the one key that sizes a pool, or in `weekly_to_session`,
+`plan_ends`, `manual_rate_per_day` or `deprioritize`, leaves the router on its default
+and says nothing. The operator finds out from routing, if at all.
+
+**Fix:** keep the account keys as a closed set the way `_CREDIT_POOL_KEYS` is
+(`config.py:787-801`), and append one warning per unknown key naming the known ones, as
+the credit-pool loader does. A test loads a section with one misspelled key and asserts
+the warning; another loads every known key and asserts none.
+
+**Touch points:** `config.py:1362-1574` (`_build_accounts`), `config.py:787-801` for the
+pattern, and `tests/test_engine_config.py` or a new `tests/test_account_config.py`.
+
+---
+
+### 18. Eleven test calls read the operator's live config through `load_config(env={})`  `[difficulty: low]`  `[filed: 2026-10-18]`
+
+**Background:** `load_config(env={})` falls back to `Path.home()` for an absent HOME and to
+`Path.cwd()` for an absent cwd, so it reads `~/.config/quota-router/config.toml` and any
+project file the suite runs from. `tests/test_cli.py:56-65` documents this, and the repo
+learned it on 2026-08-24 and on 2026-09-16. It happened a third time on 2026-10-18: three
+tests in `tests/test_account_capacity.py` failed on the operator's machine as soon as the
+live config set `capacity = 0.088`, while CI, which has no live config, stayed green. Those
+were fixed in `ee665a7`. The same call remains at `tests/test_k_calibration.py:311`, `:565`
+and `:630`, `tests/test_launcher.py:629`, `:657`, `:880`, `:892`, `:1397` and `:1420`,
+`tests/test_library_api.py:254` and `tests/test_no_token_rotation.py:216`.
+
+**Impact:** each of these passes today only because the live config does not touch what it
+asserts. The next config edit that does turns the gate red on this machine and nowhere
+else, and the failure looks like a code regression.
+
+**Fix:** pass an environment rooted in the test's temp dir and `cwd=_NO_CONFIG_FILES` at
+every one of these calls, as `tests/test_account_capacity.py` now does. Add one guard test
+that fails if any test module calls `load_config` with an empty `env` or with no `cwd`, so
+the pattern cannot come back a fourth time. The `cwd` half is wider: about 16 calls pass an
+env but no `cwd` (for example `tests/test_plan_end.py:149`, `tests/test_deprioritize.py:88`,
+`tests/test_cli.py:2011`, and the `_run` helper at `tests/test_waste.py:1055`). They read
+a project config file from the directory the suite runs in, if one exists; none does in
+any checkout today.
+
+**Touch points:** the eleven call sites above, and one new guard test.
 
 ---
 

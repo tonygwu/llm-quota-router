@@ -31,9 +31,8 @@ measured.
 **What uses these numbers today:**
 - `weekly_to_session = 2.0` is in the operator config for both Antigravity Claude/GPT
   pools.
-- A per-account `capacity` key holds the measured size (BACKLOG item 9 added it). Until
-  the operator config sets `capacity = 0.088` on a pool, the router still sizes that
-  pool's windows at the placeholder 1.0.
+- A per-account `capacity` key holds the measured size (BACKLOG item 9 added it). The
+  operator config has set `capacity = 0.088` on both Claude/GPT pools since 2026-10-18.
 - Gemini k = 15 is not applied. See BACKLOG item 10.
 
 ## Method
@@ -110,8 +109,8 @@ Using each Claude rep's own window value gives a range of 0.082 to 0.100.
 - **The replica.** The Antigravity size depends on reading replica X.
 - **One account sized.** Only one Google account's pool was sized in dollars.
 - **Overall:** no single error bound is claimed, because the tier-scale error is not
-  quantified. To close the gap between 0.088 and the 1.0 that the router uses today,
-  the tier scale would have to be wrong by about 11 times.
+  quantified. To close the gap between 0.088 and the placeholder 1.0 the router used
+  before 2026-10-18, the tier scale would have to be wrong by about 11 times.
 
 ## Hazards for the next measurement
 
@@ -135,7 +134,7 @@ Using each Claude rep's own window value gives a range of 0.082 to 0.100.
   moves its bar. Check for foreign busy sessions before and during every rep.
 - **An idle Antigravity pool's weekly reset slides 168 hours ahead of the clock** at some
   times and stays fixed at others. This was seen after the measurement, and its cause is
-  unknown. See BACKLOG item 9.
+  unknown. BACKLOG item 10 carries the observation and the open question.
 
 ## Raw data
 
