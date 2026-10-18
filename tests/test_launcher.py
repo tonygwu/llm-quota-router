@@ -1294,6 +1294,81 @@ def test_no_schedule_anywhere_still_launches_and_names_the_missing_setting(env) 
     assert "weekly_reset" in err, "the operator needs to be told which setting is missing"
 
 
+def _without(config, account_id: str, **changes):
+    """``config`` with one account's settings replaced, the way an operator edit would."""
+    import dataclasses
+
+    accounts = dict(config.accounts)
+    accounts[account_id] = dataclasses.replace(accounts[account_id], **changes)
+    return dataclasses.replace(config, accounts=accounts)
+
+
+def test_cl_only_naming_a_disabled_account_says_it_is_disabled(env) -> None:
+    """2026-10-18: ``CL_ONLY=claude_d`` after claude_d's plan lapsed and was disabled.
+
+    The banner said "usage could not be read for any of claude_d" and "no weekly_reset is
+    configured for claude_d". Both were false: the router answered, and claude_d has a
+    schedule. It has no candidate because the config disables it, so say that.
+    """
+    config = _without(scheduled(claude_d="Tue 11:00 America/Los_Angeles"), "claude_d", enabled=False)
+
+    code, executor, err = launch_at(
+        [], {**env, "CL_ONLY": "claude_d"}, now=MONDAY_0953, answer=selection(), config=config
+    )
+
+    assert code == 0 and executor.calls, "a pin nobody can serve must still start a session"
+    assert "CLAUDE_CONFIG_DIR" not in executor.env
+    assert "NOT ROUTED" in err
+    assert "claude_d is disabled in the config (enabled = false)" in err, err
+    assert "usage could not be read" not in err, err
+    assert "weekly_reset is configured" not in err, err
+    assert "ROUTER FAILED" not in err, err
+
+
+def test_cl_only_naming_an_account_past_its_plan_end_says_so(env) -> None:
+    config = _without(
+        scheduled(claude_d="Tue 11:00 America/Los_Angeles"),
+        "claude_d",
+        plan_ends_s=MONDAY_0953 - 3600,
+    )
+
+    _, _, err = launch_at(
+        [], {**env, "CL_ONLY": "claude_d"}, now=MONDAY_0953, answer=selection(), config=config
+    )
+
+    assert "claude_d is past its plan_ends" in err, err
+    assert "usage could not be read" not in err, err
+    assert "weekly_reset is configured" not in err, err
+
+
+def test_cl_only_naming_an_unknown_account_says_it_is_not_configured(env) -> None:
+    _, executor, err = launch_at(
+        [], {**env, "CL_ONLY": "claude_z"}, now=MONDAY_0953, answer=selection(), config=cfg()
+    )
+
+    assert executor.calls
+    assert "claude_z is not a configured account" in err, err
+    assert "usage could not be read" not in err, err
+
+
+def test_a_disabled_pin_beside_an_unreadable_one_names_each_reason(env) -> None:
+    """The negative half: an account that IS launchable and unread keeps the old cause."""
+    config = _without(cfg(), "claude_d", enabled=False)
+    unread = {**_row("claude_b", fits=False), "remaining": None}
+
+    _, _, err = launch_at(
+        [],
+        {**env, "CL_ONLY": "claude_b,claude_d"},
+        now=MONDAY_0953,
+        answer=selection(unread, chosen=None),
+        config=config,
+    )
+
+    assert "usage could not be read for any of claude_b" in err, err
+    assert "claude_d is disabled in the config" in err, err
+    assert "no [accounts.<id>] weekly_reset is configured for claude_b" in err, err
+
+
 def test_the_weekly_fallback_books_no_quota_and_injects_no_model(env) -> None:
     """It is still a dry pick and still not a model substitution."""
     config = scheduled(claude_c="Mon 15:59 America/Los_Angeles")

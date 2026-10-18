@@ -79,6 +79,7 @@ from typing import Any, Callable, Final, Mapping, NoReturn, Sequence, TextIO
 from .api import Selection, select_account
 from .config import BANNED_EXEC_ENV, Config, load_config
 from .explain import format_duration
+from .plan_end import format_instant
 from .providers.claude_cli_config import DEFAULT_CLAUDE_CONFIG_DIR_NAMES
 from .providers.claude_oauth import USAGE_OFFLINE_ENV, cached_weekly_usage
 from .types import ACCOUNT_CLAUDE, PROVIDER_CLAUDE
@@ -554,7 +555,24 @@ def _route(
     # The router answered and no account fits. Two very different things look like
     # this, and only one of them may consult a schedule.
     if not measured_any(selection, only):
-        cause = f"usage could not be read for any of {', '.join(only)}"
+        blocked = _unlaunchable(config, only, now_s)
+        if blocked and all(account_id in blocked for account_id in only):
+            # Nothing failed to read: there was nothing cl may launch. A cached reading
+            # cannot change that, so the cache is not consulted.
+            named = "CL_ONLY names" if pinned else "the config has"
+            return _unrouted(
+                f"{named} no account cl can launch: {_reasons(blocked)}.",
+                config,
+                only,
+                model,
+                now_s,
+                env,
+                stderr,
+            )
+        unread = [account_id for account_id in only if account_id not in blocked]
+        cause = f"usage could not be read for any of {', '.join(unread)}"
+        if blocked:
+            cause += f" ({_reasons(blocked)})"
         cached = _route_from_cache(cause, pick_with, timeout_s, config, only, model, env, stderr)
         return cached or _unrouted(
             f"ROUTER FAILED: {cause}. No usable usage data, live or cached, for any account.",
@@ -653,6 +671,32 @@ def _route_from_cache(
 # ======================================================================================
 # Landing somewhere sensible when there is nothing to route on
 # ======================================================================================
+
+
+def _unlaunchable(config: Config | None, only: Sequence[str], now_s: float) -> dict[str, str]:
+    """Why each candidate cl can never launch is out, keyed by account id.
+
+    ``CL_ONLY`` is typed by hand, so it can name an account that does not exist, one the
+    config disables, or one whose ``plan_ends`` has passed. The router then has no
+    candidate, and the generic causes ("usage could not be read", "no weekly_reset is
+    configured") are both false. Each reason reads after the id it belongs to.
+    """
+    if config is None:
+        return {}
+    found: dict[str, str] = {}
+    for account_id in only:
+        account = config.account(account_id)
+        if account is None:
+            found[account_id] = "is not a configured account"
+        elif not account.enabled:
+            found[account_id] = "is disabled in the config (enabled = false)"
+        elif account.plan_ends_s is not None and now_s >= account.plan_ends_s:
+            found[account_id] = f"is past its plan_ends, {format_instant(account.plan_ends_s)}"
+    return found
+
+
+def _reasons(blocked: Mapping[str, str]) -> str:
+    return "; ".join(f"{account_id} {why}" for account_id, why in blocked.items())
 
 
 def _schedules(config: Config | None, only: Sequence[str], now_s: float) -> dict[str, Any]:
@@ -772,14 +816,24 @@ def _unrouted(
         choice = None
 
     if choice is None:
+        # An account cl may not launch has no usable schedule for a different reason
+        # than a missing weekly_reset, and saying "none is configured" sends the
+        # operator to add a setting that is already there.
+        blocked = _unlaunchable(config, only, now_s)
+        unscheduled = [account_id for account_id in only if account_id not in blocked]
+        why = [_reasons(blocked)] if blocked else []
+        if unscheduled:
+            why.append(
+                f"no [accounts.<id>] weekly_reset is configured for {', '.join(unscheduled)}"
+            )
         return _Route(
             ACCOUNT_CLAUDE,
             config,
             model,
             failure=failure,
             unrouted=(
-                f"hardcoded default -- no [accounts.<id>] weekly_reset is configured "
-                f"for {', '.join(only)}, so there was nothing better to pick on"
+                f"hardcoded default -- {'; '.join(why)}, so there was nothing better to "
+                f"pick on"
             ),
         )
 
