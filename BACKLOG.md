@@ -196,7 +196,7 @@ the counterfactual says.
   outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
   pool with a card on file could spend past its cap through `run`. No money is at risk
   while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
-  (`run.py:334-364`) admits a card-on-file pool only while its booked spend plus the
+  (`run.py:383-413`) admits a card-on-file pool only while its booked spend plus the
   call's cap stays under `hard_cap_usd`, with a test. #12 depends on this.
 
 ---
@@ -569,11 +569,11 @@ an Antigravity pool while its reset slides.
 
 **Background.** A credit pool is reachable only through `quotapick run`, and `run`
 executes one tool-less call. The child always gets `--tools "" --no-session-persistence
---strict-mcp-config --safe-mode` and never `--max-turns` (`run.py:159-189`). A pool child
+--strict-mcp-config --safe-mode` and never `--max-turns` (`run.py:166-196`). A pool child
 also gets `--bare --max-budget-usd <min(balance, max_usd_per_call)>`, runs in the
 router-owned config dir `credit-homes/<pool>`, and receives the key as
-`ANTHROPIC_API_KEY` in its environment (`run.py:531-548`). The init event's `apiKeySource`
-must then read `ANTHROPIC_API_KEY` (`run.py:294-296`). The key in the environment is safe
+`ANTHROPIC_API_KEY` in its environment (`run.py:586-603`). The init event's `apiKeySource`
+must then read `ANTHROPIC_API_KEY` (`run.py:301-303`). The key in the environment is safe
 only because the child has no tools.
 
 Four more things keep credit away from agent runs:
@@ -716,30 +716,34 @@ Two other designs were rejected:
        that step 0d rules out. A missing `--output-format` counts as `text`, because
        that is the default;
      - `--only` names nothing that is a Claude subscription or an `anthropic_api` pool.
-   - Like `run` (`run.py:424-429`), exec narrows the candidates to Claude subscriptions
+   - Like `run` (`run.py:473-478`), exec narrows the candidates to Claude subscriptions
      and `anthropic_api` pools on its own, so a call without `--only` is not refused for
      the Codex and Antigravity accounts in the default set.
-2. **Routing.** Rank as `run` does (`run.py:445`, `run.py:479-485`): the joint objective,
-   on the new `agent` stream.
-   - **One deliberate difference: the job size.** `run` passes `job_pse=None`
-     (`run.py:439`), which becomes `default_job_pse`, 0.003 PSE (`config.py:670`). An
-     agent run costs far more, so exec uses `job_pse = expected_cost_usd / usd_per_pse`.
+2. **Routing.** Rank as `run` does (`run.py:499`, `run.py:533-541`): the joint objective,
+   on the new `agent` stream. That includes its tie rule, which sends a job to credit
+   when credit and a subscription avoid the same nonzero waste
+   (`choose_credit_or_subscription`, `run.py:341`).
+   - **The job size.** Since c5436d6, `run` sizes a job as `expected_cost_usd /
+     usd_per_pse` when the request names a cost. Without one it falls back to
+     `default_job_pse`, 0.003 PSE (`config.py:670`, `run.py:488-493`). Exec uses the same
+     formula but requires a positive, finite cost, because an agent run costs far more
+     than the default, and `run` reads 0 as no cost.
    - Without a usable forecast, fall back to `own_waste` across subscriptions only. Say so
      in the report's `decision.fallback`, as `run` does.
    - Admit a pool only when its final cap from step 3 is at least
      `expected × admission_margin`, and its expiry is at least `--timeout` away. The cap
      uses `remaining_usd`, which already nets the other holds (`credits.py:224`). A large
      balance is not enough when `max_usd_per_agent_run` or the consumer's budget is below
-     that figure. The admission logic belongs in `_pool_targets` (`run.py:334-364`),
+     that figure. The admission logic belongs in `_pool_targets` (`run.py:383-413`),
      shared with `run`.
    - Resolve the model and effort for the chosen target the way `run`'s `model_for` does
-     (`run.py:459-467`), and insert `--model` and `--effort` for every target. When
+     (`run.py:513-521`), and insert `--model` and `--effort` for every target. When
      `model_for` returns no effort, insert no `--effort`.
    - **Card-on-file pools.** Nothing enforces `hard_cap_usd` today (#2). Until a shared
      admission check enforces it for `run` and exec alike, card-on-file pools sit out of
      exec, with a warning. A refusal would fail exactly the runs where credit wins.
 3. **A pool target.**
-   - **Environment.** Strip `STRIP_ENV` (`run.py:67-75`) and `QUOTA_ROUTER_*`, and set
+   - **Environment.** Strip `STRIP_ENV` (`run.py:72-80`) and `QUOTA_ROUTER_*`, and set
      `CLAUDE_CONFIG_DIR` to the pool's credit home.
    - **Flags.** Insert `--bare --settings <router-written JSON> --max-budget-usd <cap>`,
      plus whatever step 0b shows is needed to keep the cwd's CLAUDE.md.
@@ -917,11 +921,12 @@ cannot bite.
 - `cli.py:2550-2649` (`_cmd_exec`), `cli.py:2559`, `cli.py:2640`, `cli.py:3095` (its
   parser), `cli.py:1066-1076` (stream wiring), and the `status` rendering for credit agent
   spend.
-- `run.py:67-75` (`STRIP_ENV`), `run.py:159-189`, `run.py:266-302` (`judge`, the outcome
-  classification to share), `run.py:334-364` (`_pool_targets`, admission),
-  `run.py:424-429` (candidate narrowing), `run.py:439` (job size), `run.py:445` and
-  `run.py:459-467` (`model_for`), `run.py:479-485` (joint routing), `run.py:531-548`
-  (credit target) and `run.py:562-643` (ledger hold, spend and release).
+- `run.py:72-80` (`STRIP_ENV`), `run.py:166-196`, `run.py:273-310` (`judge`, the outcome
+  classification to share), `run.py:383-413` (`_pool_targets`, admission),
+  `run.py:473-478` (candidate narrowing), `run.py:488-493` (job size), `run.py:341`
+  (`choose_credit_or_subscription`), `run.py:499` and
+  `run.py:513-521` (`model_for`), `run.py:533-541` (joint routing), `run.py:586-603`
+  (credit target) and `run.py:617-698` (ledger hold, spend and release).
 - `credits.py:44` and `credits.py:214-223` (hold expiry).
 - `joint.py:53-60` (streams and `SERVES`), `joint.py:213` (`credit_stock`) and
   `joint.py:295` (the stream walk).
