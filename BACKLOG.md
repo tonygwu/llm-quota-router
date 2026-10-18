@@ -315,16 +315,19 @@ switches a pool between the two behaviors, and whether the first use fixes the b
 is unknown. Find out before relying on either. Both scheduled Antigravity rows in
 `waste.jsonl` come from pools that the measurement below used part-way and then left.
 
-A measurement on 2026-10-12 sized the Antigravity Claude/GPT pools. The data, harness and
-analysis are in `measurements/agy-capacity-2026-10-12/` in the checkout container, beside
+A measurement on 2026-10-12 sized the Antigravity Claude/GPT pools. Its results, method,
+per-rep numbers and assumptions are recorded in
+`docs/measurements/2026-10-12-antigravity-capacity.md`. The raw data, harness and analysis
+are in `measurements/agy-capacity-2026-10-12/` in the checkout container, beside
 `repo-prod`. The main file is `analysis2-final.json`, and `LEDGER.txt` lists every stop
-and exclusion. The directory is not in git, so it is the only copy of this evidence.
+and exclusion. That directory is not in git, because hundreds of its files name the
+operator's Google accounts, so it is the only copy of the raw data.
 
 - **k = 2.0** on both Google accounts: 6 reps on `antigravity_claude` (sd 0.000005) and 2
   on `antigravity_claude_b`. The operator config carries `weekly_to_session = 2.0` on both.
 - **A full weekly pool holds $50.07 of Opus 5.5 work at list price.** Antigravity input
-  was priced as cache writes at $5/M, and an input-heavy rep confirmed that rate. Every
-  call served the model it asked for.
+  was priced as cache writes at $5/M, and an input-heavy rep confirmed that rate. The
+  agy tool records a model code, not a name, and an earlier scan mapped that code to Opus 5.5.
 - **A Max-20x five-hour window holds about $283.** This came from `claude_c`, a Max-5x
   account, at $0.708 per point of its five-hour bar over 3 clean reps ($0.761, $0.628 and
   $0.751). One more rep was excluded as contaminated. A clean pilot rep at $0.624 was not
@@ -333,8 +336,9 @@ and exclusion. The directory is not in git, so it is the only copy of this evide
   the 0.25 tier scale is an assumption: `claude_c` reads k = 9.8 where 20x accounts read
   6.25, so a 5x plan may not be exactly a quarter of a 20x plan.
 - **So one Antigravity Claude/GPT five-hour window is about 0.088 PSE**, with a range of
-  0.082 to 0.100 across reps. Its weekly pool is about 0.18 PSE, roughly 3% of one Max-20x
-  week. Capacity 1.0 overstates the pool about 11 times.
+  0.082 to 0.100 across reps. That is 8.8% of a Max-20x five-hour window. Its weekly pool
+  holds only 2 such windows, so it is about 0.177 PSE, or 2.8% of one Max-20x week, which
+  holds 6.25. Capacity 1.0 overstates the pool about 11 times.
 
 **Impact.**
 
@@ -433,11 +437,14 @@ projection and the waste writer, and it waits on an operator decision.
 
 ## 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
 
-**Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools.
+**Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools
+(details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
 The reads were consecutive and came from one `/usage` replica: 13 of 16 changes on
 `antigravity_gemini` (mean 15.0006) and 12 of 16 on `antigravity_gemini_b` (mean
 15.0005). Whole-rep k does not reproduce (6.5 to 31.9), because the Gemini five-hour bar
-moves in exact steps of +0.0100. The operator config leaves both Gemini pools on the
+sometimes jumps in one read, out of step with the weekly bar. Of seven flagged jumps,
+five read 0.0100 to 0.0113 and two read 0.0009 and 0.0058. The operator
+config leaves both Gemini pools on the
 default 6.25. Their size in PSE was never measured, so their capacity stays at the
 placeholder 1.0 from #9.
 
@@ -476,8 +483,9 @@ a measured k. The measuring agent agreed that k = 15 is correct and that
 
 - **Two backend replicas answer `/usage`.** A 120 s poll lands on the other replica about
   49% of the time. One replica, called X in the analysis, was trustworthy. The other read
-  offsets of up to 0.8% of the weekly pool, and the offsets were not constant. Never
-  difference a reading against one from the other replica.
+  offsets that were not constant. The largest gap was 1.4% of the weekly pool, on one
+  pair read during a rep, so lag may explain part of it. Never difference a reading
+  against one from the other replica.
 - **An idle pool's weekly reset either slides with the clock or stays fixed** (#9), and
   nobody knows what decides it. Record the reset time on every reading during the run,
   so the analysis can tell which behavior applied.
