@@ -382,7 +382,7 @@ stay byte-identical.
 
 ---
 
-### 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`  `[claimed by: #1]`
 
 **Background.** Capacity, the size of one five-hour window in PSE, comes only from the
 plan tier. `AccountSnapshot.capacity` returns `capacity_for_tier(self.tier)`
