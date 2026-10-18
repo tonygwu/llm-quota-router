@@ -3108,7 +3108,9 @@ def _cmd_waste(
     path = waste_mod.waste_path(env)
     records, read_warnings = waste_mod.read_records(env=env)
     warnings.extend(read_warnings)
-    summary = waste_mod.summarize(records, capacities=config.capacities())
+    # Every configured account, disabled ones included: a pool measured, configured and
+    # then disabled still has rows in the series, and its size did not change.
+    summary = waste_mod.summarize(records, capacities=config.capacities(enabled_only=False))
     totals = summary["totals"]
     scoped = summary["scoped_totals"]
 
@@ -3233,6 +3235,11 @@ def _cmd_waste(
                 line += (
                     f"; {entry['rows_without_scale']} row(s) carry no tier_scale and "
                     f"cannot be rescaled"
+                )
+            if entry["scoped_rows_not_rescaled"]:
+                line += (
+                    f"; {entry['scoped_rows_not_rescaled']} model-scoped row(s) at another "
+                    f"size stay as logged in the scoped totals"
                 )
             stdout.write(line + "\n")
         at_capacity = summary["totals_at_capacity"]

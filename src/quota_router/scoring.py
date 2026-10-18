@@ -27,7 +27,8 @@ the others)::
 
     min_slack     = min(slack)
     min_remaining = min(remaining_fraction)
-    capacity      = tier capacity ratio (max_20x 1.0, max_5x 0.25, pro 1.0)
+    capacity      = the account's configured capacity, else its tier's ratio
+                    (max_20x 1.0, max_5x 0.25, pro 1.0)
 
 And then one of two mandatory regimes, decided **globally** over the whole candidate
 field before anybody is scored:

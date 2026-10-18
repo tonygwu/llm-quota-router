@@ -18,7 +18,7 @@ from dataclasses import replace
 
 import pytest
 
-from quota_router import cli, joint, waste
+from quota_router import cli, joint, replay, scoring, waste
 from quota_router.config import ConfigError, load_config
 from quota_router.scoring import stocks_from_snapshot
 from quota_router.types import AccountSnapshot
@@ -161,8 +161,9 @@ def test_a_configured_capacity_reaches_a_real_pick(tmp_path) -> None:
     sized, payload = scores(["pick", "--config", str(path), "--dry-run", "--json"])
     assert sized["claude_b"] == pytest.approx(control["claude_b"]), "the other account is untouched"
     # Nothing is at risk in a 0.088 pool over this horizon, so the score falls to the
-    # earliest-deadline tie-break term, which is of the order of 1e-8.
-    assert sized["claude_c"] < 1e-6, (
+    # earliest-deadline tie-break term: _DEADLINE_EPS over the hours to the weekly
+    # reset, which the fixture puts 72 hours out. Any PSE at risk would dwarf it.
+    assert sized["claude_c"] == pytest.approx(scoring._DEADLINE_EPS / 72.0), (
         f"the configured capacity never reached the scorer: {sized}"
     )
     assert payload["decision"]["account"] == "claude_b"
@@ -202,13 +203,24 @@ def test_a_configured_capacity_is_stamped_on_the_waste_row(tmp_path) -> None:
 # ======================================================================================
 
 
-def _row(account_id, *, wasted, scale, kind=waste.KIND_SCHEDULED, reset_at_s=T0 + SEVEN_DAYS):
+def _row(
+    account_id,
+    *,
+    wasted,
+    scale,
+    kind=waste.KIND_SCHEDULED,
+    reset_at_s=T0 + SEVEN_DAYS,
+    window="7d",
+    scoped=False,
+    observed=True,
+):
     return waste.ResetRecord(
         account=account_id,
-        window="7d",
+        window=window,
         reset_at_s=reset_at_s,
         scheduled_reset_at_s=reset_at_s,
-        observed=True,
+        observed=observed,
+        scoped=scoped,
         remaining_fraction=0.5,
         wasted_pse=wasted,
         tier="unknown",
@@ -224,13 +236,19 @@ def test_summarize_rescales_rows_logged_at_another_size_and_leaves_the_file_alon
     placeholder keeps its logged figure; the report rescales it to the configured
     capacity (``wasted_pse`` is linear in ``tier_scale``) and says how many rows it
     rescaled, per account, with both figures. A row with no ``tier_scale`` cannot be
-    rescaled and is counted as such, never guessed.
+    rescaled and is counted as such, never guessed. A model-scoped row at another size
+    is counted and left as logged: the scoped totals are listed, not added. A missed
+    reset that somehow carries a PSE figure is admitted into neither total, as
+    ``_absorb`` already refuses it.
     """
     rows = (
         _row("antigravity_claude", wasted=2.0, scale=1.0),
         _row("antigravity_claude", wasted=1.0, scale=1.0, kind=waste.KIND_EARLY,
              reset_at_s=T0 + 2 * SEVEN_DAYS),
         _row("antigravity_claude", wasted=0.044, scale=MEASURED, reset_at_s=T0 + 3 * SEVEN_DAYS),
+        _row("antigravity_claude", wasted=0.7, scale=1.0, window="fable", scoped=True),
+        _row("antigravity_claude", wasted=9.0, scale=1.0, observed=False,
+             reset_at_s=T0 + 4 * SEVEN_DAYS),
         _row("claude", wasted=3.0, scale=1.0),
         _row("codex", wasted=1.5, scale=None),
     )
@@ -249,21 +267,90 @@ def test_summarize_rescales_rows_logged_at_another_size_and_leaves_the_file_alon
     assert entry["forfeited_pse_logged"] == pytest.approx(1.0)
     assert entry["forfeited_pse_at_capacity"] == pytest.approx(1.0 * MEASURED)
     assert entry["rows_without_scale"] == 0
+    assert entry["scoped_rows_not_rescaled"] == 1
     assert rescaled["codex"]["rows"] == 0
     assert rescaled["codex"]["rows_without_scale"] == 1
 
     # The logged totals are what they always were; the rescaled totals sit beside them.
+    # The scoped row is in the scoped totals as logged; the missed row is in neither.
     assert summary["totals"]["wasted_pse"] == pytest.approx(2.0 + 0.044 + 3.0 + 1.5)
+    assert summary["scoped_totals"]["wasted_pse"] == pytest.approx(0.7)
     assert summary["early_totals"]["forfeited_pse"] == pytest.approx(1.0)
     assert summary["totals_at_capacity"]["wasted_pse"] == pytest.approx(
         2.0 * MEASURED + 0.044 + 3.0 + 1.5
     )
     assert summary["totals_at_capacity"]["forfeited_pse"] == pytest.approx(1.0 * MEASURED)
 
-    # Without configured capacities nothing is rescaled and the two totals agree.
+    # Without configured capacities nothing is rescaled and the two totals agree, the
+    # missed row's stray figure included.
     plain = waste.summarize(rows)
     assert plain["rescaled"] == {}
     assert plain["totals_at_capacity"]["wasted_pse"] == pytest.approx(plain["totals"]["wasted_pse"])
+    assert plain["totals_at_capacity"]["forfeited_pse"] == pytest.approx(
+        plain["early_totals"]["forfeited_pse"]
+    )
+
+
+def test_a_disabled_account_is_still_rescaled_in_the_waste_report(tmp_path) -> None:
+    """Disabling a pool removes it from routing, not from the series it already wrote."""
+    env = _env(tmp_path)
+    waste.append_records([_row("antigravity_claude", wasted=2.0, scale=1.0)], env=env)
+    path = _config(
+        tmp_path,
+        '[accounts.antigravity_claude]\nprovider = "antigravity"\nenabled = false\n'
+        "capacity = 0.088\n",
+    )
+
+    code, out, _ = _run(["waste", "--config", str(path), "--json"], env, [], T0)
+    assert code == cli.EXIT_OK
+    payload = json.loads(out)
+    assert payload["rescaled"]["antigravity_claude"]["rows"] == 1
+    assert payload["totals_at_capacity"]["wasted_pse"] == pytest.approx(2.0 * MEASURED)
+
+
+# ======================================================================================
+# Replay sizes its own snapshot the way history recorded the pool
+# ======================================================================================
+
+
+def test_replay_scores_a_pool_at_the_capacity_history_recorded() -> None:
+    """``replay`` rebuilds a snapshot per tick for the scorer inside ``select``. Its stock
+    and metric take the pool's size from the recorded ``capacity``; the snapshot must
+    carry the same number, or the policies it compares disagree on the pool by the very
+    factor this item fixes.
+    """
+    from tests.test_replay import COUNT_FROM, DAY, STEP, _series
+
+    records = _series(
+        "claude_x",
+        start=T0,
+        end=COUNT_FROM + DAY,
+        used_at=lambda t: 0.5,
+        resets_at=lambda t: COUNT_FROM + 3 * DAY,
+        tier="unknown",
+        capacity=MEASURED,
+    )
+    specs, _trace = replay.reconstruct(
+        records,
+        group="claude",
+        plans={},
+        plan_ends={},
+        start_s=COUNT_FROM,
+        end_s=COUNT_FROM + DAY,
+        bin_s=STEP,
+    )
+    (spec,) = specs
+    pool = replay._start(spec, COUNT_FROM)
+
+    snap = replay._snapshot(pool, COUNT_FROM)
+    stock = replay._stock(pool, COUNT_FROM)
+
+    assert spec.tier_scale == pytest.approx(MEASURED)
+    assert snap.tier == "unknown"
+    assert snap.capacity == pytest.approx(stock.session_cap) == pytest.approx(MEASURED)
+    assert scoring.stocks_from_snapshot(snap, COUNT_FROM, snap.capacity, None).weekly_remaining == (
+        pytest.approx(stock.weekly_rem)
+    )
 
 
 def test_the_waste_command_reports_rows_logged_at_a_placeholder_size(tmp_path) -> None:

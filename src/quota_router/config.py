@@ -1041,12 +1041,16 @@ class Config:
             if account.plan_ends_s is not None
         }
 
-    def capacities(self) -> dict[str, float]:
-        """The measured ``capacity`` of every enabled account that sets one, in PSE."""
+    def capacities(self, *, enabled_only: bool = True) -> dict[str, float]:
+        """The measured ``capacity`` of every account that sets one, in PSE.
+
+        Routing reads the enabled accounts, like ``manual_rates`` and ``plan_ends``. The
+        waste report passes ``enabled_only=False``: a disabled pool's rows are still in
+        the series, and disabling it did not change its size.
+        """
+        accounts = self.enabled_accounts() if enabled_only else tuple(self.accounts.values())
         return {
-            account.id: account.capacity
-            for account in self.enabled_accounts()
-            if account.capacity is not None
+            account.id: account.capacity for account in accounts if account.capacity is not None
         }
 
     def deprioritized_accounts(self) -> tuple[str, ...]:
@@ -1106,10 +1110,11 @@ class Config:
     def tier_override_warnings(self) -> tuple[str, ...]:
         """Complain when ``[tiers]`` says something the scoring layer will not honor.
 
-        Capacity is a property of :class:`~quota_router.types.AccountSnapshot`, derived
-        from the tier through the shared ``TIER_CAPACITY`` table; the scoring layer reads
-        it from there. An operator who edits ``[tiers]`` and sees no behaviour change
-        deserves to be told why rather than left to conclude the router ignores config.
+        Capacity is a property of :class:`~quota_router.types.AccountSnapshot`: the
+        account's own configured ``capacity`` when set, else the tier's ratio from the
+        shared ``TIER_CAPACITY`` table. ``[tiers]`` reaches neither. An operator who
+        edits it and sees no behaviour change deserves to be told why, and told where the
+        knob that does work lives, rather than left to conclude the router ignores config.
         """
         out: list[str] = []
         for tier, capacity in self.tiers.items():
@@ -1118,7 +1123,8 @@ class Config:
                 out.append(
                     f"[tiers] {tier} = {capacity:g} differs from the built-in capacity "
                     f"ratio {builtin:g}; scoring reads capacity from the shared tier "
-                    f"table, so this override is not applied"
+                    f"table, so this override is not applied. To size one account, set "
+                    f"`capacity` in its [accounts.<id>] section"
                 )
         return tuple(out)
 

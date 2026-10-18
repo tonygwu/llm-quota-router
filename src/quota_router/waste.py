@@ -1213,6 +1213,7 @@ def _blank_rescale(capacity: float) -> dict[str, Any]:
         "capacity": capacity,
         "rows": 0,
         "rows_without_scale": 0,
+        "scoped_rows_not_rescaled": 0,
         "logged_scales": set(),
         "wasted_pse_logged": 0.0,
         "wasted_pse_at_capacity": 0.0,
@@ -1243,9 +1244,12 @@ def summarize(
     many account-wide rows were logged at another ``tier_scale``, the logged PSE and
     the PSE at the configured capacity (``wasted_pse`` is linear in ``tier_scale``, so
     the row's own ``k`` and ``tier_scale`` make the conversion exact). A row with no
-    ``tier_scale`` cannot be rescaled and is counted, never guessed.
-    ``totals_at_capacity`` is the account-wide waste and forfeit totals with every such
-    row rescaled; without ``capacities`` it equals the logged totals.
+    ``tier_scale`` cannot be rescaled and is counted, never guessed. A model-scoped row
+    at another size is counted too (``scoped_rows_not_rescaled``) and left as logged in
+    the scoped totals, which are listed, not added. ``totals_at_capacity`` is the
+    account-wide waste and forfeit totals with every rescaled row substituted; it admits
+    exactly the rows ``totals`` and ``early_totals`` admit, so without ``capacities`` it
+    equals them.
     """
     current = current_records(records)
     accounts: dict[str, dict[str, dict[str, Any]]] = {}
@@ -1273,10 +1277,20 @@ def summarize(
             _absorb(scoped_totals if record.scoped else totals, record)
         span.append(record.reset_at_s)
 
-        if record.scoped or record.wasted_pse is None:
+        if record.wasted_pse is None:
+            continue
+        if record.kind != KIND_EARLY and not record.observed:
+            # Mirrors _absorb: the writer never gives a missed reset a PSE figure, and a
+            # row that carries one anyway is not admitted into either total.
+            continue
+        capacity = configured.get(record.account)
+        if record.scoped:
+            scale = record.tier_scale
+            if capacity is not None and scale is not None and abs(scale - capacity) > 1e-9:
+                entry = rescaled.setdefault(record.account, _blank_rescale(capacity))
+                entry["scoped_rows_not_rescaled"] += 1
             continue
         value = record.wasted_pse
-        capacity = configured.get(record.account)
         if capacity is not None:
             entry = rescaled.setdefault(record.account, _blank_rescale(capacity))
             scale = record.tier_scale
@@ -1299,7 +1313,7 @@ def summarize(
     rescaled = {
         account_id: entry
         for account_id, entry in rescaled.items()
-        if entry["rows"] or entry["rows_without_scale"]
+        if entry["rows"] or entry["rows_without_scale"] or entry["scoped_rows_not_rescaled"]
     }
 
     return {

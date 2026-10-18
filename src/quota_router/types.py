@@ -34,7 +34,8 @@ Per account::
                          class -- a window whose ``applies_to`` excludes the class is
                          skipped entirely; the tightest applicable window throttles the
                          rest.
-    capacity(account)  = tier capacity ratio (max_20x -> 1.0, max_5x -> 0.25, pro -> 1.0)
+    capacity(account)  = the account's configured capacity, else its tier's ratio
+                         (max_20x -> 1.0, max_5x -> 0.25, pro -> 1.0)
 
 And then two mandatory regimes:
 
@@ -306,8 +307,9 @@ UNKNOWN_TIER_CAPACITY: Final[float] = 1.0
 WINDOW_KEY_5H: Final[str] = "5h"
 WINDOW_KEY_7D: Final[str] = "7d"
 
-#: Tier -> capacity ratio. A window fraction is *relative to that account's own budget*,
-#: so a 0.4 slack on a max_5x account is worth a quarter of a 0.4 slack on a max_20x one.
+#: Tier -> capacity ratio, used when the account sets no ``capacity`` of its own. A
+#: window fraction is *relative to that account's own budget*, so a 0.4 slack on a
+#: max_5x account is worth a quarter of a 0.4 slack on a max_20x one.
 TIER_CAPACITY: Final[Mapping[str, float]] = MappingProxyType(
     {
         TIER_MAX_20X: 1.0,
@@ -1137,7 +1139,7 @@ class ScoreBreakdown:
             stricter for a ``max_5x`` account than for a ``max_20x`` one.
         binding_window: :attr:`Window.key` of the window that produced ``min_slack``.
         regime: :data:`REGIME_A` or :data:`REGIME_B` (``None`` if scoring never ran).
-        capacity: Tier capacity ratio applied.
+        capacity: Capacity applied: the account's configured one, else its tier's ratio.
         provider_weight: Policy weight applied for the account's provider.
         fits: Whether the account can actually serve the call right now (has remaining
             budget in every applicable window). Independent of slack: an account can be

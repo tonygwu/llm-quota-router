@@ -442,6 +442,10 @@ def _snapshot(pool: _Pool, t: float) -> AccountSnapshot:
         provider=spec.provider,
         windows=tuple(windows),
         tier=spec.tier,
+        # The size history recorded for this pool, so the scorer inside ``select`` sees
+        # the same PSE the stock and the metric use. Without it a pool recorded at a
+        # configured capacity would be scored at its tier's ratio.
+        capacity_override=spec.tier_scale,
         source=SOURCE_LIVE,
         confidence=1.0,
         available=not pool.retired,
