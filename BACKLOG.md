@@ -1,21 +1,64 @@
 # Backlog
 
-Open gaps, roughly by how much they matter. Each entry says what would close it, so
-"done" is checkable rather than a judgment call.
+Open gaps, roughly by how much they matter: file order is the priority order, except that
+a dependency of an open item is picked before it (see Priority below). Each entry says
+what would close it, so "done" is checkable rather than a judgment call.
 
 Kept free of machine-specific paths and account identities: publishing this repo is a
 live option, and a backlog is the file most likely to leak them.
 
-Items follow the `backlog-protocol` skill: a `### <ID>.` heading with its difficulty and
-filed tags, a `[claimed by: <handle>]` tag while an agent works it, and deletion on
-completion. The claim helper matches `### <ID>. ` exactly, so an item heading at any
-other level cannot be claimed.
+The protocol is the `backlog-protocol` skill, which `/run-backlog`, `/improve-code` and
+`/improve-data` read. This file holds the parameters specific to this project, and the
+items.
+
+## Protocol parameters
+
+| Parameter | Value |
+|---|---|
+| Item files | this file, under `## Open items` |
+| ID scheme | plain integers, `### 14.`; next ID = 1 + the highest in this file or its git history. IDs 1 to 8 were reassigned between items in August 2026, before this protocol, so `git log -p` shows several titles per number; 7 and 8 must not return. Never renumber an item. |
+| Priority | file order, except that an item named as a dependency by another open item is picked before that item; a dependency of a blocked item takes the blocked item's place; among equals, file order |
+| Difficulty ladder | `low`, `medium`, `high`, `xhigh` (the skill's model map); claim at or below your row |
+| Agent handle | `#<n>` from a `repo-<n>` checkout, else `#<directory name>` |
+| Validation gate | `./.venv/bin/python -m pytest -q` in the checkout; CI runs the same command. Never `uv tool install` from a working checkout: see `AGENTS.md`. |
+| Pre-push review | `adversarial-self-review` on `origin/main..HEAD`, before every push |
+| Blocked tag | `[BLOCKED: <what must happen first>]` on the heading means do not claim. Whoever deletes an item also removes its ID from every BLOCKED tag that names it, in the deletion commit. |
+| Completion | delete the item; also when all it still lacks is carried by other open items, each saying so. Git history is the record. `## Closed` below is historical and gains no new entries. |
+| Umbrella items | #2 and #14 hold several small gaps as bullets: claim the item, finish one bullet, delete that bullet, release the claim. The item goes when its list is empty. |
+| Scan logs | `backlog/scan-logs/improve-code/<shard>.md`, tracked (none yet) |
+| Ledgers | `backlog/scan-logs/improve-data/<domain>.md`, tracked (none yet) |
+| Data read path | none named, so `improve-data` stops |
+
+## Item format
+
+```markdown
+### <ID>. <one-line problem statement>  `[difficulty: <level>]`  `[filed: YYYY-MM-DD]`
+
+**Background:** ... (at least one `file:line`)
+
+**Impact:** ...
+
+**Fix:** ...
+
+**Touch points:** `file:line`, ...
+
+---
+```
+
+Items 1 to 6 and 14 predate this format: they carry no Background, Impact, Fix or Touch
+points structure, and some cite no `file:line`. Items 9 and 10 carry no Fix label and no
+Touch points either. Their difficulty and filed tags were added on 2026-10-18, with `filed` set to the
+UTC date of the commit that first filed each one. The implementer derives the touch
+points from the text. The claim helper matches `### <ID>. ` exactly, so an item heading
+at any other level cannot be claimed. A paragraph starting **Operator decision** records
+a choice the operator made, with its date; *Operator decision pending* marks a bullet
+nobody should start.
 
 ---
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #9, #10 and one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -70,26 +113,26 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-### 2. Small, but each one costs trust
+**Operator decision 2026-10-18:** proceed. State the figure as soon as #9 and #10 have
+landed and the Antigravity series covers one full weekly cycle.
 
-- **`EligibilityConfig.min_remaining_configured`** distinguishes an explicitly
-  configured floor from the identical built-in default. The semantics are coherent and
-  the exclusion reason now names the floor's provenance, so the divergence is stated
-  where it is acted on rather than discovered later. Still unreviewed as a *design*
-  choice — surfaced here for the operator, not as an open defect.
-- **The `home=` injection seam is only half honoured.** `claude_configs_from_policy`
-  expands a config-supplied `config_dir` with `os.path.expanduser`, which reads the
-  *process* `HOME`, so an injected `home=` is ignored for exactly the accounts that
-  come from configuration. Only `_default_config_dir` respects it. This is why four
-  tests passed for three weeks by reading the author's real `~/.claude*` directories,
-  and CI caught it the first time it ran on a machine with none. The tests are now
-  hermetic; the seam itself is not fixed. Closing it means expanding `~` against the
-  injected base everywhere, and it is a behaviour change in a published library, so
-  it wants a deliberate decision rather than a drive-by.
+---
 
-- **`fable_fraction = 0.5`** is documented by the vendor and *consistent* with local data
-  (a static bound gives <= 0.551) but not pinned by it. Recorded honestly in `pse.py`;
-  noted here so it is not mistaken for a measurement.
+### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`
+
+Workable bullets come first. The last one waits on an operator decision and is marked
+so; do not start it. One bullet was closed by the operator on 2026-10-18:
+`min_remaining_configured` stays as designed. The `fable_fraction = 0.5` note was
+dropped by the author because it asked for no work; `pse.py:59-64` carries it.
+
+- **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
+  `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
+  "Spend ceiling the router enforces when a card is on file" (`config.py:800`). No code
+  outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
+  pool with a card on file could spend past its cap through `run`. No money is at risk
+  while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
+  (`run.py:383-413`) admits a card-on-file pool only while its booked spend plus the
+  call's cap stays under `hard_cap_usd`, with a test. #12 depends on this.
 
 - **Reported waste double-counts the operator's working time across accounts.**
   `pse.wasted_pse` credits every account with the whole working rate over its own
@@ -141,6 +184,54 @@ the counterfactual says.
   Closes when that rule ships with tests, and a real lapsed account's profile and usage
   responses are captured as fixtures.
 
+- **Antigravity read failures leave no durable cause.** `--log-file /dev/stderr` replaces
+  agy's own per-run log file, which held the only record of why a `/usage` read failed
+  (sign-in stall, eligibility stall, eligibility 503). The cause now reaches only the
+  `status` warnings, and the poller's log rotates within about 30 minutes because of the
+  window-transition notes. The snapshot note, which history keeps for days, says only
+  that the latest read failed. Closes when the note carries the failure's cause, so an
+  attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
+  why the poller's log is that short.
+
+- **The `home=` injection seam is only half honoured.** `claude_configs_from_policy`
+  expands a config-supplied `config_dir` with `os.path.expanduser`, which reads the
+  *process* `HOME`, so an injected `home=` is ignored for exactly the accounts that
+  come from configuration. Only `_default_config_dir` respects it. This is why four
+  tests passed for three weeks by reading the author's real `~/.claude*` directories,
+  and CI caught it the first time it ran on a machine with none. The tests are now
+  hermetic; the seam itself is not fixed. Closing it means expanding `~` against the
+  injected base everywhere, and it is a behaviour change in a published library, so
+  it wants a deliberate decision rather than a drive-by.
+  **Operator decision 2026-10-18:** fix it. Expand `~` against the injected base
+  everywhere, with a test that injects a `home=` and reads a config-supplied `config_dir`.
+
+- **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
+  Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
+  Flash. Gemini 3.1 Pro left both lists between 21:30Z and 22:30Z on 2026-10-12. The
+  family map (`capability.py:82`, `PROVIDER_ANTIGRAVITY: ("flash", "pro")`) matches
+  neither name for Argon, so premium has no Antigravity model: `agy lists no gemini pro
+  model at high effort`. **Operator decision 2026-10-18:** Argon serves `frontier`. The operator asked for it
+  as "can we", conditional on agy offering the model, and it does: the ids
+  `gemini-4-argon-low`, `-medium` and `-high` were listed on all four pools at the
+  refreshes of 2026-10-18T06:49:46Z and 06:52:14Z, and `choose_gemini` matches an `argon`
+  line as it is. `premium` keeps no Antigravity model; the operator should say if that is
+  not wanted. A zero-code path exists today: a `[capabilities.frontier] antigravity =
+  "Gemini 4 Argon (High)"` pin, which `validate_table` accepts. Closes when `argon` is an
+  Antigravity selector (`SELECTORS`, `capability.py:82`), the default table's `frontier`
+  row names it for Antigravity (`capability.py:97`), a test pins both, and one call's
+  telemetry shows the model that actually served it.
+
+- **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
+  of the Antigravity measurement (see #9) records unrouted eval runs on that account at
+  09:31Z. They came from a checkout whose environment turns its router integration on.
+  It also records five busy replay sessions at 21:27Z, from another checkout of the same
+  consumer, with no router pick of `claude_c`. The 21:27Z case is not proven: the account
+  was disabled from 20:50Z to 23:50Z for the measurement, so no pick could choose it, and
+  a session started before 20:50Z would look the same. The consumer and its checkouts are
+  named in that measurement's ledger, which is outside git. Closes when the consumer's
+  launch path is traced to a pick or to a fixed account. A fix in that repo goes in that
+  repo's backlog.
+
 - **The switch test compares pace, not quota at stake.** Stickiness keeps the incumbent
   unless a challenger's tightest-window slack clears `incumbent x 1.15 + 0.02`. On
   2026-10-14 an account with about 5 PSE at risk of expiring (its plan was ending) lost
@@ -154,19 +245,15 @@ the counterfactual says.
   a standard pick. Both carried stale data at the time: the Codex reading was 58 minutes
   old, and `claude`'s five-hour window was restored from another source. Shrinkage is the
   likely cause, but nobody has confirmed it.
-  Closes when the operator decides whether a large difference in quota at stake should
-  be able to override the pace margin, and a test pins whichever rule is chosen.
+  **Operator decision 2026-10-18:** a large difference in quota at stake wins, and the
+  operator does not value account stability much, so the margin stays small. Closes when
+  a challenger wins the switch test once its PSE at risk exceeds the incumbent's by a
+  threshold set just above the noise in that estimate and stated where it is set, the
+  shrinkage effect above is confirmed or filed as its own item, and a test pins the rule.
+  The one cost of a flip that remains is a cold prompt cache on the new account, which is
+  why the margin is small rather than zero.
 
-- **Antigravity read failures leave no durable cause.** `--log-file /dev/stderr` replaces
-  agy's own per-run log file, which held the only record of why a `/usage` read failed
-  (sign-in stall, eligibility stall, eligibility 503). The cause now reaches only the
-  `status` warnings, and the poller's log rotates within about 30 minutes because of the
-  window-transition notes. The snapshot note, which history keeps for days, says only
-  that the latest read failed. Closes when the note carries the failure's cause, so an
-  attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
-  why the poller's log is that short.
-
-- **`[providers]` weights do nothing for an account with a weekly window.**
+- *Operator decision pending.* **`[providers]` weights do nothing for an account with a weekly window.**
   `account_score` computes the weight (`scoring.py:487`) but returns the PSE waste score
   without it (`scoring.py:520-525`). Only the no-weekly-window fallback multiplies by it
   (`scoring.py:530`). The tests that pin the weight, such as
@@ -183,41 +270,13 @@ the counterfactual says.
   therefore a large live change, not a cleanup: every Antigravity score would drop to
   30% and every Codex score to 70%. Closes when the operator chooses between applying
   the weights on the PSE path, which changes what a PSE means, and removing them with a
-  loud loader warning, and a test with a `7d` window pins the choice. Settle this
-  together with #9: a weight and a capacity both scale what Antigravity scores, and they
+  loud loader warning, and a test with a `7d` window pins the choice. The question is
+  separate from #9's capacity, which is decided: a weight and a capacity both scale what Antigravity scores, and they
   must not be tuned to cancel each other.
-
-- **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
-  Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
-  Flash. Gemini 3.1 Pro left both lists between 21:30Z and 22:30Z on 2026-10-12. The
-  family map (`capability.py:82`, `PROVIDER_ANTIGRAVITY: ("flash", "pro")`) matches
-  neither name for Argon, so premium has no Antigravity model: `agy lists no gemini pro
-  model at high effort`. Closes when the operator decides which capability Argon serves,
-  the map and a test say so, and one call's telemetry shows the model that actually
-  served it.
-
-- **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
-  of the Antigravity measurement (see #9) records unrouted eval runs on that account at
-  09:31Z. They came from a checkout whose environment turns its router integration on.
-  It also records five busy replay sessions at 21:27Z, from another checkout of the same
-  consumer, with no router pick of `claude_c`. The 21:27Z case is not proven: the account
-  was disabled from 20:50Z to 23:50Z for the measurement, so no pick could choose it, and
-  a session started before 20:50Z would look the same. The consumer and its checkouts are
-  named in that measurement's ledger, which is outside git. Closes when the consumer's
-  launch path is traced to a pick or to a fixed account. A fix in that repo goes in that
-  repo's backlog.
-- **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
-  `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
-  "Spend ceiling the router enforces when a card is on file" (`config.py:800`). No code
-  outside `config.py` reads it: `git grep -n hard_cap -- src` finds only that file. A
-  pool with a card on file could spend past its cap through `run`. No money is at risk
-  while every configured pool has `card_on_file = false`. Closes when `_pool_targets`
-  (`run.py:383-413`) admits a card-on-file pool only while its booked spend plus the
-  call's cap stays under `hard_cap_usd`, with a test. #12 depends on this.
 
 ---
 
-### 3. The joint objective stalls more than today's when the fleet is tight
+### 3. The joint objective stalls more than today's when the fleet is tight  `[difficulty: xhigh]`  `[filed: 2026-10-14]`
 
 `[engine] objective = "joint"` ranks by projected fleet waste avoided and never scores
 unmet demand (operator decision 2026-10-14). `quotapick replay` (21 days to 2026-10-14,
@@ -244,7 +303,7 @@ to `own_waste` and carry no five-hour cap.
 
 ---
 
-### 4. The joint projection cannot move work across providers
+### 4. The joint projection cannot move work across providers  `[difficulty: xhigh]`  `[filed: 2026-10-14]`  `[BLOCKED: the Antigravity half of (a) waits on #9 and #10; (c) is #15]`
 
 The projection and the replay keep provider groups apart: Claude work stays on Claude
 accounts. That makes #3's stall figure an upper bound for work that could have run on
@@ -273,7 +332,13 @@ has no config key yet (#9). At capacity 1.0 the router overvalues those pools ab
 times; it does not undervalue them. The Gemini pools have a measured k = 15 that is not
 applied and a size nobody has measured (#10).
 
-### 5. A `run` client cannot tell from an attempt whether it was billed
+*Split 2026-10-18:* part (c), the early-reset hazard, is #15 and needs nothing from this
+item. The Codex half of (a) needs a Codex size measurement that no item carries yet.
+**Operator decision 2026-10-18:** proceed with the rest as soon as #9 and #10 land.
+
+---
+
+### 5. A `run` client cannot tell from an attempt whether it was billed  `[difficulty: high]`  `[filed: 2026-10-15]`
 
 A client may route a failed `quotapick run` call some other way only if nothing was
 spent. Today it has to infer that from each attempt's `outcome` and `cost_usd`. Two cases
@@ -290,7 +355,9 @@ subscription call. It stops being correct if that field is ever missing.
 response, set from what the router observed: the child produced a result event, or the
 ledger booked a spend. Clients would then fall back on `spent: false` alone.
 
-### 6. A credit-pool `run` records a pick on a subscription that never ran
+---
+
+### 6. A credit-pool `run` records a pick on a subscription that never ran  `[difficulty: high]`  `[filed: 2026-10-16]`
 
 `run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
 then compares that choice against the credit pools. When a pool wins, the subscription
@@ -397,7 +464,10 @@ operator's Google accounts, so it is the only copy of the raw data.
 
    #1 plans to publish this figure.
 
-**The operator has not decided yet.** On 2026-10-12 the operator asked for Antigravity
+**Operator decision 2026-10-18: Encode 0.088.** The operator also mentioned a small bias
+toward Antigravity, such as 0.10 in place of 0.088; step 5 sets the measured value
+unless the operator asks for the bias in so many words. How the decision was reached:
+on 2026-10-12 the operator asked for Antigravity
 quota to be used more aggressively, because its app always shows the pools near full. The
 measuring agent first recommended keeping the overstatement for that reason. On
 2026-10-13 it withdrew that recommendation. The idle-reset finding above came later, on
@@ -463,7 +533,7 @@ projection and the waste writer, and it waits on an operator decision.
 
 ---
 
-### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
+### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[BLOCKED: waits on #9; then show the measurement method before spending quota]`
 
 **Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools
 (details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
@@ -497,7 +567,10 @@ now credits a fallback-only provider with, both read 0.000, so the mis-sizing sh
 6.23. Nobody has checked Flash's
 quality on the standard tier's real work.
 
-**The operator has not decided yet.** On 2026-10-13 the operator questioned holding back
+**Operator decision 2026-10-18: measure the size first, then set k and capacity
+together** (the third option below). Step 1's price basis is still to be shown to the
+operator before any quota is spent. How the decision was reached: on 2026-10-13 the
+operator questioned holding back
 a measured k. The measuring agent agreed that k = 15 is correct and that
 6.25 only hides part of the capacity error. Its proposal is the third option below:
 
@@ -585,7 +658,7 @@ an Antigravity pool while its reset slides.
 
 ---
 
-### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`
+### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`  `[BLOCKED: #5 and #6 first; the step 0 probes are #16; the rails question in step 3 is open]`
 
 **Background.** A credit pool is reachable only through `quotapick run`, and `run`
 executes one tool-less call. The child always gets `--tools "" --no-session-persistence
@@ -685,7 +758,9 @@ Two other designs were rejected:
 
 0. **Prove the Claude Code facts first, then decide.** Run cheap Haiku probes on one pool,
    and record the commands and raw output in the container's `measurements/` folder.
-   Probe output sits next to a key, so it does not go in this repo.
+   Probe output sits next to a key, so it does not go in this repo. **Operator decision
+   2026-10-18:** the probes are authorized. They are filed as #16 so they can run before
+   #5 and #6; their findings replace each UNVERIFIED below.
    - **0a. Auth without the key in the environment.** Run `claude -p --bare --settings
      '{"apiKeyHelper": "<absolute path>"}'` with no `ANTHROPIC_API_KEY` set, and record the
      init event's `apiKeySource`. Then have a Bash tool call run
@@ -777,7 +852,8 @@ Two other designs were rejected:
      `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` or `CLAUDE_CODE_API_KEY_*`. The router copies
      nothing from the operator's user settings.
    - **Operator decision before the build:** should the operator's `permissions` and
-     `defaultMode` rails be copied into credit runs?
+     `defaultMode` rails be copied into credit runs? *Operator decision pending:* on
+     2026-10-18 the operator asked for a plainer explanation before choosing.
      - The recommendation is no: the consumer passes what it needs, so the run is
        explicit and testable.
      - The cost of no is that a job migrated without its own rails would run without the
@@ -1173,6 +1249,117 @@ credit pools".
 
 ---
 
+### 14. A mixed-fleet operator has no setup path, and three other first-run gaps stay open  `[difficulty: high]`  `[filed: 2026-09-07]`
+
+Found by walking a fresh clone as somebody holding several Claude accounts, more than
+one Codex account, Antigravity and Cursor. Adding an account beyond the builtin set now
+*warns* rather than failing in silence, and Cursor is a real provider. The gaps below
+are what that audit left open. This is an umbrella item: finish one bullet, delete it.
+
+- **Nothing walks a new operator from clone to first routed call.** There is no `setup`
+  or `init` command, and no example config file: the README carries config examples
+  inline (`README.md:123-137`), but no one complete file. `quotapick doctor` exists, but it
+  checks that routing is in force on a configured machine (`doctor.py:1-30`); it does not
+  name every account it looked for, where it looked, what it found, and the single next
+  action for each one that failed. Closing it: that first-run check, in `doctor` or a
+  `setup` command.
+
+- **An empty home gets a warning that misdiagnoses itself.** `status` on a clean home
+  names every builtin account it could not read (`cli.py:523-528`) and ends with `no
+  candidates at all` (`cli.py:930`). The warning does not print the directory it looked
+  in, and its hint says the adapter "does not read declared accounts", which blames the
+  code when the directory is missing. Closing it: name the directory looked in, and drop
+  the hint when a missing directory is the cause.
+
+- **The Codex transcript adapter warns about a home the live read has already measured.**
+  Every declared Codex home is read live through `codex app-server`
+  (`account/rateLimits/read`), with the session transcripts as the fallback. The transcript
+  adapter still warns "no session transcripts" for such a home, and the live read spawns one
+  process per account on every pick, which the poller also pays every 120s.
+
+- **Cursor's tier is not read.** `cursor-agent about --format json` reports
+  `subscriptionTier`, and reading it costs a subprocess plus a network round trip (~0.9s
+  measured) on the critical path of opening a terminal. The tier is therefore declared by
+  the operator. Closing it: cache the value on disk with a long TTL and refresh it out of
+  band, the way the statusline cache already works for Claude.
+
+---
+
+### 15. The joint projection ignores each provider's early-reset hazard  `[difficulty: xhigh]`  `[filed: 2026-10-18]`
+
+**Background:** carried from #4 part (c). The joint projection gives every stock the
+deadline the provider publishes (`joint.py:184-201`; credit pools at `joint.py:228`),
+and the replay does the same. The
+waste series labels each reset `scheduled` or `early` (`waste.py:132-135`), and
+`_early_events` (`waste.py:1131`) already groups the early ones. As of 2026-10-14 the two
+Codex accounts had logged 14 early resets against 4 scheduled since labelling began. The
+README section "An early reset is not waste" explains why an early reset is forfeited,
+not wasted: routing cannot plan for a boundary nobody published.
+
+**Impact:** whatever is left at an early reset is forfeited, so Codex quota is more
+perishable than its published deadline says, and the projection under-values spending
+it early. #4's stall figure inherits the same deadlines.
+
+**Fix:**
+
+1. Measure an early-reset hazard per provider from `waste.jsonl`: the share of weekly
+   periods that ended early and the typical lead before the published boundary, with the
+   counts they rest on. A provider with fewer than a stated minimum of periods gets no
+   hazard, and the report says so.
+2. Bring each stock's effective deadline forward by that hazard in the projection
+   (`joint.py:184-201`).
+3. Report the hazard and its counts in `status --json`.
+4. Re-run the replay gate in #3 before and after, and record both results in the commit
+   that ships this.
+
+*Risks and edge cases:* fourteen events is thin evidence, and one provider's behaviour
+can change; the hazard must carry its counts wherever it is shown. An early reset is a
+provider's one-off and stays out of the waste total, so this item changes deadlines, not
+the waste figure.
+
+*Why xhigh, not high:* it wires the waste series into the projection and the replay for
+the first time, and the replay gate decides whether it ships.
+
+**Touch points:** `waste.py:1131-1210` (`_early_events`), `joint.py:184-201` and `:228`, `replay.py`
+where stocks are built, the `status --json` payload, and the waste and joint tests.
+
+---
+
+### 16. The step-0 probes for #12 have not been run  `[difficulty: high]`  `[filed: 2026-10-18]`
+
+**Background:** #12 step 0 lists probes 0a to 0g: whether an API key reaches tool
+subprocesses under each auth method and scrub setting, what `--bare` keeps, the budget
+stop, JSON output, session files, price and init-before-spend. No output exists:
+`measurements/agent-credit-2026-10-18/` in the checkout container holds cost and size
+surveys only. The probes the operator remembers are different ones: `run`'s own
+`apiKeySource` check on tool-less calls, and `measurements/free-plan-probe-2026-10-14/`,
+which read the profile endpoint for the lapsed-plan bullet in #2. **Operator decision
+2026-10-18:** the probes are authorized.
+
+**Impact:** probe 0a gates the whole #12 design, and the design cannot start until it is
+answered. The other probes decide flags, output format and margins.
+
+**Fix:**
+
+1. Run 0a to 0g exactly as #12 states, with cheap Haiku calls on one credit pool.
+2. Record every command and its raw output in the container's `measurements/` folder,
+   outside git, because probe output sits next to a key.
+3. Write the findings into #12, replacing each UNVERIFIED with what was measured and the
+   date.
+4. Apply #12's gate: if 0a shows the key reaching tool subprocesses under every method
+   and setting, stop and escalate to the operator instead of proceeding to #12.
+
+*Risks and edge cases:* real credit is spent, a few cents per probe; never commit probe
+output or a key; read one full raw response before trusting any parser.
+
+*Why high, not medium:* the probes need judgment on raw Claude Code output, and a secret
+is close to everything they write.
+
+**Touch points:** `BACKLOG.md` #12 step 0 and its UNVERIFIED notes; the measurements
+folder in the checkout container. No code.
+
+---
+
 ## Closed
 
 - **Pileup reservations double-counted once the endpoint caught up.** A claim existed
@@ -1221,48 +1408,3 @@ credit pools".
   cause. This was accept-and-guess in its exact classic form.
 
 ---
-
-## First-run experience for an operator with a mixed fleet
-
-Found by walking a fresh clone as somebody holding several Claude accounts, more than
-one Codex account, Antigravity and Cursor. Adding an account beyond the builtin set now
-*warns* rather than failing in silence, and Cursor is a real provider. The gaps below
-are what that audit left open.
-
-**There is no `setup`, `init` or `doctor` command.** The subcommands are `pick`, `exec`,
-`status`, `explain`, `calibrate`, `forensics` and `waste`. Nothing walks a new operator
-from clone to first routed call, and there is no example config in the repo. Closing it:
-a `quotapick doctor` that names every account it looked for, where it looked, what it
-found, and the single next action for each one that failed.
-
-**A machine with no accounts gets an unhelpful first answer.** `status` on a clean home
-says `no candidate can serve this call right now`. It never says it looked for Claude
-accounts and found none, so the output reads as a broken tool rather than an
-unconfigured one. Closing it: report the accounts that were looked for and missed, not
-only the ones that answered. The warning added for *configured* accounts does not cover
-builtin ones, which are still dropped quietly when their directory is absent. Partly
-narrowed: the two Antigravity pools that used to be the whole of that first answer are
-no longer builtin, so a clean home now shows an empty fleet rather than a fake one.
-
-**Codex usage from `--ephemeral` runs was invisible.** Closed. Every declared Codex home
-is read (`codex_accounts_from_policy`), and each is now read live through `codex
-app-server` (`account/rateLimits/read`), with the session transcripts as the fallback.
-Before this, a caller running `codex exec --ephemeral` wrote no transcript, and one
-account's reading was fifteen hours old at 0% while it had spent 1%. Still open: the
-transcript adapter keeps warning "no session transcripts" for a home the live read has
-already measured, and the live read spawns one process per account on every pick,
-which the poller also pays every 120s.
-
-**Antigravity's two entries are pools, not accounts.** The pools now come from the
-operator config through `account_ids_for_provider`, and the adapter runs only when the
-config names them, so nothing is invented and the pair is no longer fixed. The design
-question underneath is still open and is not this router's to answer: `agy` selects a
-pool with `AGY_MODEL` behind one binary and offers no login or config-directory seam at
-all, so a second Antigravity *subscription* remains indistinguishable from the first --
-to this router and to `agy` itself. Closing it needs that seam to exist upstream.
-
-**Cursor's tier is not read.** `cursor-agent about --format json` reports
-`subscriptionTier`, and reading it costs a subprocess plus a network round trip (~0.9s
-measured) on the critical path of opening a terminal. The tier is therefore declared by
-the operator. Closing it: cache the value on disk with a long TTL and refresh it out of
-band, the way the statusline cache already works for Claude.
