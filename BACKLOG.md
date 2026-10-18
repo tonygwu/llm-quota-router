@@ -49,6 +49,12 @@ nobody published. See the README section "An early reset is not waste".
    what would have burned elsewhere. Without that third piece a replay compares one real
    trajectory against an imagined one and the difference is unfalsifiable. Worth
    designing before building.
+4. **Antigravity rows are logged at a placeholder size.** The first four rows, from
+   2026-10-13 to 2026-10-16, use capacity 1.0. For the Claude/GPT pools that is about 11
+   times the measured size: their two scheduled rows log 2.99 PSE, and the measurement
+   gives 0.26. The two Gemini rows are early resets, so they stay out of the waste total,
+   but they inflate the forfeited figure by a factor nobody has measured. #9 and #10 fix
+   the sizes; fix them before the figure is stated.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
@@ -128,6 +134,11 @@ the counterfactual says.
   thrashing, so this may be the right trade; it is surfaced here as a design choice,
   not filed as a defect. Related: confidence shrinkage pulls stale accounts toward the
   field mean score, so one large score raises every stale account's score with it.
+  A dry run on 2026-10-13 showed how large that can be. Changing only the Gemini pools'
+  k from 6.25 to 15 moved `claude` from 0.256 to 0.889 and `codex` from 0.064 to 0.222 in
+  a standard pick. Both carried stale data at the time: the Codex reading was 58 minutes
+  old, and `claude`'s five-hour window was restored from another source. Shrinkage is the
+  likely cause, but nobody has confirmed it.
   Closes when the operator decides whether a large difference in quota at stake should
   be able to override the pace margin, and a test pins whichever rule is chosen.
 
@@ -137,7 +148,40 @@ the counterfactual says.
   `status` warnings, and the poller's log rotates within about 30 minutes because of the
   window-transition notes. The snapshot note, which history keeps for days, says only
   that the latest read failed. Closes when the note carries the failure's cause, so an
-  attempted / succeeded / failed-by-cause count can be read back out of history.
+  attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
+  why the poller's log is that short.
+
+- **`[providers]` weights do nothing for an account with a weekly window.**
+  `account_score` computes the weight (`scoring.py:487`) but returns the PSE waste score
+  without it (`scoring.py:520-525`). Only the no-weekly-window fallback multiplies by it
+  (`scoring.py:530`). The tests that pin the weight, such as
+  `test_provider_weight_scales_the_score` (`tests/test_scoring.py:452`), build a
+  `seven_day` window. That is not the `7d` key, so they exercise only the fallback. On
+  2026-10-18 one snapshot scored 0.8000 at weight 1.0 and 0.4000 at weight 0.5 with a
+  `seven_day` window, and 4.6650 at both weights with a `7d` window. Nothing warns, as
+  `tier_override_warnings` does for `[tiers]`. The PSE path has ignored the weight since
+  `de80483`. The operator config has no `[providers]` section, so no live pick is
+  affected today. Closes when either the weight applies on the PSE path or the loader
+  says loudly that it is ignored, and a test with a `7d` window pins the choice. Applying
+  it changes what a PSE means, so the operator decides which.
+
+- **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
+  Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
+  Flash. Gemini 3.1 Pro left both lists between 21:30Z and 22:30Z on 2026-10-12. The family map
+  (`capability.py:82`, `PROVIDER_ANTIGRAVITY: ("flash", "pro")`) matches neither name for
+  Argon, so premium has no Antigravity model: `agy lists no gemini pro model at high
+  effort`. Closes when the operator decides which capability Argon serves, the map and
+  a test say so, and one call's telemetry shows the model that actually served it.
+
+- **Two digital-twin evals ran on `claude_c` with no router pick on 2026-10-12.** The
+  ledger of the Antigravity measurement (see #9) records unrouted `digital-twin/repo-3`
+  evals on that account at 09:31Z. It also records five busy `digital-twin/repo-8` replay
+  sessions at 21:27Z, with no router pick of `claude_c`. Both checkouts set
+  `OWNER_QUOTA_ROUTER=on` in their `.env`. The 21:27Z case is not proven: the account was
+  disabled from 20:50Z to 23:50Z for the measurement, so no pick could choose it, and a
+  session started before 20:50Z would look the same. Closes when the consumer's launch
+  path is traced to a pick or to a fixed account. A fix in that repo goes in that repo's
+  backlog.
 
 ---
 
@@ -191,6 +235,12 @@ Interactive `cl` and work pinned to a Claude model cannot.
 rate; (c) an early-reset hazard per provider, measured from `waste.jsonl`, that brings
 the effective deadline forward. Then re-run the replay gate with cross-provider routing.
 
+*Antigravity part of (a), as of 2026-10-18:* the Claude/GPT pools were measured on
+2026-10-12. Their k = 2.0 is now in the operator config, and their capacity of about 0.088
+has no config key yet (#9). At capacity 1.0 the router overvalues those pools about 11
+times; it does not undervalue them. The Gemini pools have a measured k = 15 that is not
+applied and a size nobody has measured (#10).
+
 ## 5. A `run` client cannot tell from an attempt whether it was billed
 
 A client may route a failed `quotapick run` call some other way only if nothing was
@@ -228,6 +278,207 @@ selection writeback, and `chosen` on the history line), let `run` call `_prepare
 `write_state=False`, and record only after the target is known, for a subscription
 target alone. The risk is in `_prepare`, which every `pick` runs; the pick goldens must
 stay byte-identical.
+
+---
+
+## 9. Every Antigravity pool is sized as if it were a Max-20x account  `[difficulty: high]`  `[filed: 2026-10-18]`
+
+**Background.** Capacity, the size of one five-hour window in PSE, comes only from the
+plan tier. `AccountSnapshot.capacity` returns `capacity_for_tier(self.tier)`
+(`types.py:843-845`). Antigravity pools have the tier `unknown`, which maps to
+`UNKNOWN_TIER_CAPACITY = 1.0` (`types.py:301`). `[tiers]` overrides do not reach scoring
+(`tier_override_warnings`, `config.py:1081`), and no per-account key exists. A status run
+on 2026-10-13 printed `antigravity_claude {'tier': 'unknown', 'capacity': 1.0}`.
+
+A measurement on 2026-10-12 sized the Antigravity Claude/GPT pools. The data, harness and
+analysis are in `measurements/agy-capacity-2026-10-12/` in the checkout container, beside
+`repo-prod`. The main file is `analysis2-final.json`, and `LEDGER.txt` lists every stop
+and exclusion.
+
+- **k = 2.0** on both Google accounts: 6 reps on `antigravity_claude` (sd 0.000005) and 2
+  on `antigravity_claude_b`. The operator config carries `weekly_to_session = 2.0` on both.
+- **A full weekly pool holds $50.07 of Opus 5.5 work at list price.** Antigravity input
+  was priced as cache writes at $5/M, and an input-heavy rep confirmed that rate. Every
+  call served the model it asked for.
+- **A Max-20x five-hour window holds about $283.** This came from `claude_c`, a Max-5x
+  account, at $0.708 per point of its five-hour bar over 3 clean reps ($0.761, $0.628 and
+  $0.751). One more rep was excluded as contaminated. The meter reads whole percents, so
+  each rep carries about ±18%. The division by the 0.25 tier scale is an assumption:
+  `claude_c` reads k = 9.8 where 20x accounts read 6.25, so a 5x plan may not be exactly a
+  quarter of a 20x plan.
+- **So one Antigravity Claude/GPT five-hour window is about 0.088 PSE**, with a range of
+  0.082 to 0.100 across reps. Its weekly pool is about 0.18 PSE, roughly 3% of one Max-20x
+  week. Capacity 1.0 overstates the pool about 11 times.
+
+**Impact.**
+
+1. *Routing.* A premium dry run (`pick --dry-run --no-sticky --capability premium`, one
+   snapshot at 2026-10-13T03:03:47Z) ranked `antigravity_claude` third, at 0.702 PSE at
+   risk. With capacity patched to 0.088 in a scratch wrapper, it scored 0.000 and ranked
+   last. At the true size, a full pool shows PSE at risk only in the last 8 hours of its
+   week (`pse.wasted_pse` at the default rate of 0.04 PSE/h):
+
+   | Hours to weekly reset | At risk, capacity 1.0 | At risk, capacity 0.088 |
+   |---|---|---|
+   | 24 | 1.040 | 0.000 |
+   | 8 | 1.680 | 0.035 |
+   | 1 | 1.960 | 0.136 |
+
+2. *The waste figure.* `waste.jsonl` records each expired window at the router's size
+   (`tier_scale=reading.tier_scale`, `waste.py:603`), and nothing skips Antigravity pools.
+   The first four rows all carry `tier_scale: 1.0`:
+
+   | Account | Reset | Kind | Remaining | Logged PSE | At 0.088 |
+   |---|---|---|---|---|---|
+   | `antigravity_claude` | 2026-10-13T16:01:20Z | scheduled | 0.576 | 1.151 | 0.101 |
+   | `antigravity_claude_b` | 2026-10-15T02:33:12Z | scheduled | 0.921 | 1.843 | 0.162 |
+   | `antigravity_gemini_b` | 2026-10-16T22:06:28Z | early | 0.994 | 6.216 | unknown (#10) |
+   | `antigravity_gemini` | 2026-10-16T22:15:24Z | early | 0.996 | 6.225 | unknown (#10) |
+
+   #1 plans to publish this figure.
+
+**The operator has not decided yet.** On 2026-10-12 the operator asked for Antigravity
+quota to be used more aggressively, because its app always shows the pools near full. The
+measuring agent first recommended keeping the overstatement for that reason. On
+2026-10-13 it withdrew that recommendation:
+
+- *Encode 0.088. This is the recommendation.* Ranking and waste rows become honest. The
+  Antigravity Claude pools then rank last almost always, and they keep expiring. That is
+  the correct outcome while Claude quota also expires. In the same dry run `claude_b`
+  carried 2.803 PSE at risk and `claude_d` 2.715, and #1 counts 54.68 PSE expired unused
+  over eight weekly cycles. A call sent to Antigravity saves Claude quota that then
+  expires, so total work does not change. When the Claude accounts run short, they have
+  nothing at risk or do not fit, and the router picks Antigravity at its true size anyway.
+- *Keep 1.0.* Antigravity drains first and its meter moves, which is what the operator
+  asked for. It gets no extra work done while Claude quota expires, and every Antigravity
+  row in the waste figure stays about 11 times too large.
+- *Prefer Antigravity regardless.* If the operator wants that, the honest tool is an
+  explicit preference, not a false size. None exists: `deprioritize` does the opposite,
+  and `[providers]` weights do not apply on this path (see the bullet in #2).
+
+**What would close it:**
+
+1. Add an optional per-account `capacity` to `AccountConfig`, next to `weekly_to_session`
+   (`config.py:378`). Refuse it unless it is finite and greater than 0, as loudly as
+   `plan_for` refuses a bad k (`scoring.py`).
+2. Make the configured value the snapshot's capacity wherever a snapshot is built for that
+   account. Scoring (`scoring.py:486`, `:520`), the joint projection (`joint.py:162-178`),
+   status output and the waste row's `tier_scale` must all read the same number. Keep
+   `tier` as reported, and change only capacity.
+3. Write the tests first and watch them fail. One test checks that a configured capacity
+   changes a real pick, built like `test_a_configured_k_reaches_a_real_pick`
+   (`tests/test_k_calibration.py:569`). Another checks that a waste row written for that
+   account carries the capacity. Use the window keys `5h` and `7d`. The old `five_hour`
+   and `seven_day` keys take the no-weekly-window fallback, so a test built on them tests
+   nothing.
+4. Ship from repo-prod and verify as `CLAUDE.md` says.
+5. When the operator says yes, back up the operator config and set `capacity = 0.088` on
+   both Antigravity Claude pools. Also rewrite its Antigravity comments, which still call
+   the pools a "last resort for capability picks only" that "serves when no measured
+   account fits". They have been stale since `d3207b8`.
+6. Decide how to treat the rows already in `waste.jsonl`. They carry `k` and `tier_scale`,
+   so a report can rescale them. Rewriting a file that is never pruned needs its own
+   decision.
+
+*Risks and edge cases:* every capability pick that can land on Antigravity changes rank.
+Hysteresis compares unscaled slack (`select.py`), so check that the switch test does not
+start to favor the small pools. The replay gate in #3 reads capacity through the joint
+projection, so run it again after the change.
+
+*Why high, not medium:* the change crosses config, snapshot, scoring, the joint
+projection and the waste writer, and it waits on an operator decision.
+
+---
+
+## 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`
+
+**Background.** The measurement in #9 read k = 15.0 for both Antigravity Gemini pools.
+The reads were consecutive and came from one `/usage` replica: 13 of 16 changes on
+`antigravity_gemini` (mean 15.0006) and 12 of 16 on `antigravity_gemini_b` (mean
+15.0005). Whole-rep k does not reproduce (6.5 to 31.9), because the Gemini five-hour bar
+moves in exact steps of +0.0100. The operator config leaves both Gemini pools on the
+default 6.25. Their size in PSE was never measured, so their capacity stays at the
+placeholder 1.0 from #9.
+
+The effect of applying k = 15 alone, in a standard dry run on the same snapshot as #9:
+
+| Config | Standard winner | Gemini PSE at risk | `claude_b` |
+|---|---|---|---|
+| Live, k = 6.25 | `claude_b`, `claude-sonnet-5-5` | 0.428 / 0.383 | 2.803 |
+| k = 15 | `antigravity_gemini_b`, `Gemini 3.8 Flash (High)` | 9.130 / 9.099 | 2.803 |
+
+Premium picks did not change, because no Antigravity Gemini model counts as pro (see the
+Gemini 4 Argon bullet in #2).
+
+**Impact.** k = 15 is right and 6.25 is wrong, but k multiplies the placeholder capacity.
+Applied alone, it sizes each Gemini week at 15 PSE, which is 2.4 Max-20x weeks. Every
+standard pick then moves from Claude Sonnet to Gemini Flash on a size nobody measured. A
+Gemini week that expires would log 14.94 PSE instead of 6.23. Keeping 6.25 does not fix
+this, because it only hides part of the capacity error. The operator challenged holding
+k back on 2026-10-13. The measuring agent agreed and proposed applying k and a measured
+capacity together. Nobody has checked Flash's quality on the standard tier's real work.
+
+**Hazards for whoever measures it:**
+
+- **Two backend replicas answer `/usage`.** A 120 s poll lands on the other replica about
+  49% of the time. One replica, called X in the analysis, was trustworthy. The other read
+  offsets of up to 0.8% of the weekly pool, and the offsets were not constant. Never
+  difference a reading against one from the other replica. The flips also produce the
+  `incoherent pair` warnings in #11.
+- **Both Gemini pools reset early on 2026-10-16**, at 22:06Z and 22:15Z, with 99.4% and
+  99.6% left (`kind: early`). Do not count on time before a scheduled reset to measure.
+- **Gemini 3.1 Pro left both accounts' model lists on 2026-10-12**, between 21:30Z and
+  22:30Z. Fourteen eval calls failed with `gemini-3.1-pro-high not recognized`, so the reps
+  used Gemini 3.8 Flash.
+- **The two Google accounts ran different agy versions** during the eval: 1.3.2 on `_b`
+  and 1.3.3 on the primary.
+
+**What would close it:**
+
+1. Agree with the operator how Flash work compares with Claude work. The proposal is
+   list-price dollars, the same basis as #9, where one PSE is about $283 of Opus 5.5 work.
+   Show the method before spending quota.
+2. After #9 ships, measure the size of both Gemini pools, reading only one replica. Start
+   from `harness2.py` and `analyze2.py` in the measurement directory.
+3. Set `weekly_to_session = 15.0` and the measured `capacity` on both Gemini pools in one
+   config change, with a backup. Record the standard dry run before and after.
+
+*Risks and edge cases:* priced at list dollars, a cheap model may make the pool tiny, so
+Gemini rarely wins a pick. That is the honest answer, for the same reason as in #9.
+
+*Why high, not medium:* the method needs a judgment, and the run spends quota against a
+noisy meter.
+
+---
+
+## 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
+
+**Background.** `status` calls `_record_waste` (`cli.py:2862`; body at `cli.py:2308-2320`).
+It reads all retained history, rotated files included, and runs `detect_resets`
+(`waste.py:730`) over every pair of readings. The pair warnings (`waste.py:781-797`) have
+no cursor and no dedup, so each call emits again every warning the retained history can
+produce. The last record in the poller's log at 2026-10-18T01:21:53Z held 12,203 warnings
+and was 3.04 MB as compact JSON:
+
+- 7,347 came from `codex_b/base_model_inference: reset time moved forward 0.00 of a window
+  without rolling over (2026-09-25T00:02:05Z -> 2026-09-25T00:03:52Z)`. That window's
+  boundary slides about two minutes per poll, and the pairs are three weeks old.
+- 3,747 came from the Antigravity `7d` windows, mostly `incoherent pair` warnings from the
+  replica flips in #10.
+
+**Impact.** The poller's log rotated after 7 records, from 01:04:32Z to 01:21:53Z, so it
+keeps about 17 minutes. The durable-cause bullet in #2 depends on that log. A new warning
+is lost among thousands of old ones, and the count grows with history.
+
+**Fix:** emit a pair warning only for pairs newer than the previous scan, or fold the
+warnings into one line per account and window, with a count and the newest example.
+Write a test that builds a history with many drift pairs and checks two things: a status
+run emits at most one line per window, and a drift pair that arrives after the first run
+still appears. Separately, decide whether a window whose boundary always slides, such as
+`codex_b/base_model_inference`, should count as a stock at all.
+
+**Touch points:** `cli.py:2308-2320`, `waste.py:730-800`, `waste.py:1060`
+(`update_from_history`), and the waste tests.
 
 ---
 
