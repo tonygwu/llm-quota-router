@@ -181,15 +181,16 @@ the counterfactual says.
   the map and a test say so, and one call's telemetry shows the model that actually
   served it.
 
-- **Two digital-twin evals ran on `claude_c` with no router pick on 2026-10-12.** The
-  ledger of the Antigravity measurement (see #9) records unrouted `digital-twin/repo-3`
-  evals on that account at 09:31Z. It also records five busy `digital-twin/repo-8` replay
-  sessions at 21:27Z, with no router pick of `claude_c`. Both checkouts set
-  `OWNER_QUOTA_ROUTER=on` in their `.env`. The 21:27Z case is not proven: the account was
-  disabled from 20:50Z to 23:50Z for the measurement, so no pick could choose it, and a
-  session started before 20:50Z would look the same. Closes when the consumer's launch
-  path is traced to a pick or to a fixed account. A fix in that repo goes in that repo's
-  backlog.
+- **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
+  of the Antigravity measurement (see #9) records unrouted eval runs on that account at
+  09:31Z. They came from a checkout whose environment turns its router integration on.
+  It also records five busy replay sessions at 21:27Z, from another checkout of the same
+  consumer, with no router pick of `claude_c`. The 21:27Z case is not proven: the account
+  was disabled from 20:50Z to 23:50Z for the measurement, so no pick could choose it, and
+  a session started before 20:50Z would look the same. The consumer and its checkouts are
+  named in that measurement's ledger, which is outside git. Closes when the consumer's
+  launch path is traced to a pick or to a fixed account. A fix in that repo goes in that
+  repo's backlog.
 - **Nothing enforces a credit pool's `hard_cap_usd`.** The config refuses a pool with
   `card_on_file = true` unless it sets `hard_cap_usd`, and the docstring calls it the
   "Spend ceiling the router enforces when a card is on file" (`config.py:800`). No code
@@ -591,10 +592,10 @@ Four more things keep credit away from agent runs:
 - **Holds expire.** A ledger hold stops counting after `HOLD_TTL_S = 3600` s
   (`credits.py:44`, `credits.py:214-223`), whether or not its call has finished.
 
-**Where the demand is.** The operator's config declares four pools that renew monthly at
-a $200 grant each, $800 a month. At `usd_per_pse = 305` that is 2.6 PSE, about 3% of the
-current fleet's monthly capacity. The README says a Max 5x plan grants $100, so one of the
-four grants needs a Console check. Tool-less work rarely spends this credit: a client's
+**Where the demand is.** The operator's config declares four pools that renew monthly:
+three Max 20x pools at $200 and one Max 5x pool at $100, $700 a month. The Max 5x figure
+was confirmed in its Console on 2026-10-18 (#13). At `usd_per_pse = 305` that is 2.3 PSE,
+about 2.5% of the current fleet's monthly capacity. Tool-less work rarely spends this credit: a client's
 scheduled tool-less calls are few and cheap, and only a manual batch moves real money.
 One did on 2026-10-18.
 
@@ -815,7 +816,7 @@ Two other designs were rejected:
      That covers a killed child, a timeout, and a wrapper that was itself killed: an exec
      hold that expires unsettled becomes an estimated spend, never a silent release.
    - `quotapick doctor` asks for a Console checkpoint (`quotapick credits set`) once a
-     pool's estimated spends since its last checkpoint pass $20 or 10% of its grant,
+     pool's estimated spends since its last checkpoint pass $20 or 10% of `grant_usd`,
      whichever is lower.
    - `--report PATH` writes `{target_kind, target, pool, model, config_dir, session_id,
      cost_usd, spent, apiKeySource, outcome, decision}`. The exit code passes through.
@@ -937,6 +938,219 @@ cannot bite.
 - `doctor.py` (rotation flag, checkpoint request), a new `credit-key` command, new
   `tests/test_exec_credit.py` with a fake-`claude` script, and the README sections
   "Running a call — quotapick run" and "API credit pools".
+
+---
+
+## 13. A credit pool holds one grant at a time, so overlapping grants are mispriced and the grant day is never learned  `[difficulty: high]`  `[filed: 2026-10-18]`
+
+**Background.** The ledger keeps one balance and one expiry per pool. `balance()` starts
+from the latest `grant` or `checkpoint` line, and each such line *replaces* the balance
+rather than adding to it (`credits.py:172-183`). Past that expiry, a `monthly` pool is
+assumed to get a fresh `grant_usd` for one more calendar month, at confidence 0.6
+(`credits.py:186-198`). `add_month` anchors that assumed grant to the old expiry instant,
+not to the day grants actually arrive (`credits.py:112-122`). The module docstring states
+the model (`credits.py:1-24`), and every line carries `LEDGER_VERSION = 1`
+(`credits.py:41`).
+
+The rest of the router inherits the single-grant view:
+
+- **Projection.** `credit_stock` turns a pool into one stock with one deadline and
+  `id = pool_id` (`joint.py:213-237`), built once per pool in `run` (`run.py:547`).
+  - The chooser (`choose_credit_or_subscription`) scores candidates by pool id
+    (`run.py:341-380`).
+  - The winner is matched back by `pool.id` and reported with `bal.expires_s`
+    (`run.py:564-579`).
+- **Waste series.** `expiries_due` writes one `expired` line per period end, de-duplicated
+  by the expiry instant alone (`credits.py:251-273`).
+- **`quotapick credits grant --amount --expires`** exists (`cli.py:3314-3317`, handled at
+  `cli.py:4183-4210`), but its line replaces the balance. Recording a new grant erases
+  what the older one had left.
+- **`doctor`.** It warns on a checkpoint older than a week (`doctor.py:460-462`), on a
+  balance that rests on the config or an assumed renewal, and on expiry within a day
+  (`check_credit_pools`, `doctor.py:496-534`). It has no notion of when a grant is due,
+  and its remedy text asks for `credits set ... --expires` (`doctor.py:509-514`).
+- **Config.** A pool's keys are a closed set (`config.py:770-784`). An unknown key is
+  warned about and ignored (`config.py:860-864`).
+
+**Observed 2026-10-18.** One Max 5x pool's Console listed two grants at once (UTC dates,
+as the Console shows them):
+
+| Granted | Amount | Expires | Left |
+|---|---|---|---|
+| 2026-10-14 | $100 | 2026-10-20 | $98.81 |
+| 2026-10-17 | $100 | 2026-11-20 | $100.00 |
+
+A new grant arrived three days before the previous one expired, and both were live. The
+inferred cadence, seen once, is a grant on the 17th that expires on the 20th of the next
+month. The config had declared that pool as a $200 grant expiring 2026-10-20, so the
+router treated all of it as expiring within two days.
+
+**Impact.** Between a grant's arrival and the previous grant's expiry, the router is
+wrong one way or the other:
+
+- **If the operator records only the older grant,** the router cannot see the new one.
+- **If the operator records the total under the older expiry,** the router treats money
+  that lasts another month as expiring now. It then sends the pool work that a
+  subscription could have served, and that subscription's quota can expire unused
+  instead.
+
+After the older grant expires, the assumed renewal arrives three days late and is never
+checked against what the Console showed. The waste series books one period end per
+pool, so it cannot say which grant expired with what left. None of this is learned:
+every month the operator has to read the Console and correct the pool by hand.
+
+**Fix:** all dates below are UTC, as the Console shows them.
+
+1. **Grants as a list, and a ledger version 2.**
+   - A pool holds every live grant: `{usd, granted_s, expires_s}`, identified by its
+     expiry date (a UTC calendar date, not an exact float).
+   - A v2 `grant` line adds a grant. `quotapick credits grant` requires `--granted`, with
+     no default: the day the operator records a grant is often not the day it arrived,
+     and a defaulted date would poison step 5. `--granted` must be no later than now and
+     before `--expires`, or the command fails loud.
+   - A grant whose expiry date matches a live grant's is merged into it: the amounts
+     add, and the earlier granted date is kept. So an expiry date always names exactly
+     one grant.
+   - A v2 `checkpoint` with `--expires` sets the remaining amount of the grant expiring
+     on that date. It is refused when no live grant expires that day.
+   - A v2 `checkpoint` without `--expires` sets a single total. It is allowed only while
+     one grant is live, and refused with the live grants listed when there are more.
+   - **v1 lines read exactly as today.** Every live ledger line is v1: six checkpoints,
+     all with `expires_s`, and no `grant` lines. A v1 `grant` or `checkpoint` resets the
+     pool to one grant `{usd: remaining, expires_s}`.
+   - Bump `LEDGER_VERSION` (`credits.py:41`).
+2. **Spend order, applied when the ledger is read.**
+   - Spend, hold and release lines stay at pool level. `balance()` allocates them to
+     grants, earliest expiry first, every time it reads the ledger. So a corrected
+     assumption about the order re-reads the history correctly instead of leaving it
+     booked wrong.
+   - An `exhausted` line empties every live grant until the next grant or checkpoint,
+     as today.
+   - The order is an assumption about Anthropic. Verify it against the Console's
+     per-grant "Remaining balance" after a known spend, and record the result in the
+     README.
+3. **No double counting.**
+   - An assumed or predicted grant is added only for a period that no recorded grant
+     already covers: none whose expiry falls within seven days of the assumed grant's
+     expiry.
+   - Renewals chain only from the latest-expiring grant, recorded or assumed, so each
+     period gets at most one assumed or predicted grant.
+   - In the observed case, the balance at 2026-10-21 is the 11-20 grant's $100 minus
+     spend, not $200. At 2026-11-25, with nothing new recorded, it is one assumed $100
+     for 11-20 to 12-20, not two.
+4. **Balance, display and waste.**
+   - The balance is the sum of the live grants.
+   - `Balance` gains a per-grant breakdown (`credits.py:125-146`). `Balance.expires_s`
+     becomes the earliest live grant's expiry.
+   - `Balance` also gains that grant's own remainder, `first_expiring_usd`. Every place
+     that pairs an expiry with an amount uses it, never the pool total:
+     - doctor's "expires within a day" warning (`doctor.py:523-530`);
+     - the `run` decision reason (`run.py:577-578`);
+     - the credits table (`cli.py:4122-4127`).
+     Otherwise, on 2026-10-19 in the observed case, doctor would report "$198.81
+     expires within a day" when only $98.81 does.
+   - `quotapick credits` and `status` list each grant's amount left and expiry.
+   - `expiries_due` writes one `expired` line per grant, keyed by pool and grant (its
+     granted and expiry dates), not by expiry instant alone.
+   - Once a period end is written it is frozen, so a schedule learned later never
+     re-writes or adds `expired` lines for past periods.
+   - A v1 `expired` line, keyed by instant only, matches any grant that expires on its
+     UTC date. The poller writes such lines before this item ships, and the next
+     `status` must not book that waste twice.
+5. **A learned grant schedule.** Learn it only from recorded operator grants that carry
+   `--granted`.
+   - Once the last two such grants agree on the granted day of the month, the expiry
+     day, the months to expiry and the amount, predict the next grant on that schedule,
+     at confidence 0.6, labelled `predicted`.
+   - With fewer than two agreeing grants, keep today's renewal anchored to the expiry,
+     subject to step 3.
+   - A change of amount, for example after a plan changes tier, breaks the agreement
+     until two new grants agree.
+   - The explicit `[credit_pools.<id>] grant_day` and `expires_day` keys override the
+     learned schedule, so one observation can be acted on.
+     - Both are required together: one without the other fails loud.
+     - Each is 1-28 or `last`.
+     - Add both to `_CREDIT_POOL_KEYS` (`config.py:770-784`). Otherwise they are warned
+       about and ignored.
+   - `grant_usd` keeps its meaning: the amount of one monthly grant, used for assumed
+     and predicted grants.
+   - No grant is predicted at or after the linked plan's `plan_ends`, as today.
+6. **Confirmation.**
+   - From the predicted grant day on, `doctor` asks for `quotapick credits grant` with
+     the Console figures, until a recorded grant confirms the prediction.
+   - An `exhausted` refusal **on or after** the predicted day, while the predicted grant
+     is counted, proves the prediction wrong: drop it and ask for the Console figures.
+   - A refusal before the predicted day is the normal end of a grant and says nothing
+     about the prediction.
+   - Update `check_credit_pools` and its remedy text (`doctor.py:496-534`) to the
+     per-grant commands.
+7. **Projection.**
+   - The chooser keeps one candidate per pool. It scores the job placed across that
+     pool's grants, earliest first: the part the earliest grant can cover goes there,
+     and the rest goes to the next grant. Scoring on the earliest grant alone would cap
+     a $4 job at a grant's last $0.50, and the pool would lose to a subscription while
+     $100 sat in its next grant.
+   - The pool's other live grants enter the projection as their own stocks, each with
+     its own deadline and a distinct id `<pool>#<expiry date>`, so fleet waste counts
+     them. They are never candidates.
+   - `credit_stock`'s caller (`run.py:547`), the chooser (`run.py:341-380`), the winner
+     lookup (`run.py:564-579`), the per-call budget (`run.py:599`) and the admission sum
+     (`run.py:383-413`) change with it.
+8. **Tests.**
+   - The 2026-10-18 case: two overlapping $100 grants give $200 between 10-17 and 10-20.
+     Spends drain the 10-20 grant first.
+   - At 10-20, one `expired` line records that grant's remainder. At 10-21 the balance is
+     the 11-20 grant's $100 minus spend, with no assumed $100 on top (step 3).
+   - Two recorded grants granted on the 17th predict the next one on the 17th, expiring
+     the 20th of the next month.
+   - One grant falls back to the expiry anchor, and the config keys override both.
+   - A refusal on the predicted day drops the prediction; one before it does not.
+   - At 2026-11-25 with nothing new recorded, the pool reads one assumed $100, not two.
+   - On 2026-10-19, doctor's expiry warning names $98.81, not $198.81.
+   - A job larger than the earliest grant's remainder is scored across two grants.
+   - A v1 `expired` line suppresses a second line for a grant expiring that day.
+   - A v1 ledger reads unchanged, and a total checkpoint is refused while two grants are
+     live.
+   - The chooser scores a pool on its earliest grant, and later grants appear only as
+     non-candidate stocks.
+   - A learned schedule writes no new `expired` lines for past periods.
+
+*Risks and edge cases:*
+
+- **Spend order (step 2) is unverified.** If Anthropic drains the newest grant first, or
+  spreads spending across grants, earliest-first allocation misstates which grant
+  expires with money left. Because allocation happens at read time, fixing the rule
+  corrects the history.
+- **Short months.** The 29th to 31st: `add_month` already clamps (`credits.py:112-122`),
+  and the schedule keys accept 1-28 or `last` only.
+- **A Console figure that lags.** The Console's spend figure trails real spend by
+  minutes, so a checkpoint should come from a quiet moment or from the ledger. The README
+  should say so.
+- **A one-off first grant.** One granted when the Console org was linked may not follow
+  the cadence, which is why learning needs two agreeing grants.
+- **The hard cap.** Once #2's `hard_cap_usd` check exists, it applies to the pool's
+  total booked spend across all grants. Test that per-grant balances leave it unchanged.
+
+*Why high, not medium:* it changes the ledger's meaning, with a versioned migration that
+existing ledgers must survive. The change spans `credits.py`, `cli.py`, `run.py`,
+`joint.py`, `doctor.py`, `config.py` and the README. The learning rule, the
+no-double-count rule and the unverified spend order are all judgment calls.
+
+**Relates to:** #12. Its pool figures assumed $200 per grant until this observation
+showed that the Max 5x pool grants $100, and this commit corrects them. #12 cites hold
+expiry inside `balance()` (`credits.py:214-223`) in its Background and Touch points.
+This item rewrites `balance()`, so whichever item lands second must re-read the other.
+
+**Touch points:** `credits.py:1-24`, `credits.py:41`, `credits.py:112-122`,
+`credits.py:125-146` (`Balance`), `credits.py:155-248` (`balance`) and
+`credits.py:251-273` (`expiries_due`); `cli.py:3304-3317` (the `credits` parser),
+`cli.py:4164-4227` (`_cmd_credits`) and `cli.py:4077-4163` (`_credit_pool_rows`,
+`_credit_pool_table`, including `cli.py:4122-4127`); `run.py:341-380`, `run.py:383-413`,
+`run.py:547`, `run.py:564-579` and `run.py:599`; `joint.py:213-237`;
+`doctor.py:460-462` and `doctor.py:496-534`; `config.py:770-784` (`_CREDIT_POOL_KEYS`),
+`config.py:788-833` (`CreditPoolConfig`) and `config.py:839-924` (`_build_credit_pools`);
+`tests/test_credits.py` and `tests/test_run_credit.py`; and the README section "API
+credit pools".
 
 ---
 
