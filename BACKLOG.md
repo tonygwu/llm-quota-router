@@ -276,7 +276,9 @@ reservation on it in `state.json`, and a sticky `selection` entry for it. The re
 makes the next decisions in the pileup window (60 s by default) see load that never ran.
 The sticky entry favors an account that served nothing. The history line adds a pick
 with no burn behind it, and `quotapick calibrate` divides recorded picks by observed burn.
-Every pool-served `run` repeats this, and five pools are live.
+Every pool-served `run` repeats this, and five pools are live. Since 2026-10-18 a pool
+also wins every waste tie with a subscription above zero, which makes pool-served runs,
+and so these phantom picks, the common case for `run` while pools hold credit.
 
 Partly closed: when `--only`/`--exclude` allow no subscription, `run` no longer records
 the pick (`test_only_a_pool_never_falls_back_to_a_subscription`).

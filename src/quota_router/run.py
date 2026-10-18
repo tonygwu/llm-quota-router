@@ -27,11 +27,16 @@ account with the failed one excluded; a timeout does not retry. History gets one
 
 ``only`` and ``exclude`` name subscription accounts and credit pools alike. A retry never
 leaves the set they allow, and an id ``run`` cannot route to is a bad request.
+
+A credit pool and the best subscription are compared on projected waste avoided. On a
+tie the pool goes first (``choose_credit_or_subscription``), and ``expected_cost_usd``,
+when positive, sizes the job in that projection.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -130,9 +135,11 @@ def parse_request(data: Any) -> RunRequest:
     if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= 3:
         raise BadRequest("max_attempts must be 1, 2 or 3")
     cost = data.get("expected_cost_usd")
+    # NaN passes `< 0` and json.loads accepts it; as the job's size it would zero every
+    # candidate's score.
     if cost is not None and (isinstance(cost, bool) or not isinstance(cost, (int, float))
-                             or cost < 0):
-        raise BadRequest("expected_cost_usd must be a non-negative number")
+                             or not math.isfinite(cost) or cost < 0):
+        raise BadRequest("expected_cost_usd must be a finite non-negative number")
     for key in ("system", "effort", "client", "request_id"):
         value = data.get(key)
         if value is not None and not isinstance(value, str):
@@ -331,6 +338,48 @@ class _Target:
     hold_usd: float = 0.0
 
 
+def choose_credit_or_subscription(
+    context: Any, sub_choice: str | None, pool_ids: Sequence[str]
+) -> tuple[str | None, str | None]:
+    """Which candidate a run executes on: ``(winner, subscription it tied)``.
+
+    Most projected waste avoided wins, compared in ``SCORE_QUANTUM`` buckets as
+    ``ranked_score`` does. On a tie above zero a credit pool goes first: only ``run`` can
+    spend a pool, so its projected waste is close to certain, while a subscription's
+    rests on a forecast of ``cl`` and interactive use, which can spend it any time. A tie
+    at zero has no waste to save, so the nearer deadline decides it, as it does among
+    pools (``ranked_score``); credit-first there would only spend credit, or a card. On 2026-10-18 the
+    deadline alone sent a full-size call to a subscription whose week reset in 11h over
+    a pool expiring in 21h, although both avoided the whole job.
+    """
+    from . import joint as joint_mod
+
+    def key(account_id: str, is_pool: bool) -> tuple[int, bool, float] | None:
+        result, ranked = context.score(account_id), context.ranked_score(account_id)
+        if result is None or ranked is None:
+            return None
+        bucket = round(result.avoided / joint_mod.SCORE_QUANTUM)
+        return (bucket, is_pool and bucket > 0, ranked)
+
+    candidates = ([(sub_choice, False)] if sub_choice is not None else []) + [
+        (pool_id, True) for pool_id in pool_ids
+    ]
+    best_id: str | None = None
+    best_key: tuple[int, bool, float] | None = None
+    for account_id, is_pool in candidates:
+        k = key(account_id, is_pool)
+        if k is not None and (best_key is None or k > best_key):
+            best_id, best_key = account_id, k
+    sub_key = key(sub_choice, False) if sub_choice is not None else None
+    tied = (
+        sub_choice
+        if best_id != sub_choice and sub_key is not None and best_key is not None
+        and sub_key[0] == best_key[0] > 0
+        else None
+    )
+    return best_id, tied
+
+
 def _pool_targets(
     request: RunRequest,
     *,
@@ -436,7 +485,12 @@ def execute(
             json=True,
             explain=False,
             now=None,
-            job_pse=None,
+            # A positive expected cost is the job's size; otherwise the engine default.
+            job_pse=(
+                request.expected_cost_usd / usd_per_pse
+                if request.expected_cost_usd
+                else None
+            ),
         )
         # With no subscription allowed, the pick below only builds the joint projection
         # the pools are ranked by; its choice is discarded, so it is not recorded.
@@ -507,13 +561,9 @@ def execute(
                         fable_ids=base.fable_ids,
                         tie_fraction=base.tie_fraction,
                     )
-                    best_id, best_score = None, None
-                    if sub_choice is not None:
-                        best_id, best_score = sub_choice, context.ranked_score(sub_choice)
-                    for pool, bal, expected in pools:
-                        score = context.ranked_score(pool.id)
-                        if score is not None and (best_score is None or score > best_score):
-                            best_id, best_score = pool.id, score
+                    best_id, tied = choose_credit_or_subscription(
+                        context, sub_choice, [pool.id for pool, _, _ in pools]
+                    )
                     chosen_pool = next(
                         ((pool, bal, expected) for pool, bal, expected in pools
                          if pool.id == best_id),
@@ -527,6 +577,11 @@ def execute(
                             f"projected fleet waste avoided (API credit, ${bal.remaining_usd:.2f} "
                             f"left, expires {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(bal.expires_s))})"
                         )
+                        if tied is not None:
+                            decision_info["reason"] += (
+                                f"; ties {tied} on waste, and a credit pool goes first "
+                                f"because only `run` can spend it"
+                            )
                         try:
                             secret = read_secret(pool.keychain_service)
                         except SecretError as exc:

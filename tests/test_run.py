@@ -218,6 +218,8 @@ def test_history_records_the_outcome_and_never_the_prompt(env, tmp_path) -> None
         ({"model": MODEL, "prompt": "x", "timeout_s": 99999}, "timeout_s"),
         ({"model": MODEL, "prompt": "x", "max_attempts": 9}, "max_attempts"),
         ({"model": MODEL, "prompt": "x", "json_schema": "not an object"}, "json_schema"),
+        ({"model": MODEL, "prompt": "x", "expected_cost_usd": float("nan")}, "expected_cost_usd"),
+        ({"model": MODEL, "prompt": "x", "expected_cost_usd": float("inf")}, "expected_cost_usd"),
     ],
 )
 def test_a_bad_request_exits_2_with_a_reason(env, request_, fragment) -> None:

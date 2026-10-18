@@ -97,9 +97,9 @@ def _secret_reader(calls):
     return read
 
 
-def _run(env, request, runner, *, secrets_read=None, flags=()):
+def _run(env, request, runner, *, secrets_read=None, flags=(), snapshots=None):
     deps = cli.Deps(
-        load_snapshots=lambda **kw: (list(_drained_subscriptions()), []),
+        load_snapshots=lambda **kw: (list(snapshots or _drained_subscriptions()), []),
         run=runner,
         read_secret=_secret_reader(secrets_read if secrets_read is not None else []),
     )
@@ -217,6 +217,96 @@ def test_only_a_subscription_reads_no_key(env) -> None:
                                flags=["--only", "claude_b"])
     assert payload["served"]["account"] == "claude_b", err
     assert reads == []
+
+
+def _wasting_subscriptions():
+    """Two subscriptions that reset in 5h and 6h with most of their week unspent."""
+    def acct(account_id, reset_h):
+        return account(
+            account_id,
+            window("5h", 0.1, length_s=FIVE_HOURS, resets_in_s=2 * HOUR),
+            window("7d", 0.3, resets_in_s=reset_h * HOUR),
+        )
+    return (acct("claude_b", 5), acct("claude_d", 6))
+
+
+def test_a_waste_tie_goes_to_the_credit_pool(env) -> None:
+    # On 2026-10-18 a subscription whose week reset in 11h beat a pool expiring in 21h
+    # on the deadline alone, although both avoided the whole job. Only `run` can spend a
+    # pool; a subscription's projected waste rests on a forecast of cl and interactive use.
+    _forecast(env, other=0.0)
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    _code, payload, err = _run(env, _request(), runner, snapshots=_wasting_subscriptions())
+    assert payload["served"]["account"] == "anthropic_api_d", (payload["decision"], err)
+    assert "ties claude_" in payload["decision"]["reason"]
+
+
+def test_expected_cost_sizes_the_job(env) -> None:
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    _code, payload, _err = _run(env, _request(expected_cost_usd=3.05), runner)
+    assert "of 0.0100 PSE" in payload["decision"]["reason"]
+
+
+class _Scores:
+    """Stands in for JointContext: waste avoided and the deadline tie-break, per id."""
+
+    def __init__(self, rows):
+        self.rows = rows  # id -> (avoided_pse, hours_to_deadline)
+
+    def score(self, account_id):
+        from types import SimpleNamespace
+        row = self.rows.get(account_id)
+        return None if row is None else SimpleNamespace(avoided=row[0])
+
+    def ranked_score(self, account_id):
+        row = self.rows.get(account_id)
+        return None if row is None else row[0] + 0.5e-6 / (1.0 + row[1])
+
+
+def test_a_subscription_that_avoids_more_waste_beats_a_pool() -> None:
+    from quota_router.run import choose_credit_or_subscription
+    scores = _Scores({"claude_b": (0.003, 50.0), "anthropic_api_d": (0.001, 5.0)})
+    assert choose_credit_or_subscription(scores, "claude_b", ["anthropic_api_d"]) == (
+        "claude_b", None)
+
+
+def test_among_tied_pools_the_nearer_deadline_wins() -> None:
+    from quota_router.run import choose_credit_or_subscription
+    scores = _Scores({"claude_b": (0.003, 1.0), "anthropic_api_c": (0.003, 30.0),
+                      "anthropic_api_d": (0.003, 10.0)})
+    assert choose_credit_or_subscription(
+        scores, "claude_b", ["anthropic_api_c", "anthropic_api_d"]) == (
+        "anthropic_api_d", "claude_b")
+
+
+def test_a_tie_at_zero_waste_keeps_the_nearer_deadline() -> None:
+    # Nothing is wasted either way, so credit-first has no reason to apply; a pool with a
+    # card on file would spend real money for no gain.
+    from quota_router.run import choose_credit_or_subscription
+    scores = _Scores({"claude_b": (0.0, 1.0), "anthropic_api_d": (0.0, 10.0)})
+    assert choose_credit_or_subscription(scores, "claude_b", ["anthropic_api_d"]) == (
+        "claude_b", None)
+    # A pool that wins a zero tie on its nearer deadline did not win by credit-first, so
+    # the reason must not say it did.
+    scores = _Scores({"claude_b": (0.0, 10.0), "anthropic_api_d": (0.0, 1.0)})
+    assert choose_credit_or_subscription(scores, "claude_b", ["anthropic_api_d"]) == (
+        "anthropic_api_d", None)
+
+
+def test_scores_a_hair_apart_are_a_tie() -> None:
+    from quota_router.run import choose_credit_or_subscription
+    scores = _Scores({"claude_b": (0.003, 1.0), "anthropic_api_d": (0.003 - 1e-9, 10.0)})
+    assert choose_credit_or_subscription(scores, "claude_b", ["anthropic_api_d"]) == (
+        "anthropic_api_d", "claude_b")
+
+
+def test_with_no_subscription_valued_the_best_pool_wins() -> None:
+    from quota_router.run import choose_credit_or_subscription
+    scores = _Scores({"anthropic_api_d": (0.0, 10.0)})
+    assert choose_credit_or_subscription(scores, None, ["anthropic_api_d"]) == (
+        "anthropic_api_d", None)
+    assert choose_credit_or_subscription(scores, "claude_x", ["anthropic_api_d"]) == (
+        "anthropic_api_d", None)
 
 
 # ======================================================================================

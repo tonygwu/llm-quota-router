@@ -1109,7 +1109,7 @@ echo '{"capability":"premium","system":"Reply in JSON.","prompt":"...",
 | `capability` or `model` | one is required; `model` is an exact id such as `claude-haiku-5-5` |
 | `effort`, `system`, `json_schema` | optional |
 | `timeout_s` | default 300, at most 1800 |
-| `expected_cost_usd` | optional; a credit pool is used only if its balance covers this times its margin |
+| `expected_cost_usd` | optional; a credit pool is used only if its balance covers this times its margin. When positive, it is also the job's size in the projection (cost / `usd_per_pse`); otherwise `[engine] default_job_pse` |
 | `max_attempts` | 1–3, default 2 |
 | `allow_credit` | default `true`; `false` keeps the call on subscriptions |
 | `client`, `request_id` | tags, echoed back and logged |
@@ -1214,7 +1214,14 @@ pool is 0.66 PSE) never wins. `[engine] objective = "joint"` instead scores each
 candidate by the **fleet** waste a job avoids there: forecast demand is spread over every
 stock hour by hour, earliest deadline first, under each five-hour cap, and the score is
 the drop in total leftover at the deadlines. Ties, which are common, go to the earlier
-deadline; hysteresis then holds the incumbent only inside a tie class.
+deadline; hysteresis then holds the incumbent only inside a tie class. One exception, in
+`run` only: when a credit pool avoids exactly as much waste (to 1e-6 PSE) as the
+subscription `run`'s pick chose, and that waste is above zero, the pool goes first. Only
+`run` can spend a pool, so its projected waste is close to certain, while a
+subscription's rests on a forecast of `cl` and interactive use. By deadline alone, a pool
+would win only in the hours after every subscription's weekly reset has passed before
+its expiry, often less than a day per grant. A tie at zero still goes to the earlier
+deadline: nothing is saved, so credit-first would only spend credit.
 
 - `quotapick forecast` measures demand per provider group from history (`status`
   refreshes the cache every 15 minutes); a stale or thin forecast falls the decision
