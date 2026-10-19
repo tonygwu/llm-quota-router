@@ -57,7 +57,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #24 and one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -108,7 +108,8 @@ nobody published. See the README section "An early reset is not waste".
    `capacity` too (2.43 and 2.45, `docs/measurements/2026-10-18-gemini-size.md`), so
    `totals_at_capacity` rescales their rows by it. The rescale keeps the k each row was
    logged with, and the Gemini rows were logged at k = 6.25 where the measured k is 4.0,
-   so their forfeited figure still reads about 1.56 times too high (`waste.py:1286-1309`).
+   so their forfeited figure still reads about 1.56 times too high (`waste.py:1286-1309`;
+   #24).
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
@@ -392,101 +393,13 @@ stay byte-identical.
 
 ---
 
-### 19. Antigravity Gemini quota expires unused, because `pick` assumes the pools will be drained  `[difficulty: high]`  `[filed: 2026-10-19]`  `[BLOCKED: operator decision pending on the Fix]`
-
-**Background:** the operator reports that the Antigravity pools sit at 99-100% and that
-their quota almost always expires unused (2026-10-18). The cause is in `pick`, and it is
-not the pool size. `_working_rates` (`src/quota_router/cli.py:1188`) credits a provider
-whose enabled accounts are all `unmetered = "fallback"` with the demand of the metered
-providers, capped at 0.2 PSE/h (`cli.py:1232-1287`; README.md:52-56). Over the 6.1 days
-to the Gemini weekly reset on 2026-10-19T01:34Z, that was about 29 PSE, more than either
-measured Gemini week (9.74 and 9.80 PSE, `docs/measurements/2026-10-18-gemini-size.md`).
-So `pick` projects that the Gemini pools lose nothing, and a pool that loses nothing ranks
-by deadline (`scoring.py:486`, `pse_objective`). The Gemini pools bind on their weekly
-window, so every Claude account that resets sooner ranks above them.
-
-Evidence, dry runs of fast, standard and premium capability picks on the live data, the
-live row at 2026-10-19T13:42:28Z and the scratch row at 13:43:38Z:
-
-| Config | fast and standard | premium | Gemini PSE at risk |
-|---|---|---|---|
-| Live (fallback credit applies) | `claude_c` | `claude_c` | 0.000 / 0.000 |
-| Scratch copy without the fallback flag (credit off) | `antigravity_gemini_b`, `Gemini 3.8 Flash (High)` | `claude_c` | 8.458 / 7.334 |
-
-The rule was right when it was written. Then both Antigravity sizes were placeholders, and
-at the pools' own measured demand (0.005 PSE/h then, 0.003 on 2026-10-19) the
-placeholders read as the biggest waste
-in the fleet. Since 2026-10-19 all four pools carry a measured `capacity`, so that premise
-is gone. Consumer-side evidence from 2026-10-18 agrees: in 168 agent attempts of one
-consumer, Antigravity was an eligible ranked candidate in 114 and ranked first in none.
-Pick history overstates Antigravity's share of the work, because a pick is not a completed
-call, history carries no client or completion field, and Antigravity picks arrive in
-bursts.
-
-**Impact:** quota the operator already pays for expires every week. Meanwhile Claude
-quota, the scarcer and more capable pool, serves fast and standard work that Gemini Flash
-could serve. Demand ran above the Claude fleet's weekly capacity in two of the four weeks
-to 2026-10-14 (#12), so Claude quota saved in quiet hours has value in busy ones.
-
-**Fix:** *Operator decision pending.* The options:
-
-- **A. Credit the metered demand only to a fallback pool that has no measured size**
-  (recommended). In `_working_rates`, a fallback-only provider whose accounts all carry a
-  configured `capacity` uses its own measured demand, like a metered provider. The flag
-  keeps its other two roles: a pool without a reading serves only as a last resort
-  (`_fallback_only`, `cli.py:1687`), and a plain pick never returns a fallback pool
-  (`cli.py:853`). Effect: the table's second row. Fast and standard capability picks go to
-  Gemini Flash while Gemini holds the most quota at risk. Then the demand forecast rises
-  and the waste objective balances the pools. Cost: Flash serves `standard` work, and
-  nobody has checked its quality on that work.
-- **B. Remove `unmetered = "fallback"` from the Gemini pools in the operator config.**
-  It is not a fix. Without the flag, a plain pick may return a Gemini pool to a caller
-  that assumes Claude. The 2026-10-12 audit found four call sites that mishandle that
-  (README section "Antigravity pools as a last resort"). `report-failure` also refuses
-  the pool.
-- **C. A per-account `prefer = true`, the mirror of `deprioritize`.** It ranks a
-  preferred pool above any candidate whose PSE at risk is below a stated threshold. It is
-  more machinery than A, and it hard-codes a preference that A lets the waste objective
-  find.
-
-For A, the steps:
-
-1. Change the rule in `_working_rates` and its docstring, and say in the `rate` reason
-   which rule applied.
-2. Tests: a sized fallback-only provider gets its own demand; an unsized one keeps the
-   credit; a mixed fleet is unchanged; a plain pick still never returns a fallback pool.
-3. README.md:52-56 states the new rule and the date.
-4. **Success is measured in completions, not picks.** For a week after the change, record
-   real Antigravity completions from the consumer side, with account identity, the served
-   model and useful output. More picks alone prove nothing.
-
-*Risks and edge cases:*
-
-- **Quality.** Work that needs per-run tool denies, MCP substitution or an exact-model
-  benchmark pin is Claude-constrained, and it must stay pinned.
-- **Consumers this item cannot reach.** Most consumers do not route by capability today.
-  Several pin providers, apply their own provider preference after the router ranks, or
-  launch through `cl`. Those need changes in their own repos.
-- **Premium.** The capability most agent work requests is `premium`. Premium stays on
-  Claude in the dry run: the Antigravity Claude pools read no PSE at risk, because the
-  provider's demand fills their 0.177 PSE weeks. So this item moves fast and standard
-  work only. The Argon `frontier` mapping (#2) does not move premium either.
-- **`run`.** `run` cannot reach Antigravity at all; see #20.
-
-*Why high, not medium:* it changes ranking for every capability pick, and its success
-test is a consumer-side measurement.
-
-**Touch points:** `src/quota_router/cli.py:1188-1300` (`_working_rates`), README.md:52-56,
-and the rate tests beside the existing fallback-credit tests.
-
----
-
 ### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`
 
 **Background:** `run` narrows its candidates to Claude subscriptions and credit pools
 (`src/quota_router/run.py:443-446`). An `--only` that names anything else is refused.
 Consumers that send tool-less calls through `run` therefore never reach Antigravity,
-whatever capability they ask for, and #19 cannot help them.
+whatever capability they ask for, and the 2026-10-19 change that lets `pick` see
+Antigravity waste cannot help them.
 
 **Impact:** tool-less work, the cheapest to move between providers, stays on Claude even
 when an Antigravity pool has idle quota.
@@ -517,12 +430,12 @@ the README section on `run`.
 
 ### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
 
-**Background.** `_cmd_status` calls `_record_waste` (`cli.py:2625`; body at
-`cli.py:2552-2564`). It reads all retained history, rotated files included, and runs
+**Background.** `_cmd_status` calls `_record_waste` (`cli.py:2639`; body at
+`cli.py:2566-2578`). It reads all retained history, rotated files included, and runs
 `detect_resets` (`waste.py:730`) over every pair of readings. The pair warnings
 (`waste.py:781-797`) have no cursor and no dedup, so each call emits again every warning
 the retained history can produce. The default `status` view already prints only a count
-of these history notes (`cli.py:2689-2696`), so the harm is in `--json`, `--verbose` and
+of these history notes (`cli.py:2703-2710`), so the harm is in `--json`, `--verbose` and
 the poller's log. The last record in the rotated poller log at 2026-10-18T01:21:53Z held
 12,203 warnings and was 3.04 MB as compact JSON:
 
@@ -550,7 +463,7 @@ still appears. Separately, decide whether a window whose boundary always slides 
 count as a stock while it slides. Two kinds exist: `codex_b/base_model_inference`, and
 an Antigravity pool while its reset slides.
 
-**Touch points:** `cli.py:2552-2564`, `cli.py:2625`, `waste.py:730-800`, `waste.py:1060`
+**Touch points:** `cli.py:2566-2578`, `cli.py:2639`, `waste.py:730-800`, `waste.py:1060`
 (`update_from_history`), and the waste tests.
 
 ---
@@ -576,8 +489,8 @@ Four more things keep credit away from agent runs:
   by `pick` (`forecast.py:19-24`, `forecast.py:334-352`). `replay.py:545-546` and
   `replay.py:634` hardcode the same two streams.
 - **`quotapick exec` has no pool path, no timeout and no output parsing.** It picks a
-  subscription with pick's own objective (`cli.py:2806`) and runs the caller's command
-  to completion (`cli.py:2887`).
+  subscription with pick's own objective (`cli.py:2820`) and runs the caller's command
+  to completion (`cli.py:2901`).
 - **Holds expire.** A ledger hold stops counting after `HOLD_TTL_S = 3600` s
   (`credits.py:44`, `credits.py:214-223`), whether or not its call has finished.
 
@@ -908,7 +821,7 @@ cannot bite.
 
 **Touch points:**
 
-- `cli.py:2797-2896` (`_cmd_exec`), `cli.py:2806`, `cli.py:2887`, `cli.py:3383` (its
+- `cli.py:2811-2910` (`_cmd_exec`), `cli.py:2820`, `cli.py:2901`, `cli.py:3397` (its
   parser), `cli.py:1118-1127` (stream wiring), and the `status` rendering for credit agent
   spend.
 - `run.py:72-80` (`STRIP_ENV`), `run.py:166-196`, `run.py:273-310` (`judge`, the outcome
@@ -951,8 +864,8 @@ The rest of the router inherits the single-grant view:
     (`run.py:564-579`).
 - **Waste series.** `expiries_due` writes one `expired` line per period end, de-duplicated
   by the expiry instant alone (`credits.py:251-273`).
-- **`quotapick credits grant --amount --expires`** exists (`cli.py:3572-3575`, handled at
-  `cli.py:4441-4468`), but its line replaces the balance. Recording a new grant erases
+- **`quotapick credits grant --amount --expires`** exists (`cli.py:3586-3589`, handled at
+  `cli.py:4455-4482`), but its line replaces the balance. Recording a new grant erases
   what the older one had left.
 - **`doctor`.** It warns on a checkpoint older than a week (`doctor.py:460-462`), on a
   balance that rests on the config or an assumed renewal, and on expiry within a day
@@ -1035,7 +948,7 @@ every month the operator has to read the Console and correct the pool by hand.
      that pairs an expiry with an amount uses it, never the pool total:
      - doctor's "expires within a day" warning (`doctor.py:523-530`);
      - the `run` decision reason (`run.py:577-578`);
-     - the credits table (`cli.py:4380-4385`).
+     - the credits table (`cli.py:4394-4399`).
      Otherwise, on 2026-10-19 in the observed case, doctor would report "$198.81
      expires within a day" when only $98.81 does.
    - `quotapick credits` and `status` list each grant's amount left and expiry.
@@ -1130,9 +1043,9 @@ This item rewrites `balance()`, so whichever item lands second must re-read the 
 
 **Touch points:** `credits.py:1-24`, `credits.py:41`, `credits.py:112-122`,
 `credits.py:125-146` (`Balance`), `credits.py:155-248` (`balance`) and
-`credits.py:251-273` (`expiries_due`); `cli.py:3562-3575` (the `credits` parser),
-`cli.py:4422-4485` (`_cmd_credits`) and `cli.py:4335-4421` (`_credit_pool_rows`,
-`_credit_pool_table`, including `cli.py:4380-4385`); `run.py:341-380`, `run.py:383-413`,
+`credits.py:251-273` (`expiries_due`); `cli.py:3576-3589` (the `credits` parser),
+`cli.py:4436-4499` (`_cmd_credits`) and `cli.py:4349-4435` (`_credit_pool_rows`,
+`_credit_pool_table`, including `cli.py:4394-4399`); `run.py:341-380`, `run.py:383-413`,
 `run.py:547`, `run.py:564-579` and `run.py:599`; `joint.py:213-237`;
 `doctor.py:460-462` and `doctor.py:496-534`; `config.py:787-800` (`_CREDIT_POOL_KEYS`),
 `config.py:804-847` (`CreditPoolConfig`) and `config.py:854-940` (`_build_credit_pools`);
@@ -1150,7 +1063,7 @@ are what that audit left open. This is an umbrella item: finish one bullet, dele
 
 - **Nothing walks a new operator from clone to first routed call.** There is no `setup`
   or `init` command, and no example config file: the README carries config examples
-  inline (`README.md:155-165`), but no one complete file. `quotapick doctor` exists, but it
+  inline (`README.md:162-172`), but no one complete file. `quotapick doctor` exists, but it
   checks that routing is in force on a configured machine (`doctor.py:1-30`); it does not
   name every account it looked for, where it looked, what it found, and the single next
   action for each one that failed. Closing it: that first-run check, in `doctor` or a
@@ -1319,7 +1232,7 @@ found three things on the Gemini `/usage` bars:
   every poller record to 13:38Z (288 and 291 records). The settled charge is about twice the fine movement and less than the end-of-run
   values, so settlement took back part of the jumps.
 
-The sizes in the operator config (`capacity` 2.43 and 2.45, README.md:58-72 describes the
+The sizes in the operator config (`capacity` 2.43 and 2.45, README.md:65-79 describes the
 key) come from the settled values. **Operator decision 2026-10-19:** encode the settled
 values.
 
@@ -1394,6 +1307,146 @@ scorer handles a sliding pool wrongly, file that as its own item.
 **Touch points:** `src/quota_router/waste.py:730` (`detect_resets`, how a reset is
 recorded), and `src/quota_router/history.py:413` (`iter_records`, the reader that
 `--backfill` uses).
+
+---
+
+### 23. Nobody has checked that Antigravity now serves real work  `[difficulty: medium]`  `[filed: 2026-10-19]`  `[BLOCKED: one week of routing after the 2026-10-19 change is installed]`
+
+**Background:** until 2026-10-19, `pick` credited a provider whose accounts are all
+`unmetered = "fallback"` with the metered providers' demand, capped at 0.2 PSE/h. That
+was about 29 PSE over a Gemini week, more than either measured pool, so `pick` saw no
+Gemini waste and ranked both Gemini pools by deadline, below every account that resets
+sooner, so never first. The operator reported their
+quota "almost always" expires unused. In 168 agent attempts of one consumer on
+2026-10-18, Antigravity was an eligible ranked candidate in 114 and ranked first in none.
+The fix (`_working_rates`, `src/quota_router/cli.py:1188`; README.md:51-63) credits a
+fallback-only provider with its own measured demand once every one of its accounts has a
+configured `capacity`. **Operator decision 2026-10-19:** fix it ("Let's fix both the
+Config and the Code change"). The config half, removing the fallback flag, was not done:
+without the flag a plain pick can return a Gemini pool to a caller that assumes Claude
+(`cli.py:853-869`), and `report-failure` refuses the pool (`cli.py:3798`). **Operator
+decision 2026-10-19, later the same day:** drop the config half and keep the flag. In dry
+runs at 2026-10-19T20:51:26Z on the live config (capacity 2.43 and 2.45), the new rule moved
+fast and standard capability picks from `claude_c` to `antigravity_gemini_b` on Gemini 3.8
+Flash (High), at 9.354 PSE at risk. Premium stayed on `claude_c`, and a pick with no
+capability still excluded all four Antigravity pools. This item carries the one step of
+#19 (deleted when the fix landed) that is still open: success measured in real
+completions.
+
+**Impact:** a pick is not a completed call. More Antigravity picks prove nothing if
+consumers override the ranking, pin a provider, launch through `cl`, or fail on the
+Gemini output. Pick history carries no client or completion field, and Antigravity picks
+arrive in bursts, so history alone overstates Antigravity's share of the work.
+
+**Fix:** after one week of routing on the installed change, measure from the consumer
+side:
+
+1. Count real Antigravity completions per account, each with the account identity, the
+   served model from the call's own telemetry, and whether the output was used.
+2. Compare the Gemini pools' weekly use and their scheduled-reset rows in `waste.jsonl`
+   with the weeks before 2026-10-19.
+3. Report what Gemini Flash failed on, by failure kind, so a quality problem on standard
+   work shows up as data.
+4. Write the result into `docs/measurements/2026-10-18-gemini-size.md`. If the pools
+   still expire mostly unused, file what blocks them, for example consumers that never
+   ask for a capability.
+
+*Risks and edge cases:*
+
+- Most consumers do not route by capability today. Several pin providers, apply their own
+  provider preference after the router ranks, or launch through `cl`; `run` cannot reach
+  Antigravity at all (#20). Premium, the capability most agent work requests, stays on
+  Claude. So a small change in completions may be the honest result.
+- Once Gemini demand rises, the scorer credits each Antigravity pool with the whole
+  provider's demand (#25). Both Gemini pools can then read nothing at risk while only one
+  is used, so one pool may still expire part-used. Read the week's result with that in
+  mind.
+- Every capability pick warns that Antigravity's measured demand is below the 0.04 PSE/h
+  default until that demand passes it. The warning is expected.
+
+**Touch points:** `waste.jsonl` and the history store (read only), consumer logs outside
+this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
+
+---
+
+### 24. The waste report rescales an old row to a new capacity but keeps its old k  `[difficulty: medium]`  `[filed: 2026-10-19]`
+
+**Background:** `summarize` (`src/quota_router/waste.py:1286-1309`) rescales a row logged
+before an account had a configured `capacity` by `capacity / tier_scale`. A weekly row's
+PSE is remaining fraction × k × tier scale, and the rescale keeps the k the row was
+logged with. Both Gemini rows in `waste.jsonl` are early resets on 2026-10-16, logged at
+the default k = 6.25. The measured k has been 4.0 in the operator config since 2026-10-19.
+On 2026-10-19 `quotapick waste --json` gave `forfeited_pse_at_capacity` 15.13 and 15.23
+for the two pools. At k = 4.0 the same rows give 0.996062 × 4 × 2.43 = 9.68 and
+0.994486 × 4 × 2.45 = 9.75. That assumes the weekly pool on 2026-10-16 was the size
+measured on 2026-10-18. It may not have been: k moved from 15 to 4 between 2026-10-12 and
+2026-10-18, possibly at those very resets.
+
+**Impact:** if the pool size did not change at those resets, the forfeited total that #1
+will publish is 1.56 times too high for these rows, 30.36 PSE where 19.43 is right. Any account whose k changes after its rows were
+written has the same error, in either direction.
+
+**Fix:** rescale a weekly row by `(capacity × k_now) / (tier_scale × k_logged)`, where
+`k_now` is the account's configured `weekly_to_session`, and say in the `rescaled` block
+that this assumes the size and k did not change since the row was written. Report the k change beside the
+capacity change in the `rescaled` block, and keep `waste.jsonl` unrewritten. Leave
+five-hour rows as they are, since k does not enter them. Test: a weekly row logged at
+k = 6.25 and capacity 1.0, read with k = 4.0 and capacity 2.43, gives remaining × 4 × 2.43;
+a five-hour row is unchanged by k.
+
+**Touch points:** `src/quota_router/waste.py:1286-1309` (`summarize`), the waste section
+of the README, and `tests/test_account_capacity.py`.
+
+---
+
+### 25. The waste objective credits every account with its provider's whole demand  `[difficulty: high]`  `[filed: 2026-10-19]`
+
+**Background:** `rate_for` (`src/quota_router/scoring.py:443`) gives one demand rate per
+provider, and the PSE objective that `pick` uses credits every account of that provider
+with all of it. The `antigravity` provider holds two Claude-model pools and two Gemini
+pools. Until 2026-10-19 this did not matter for Antigravity, because the fallback credit
+already read every pool as drained. Since the change in `_working_rates`
+(`src/quota_router/cli.py:1188`), Antigravity is scored on its own demand. That is the
+first time the per-provider rate decides whether an Antigravity pool wins.
+
+**Impact:** reasoning from the code, not yet run. Each Gemini pool holds about 9.6 PSE
+with a week to go. If Gemini work reaches about 0.07 PSE/h with 144 hours to the weekly
+reset, each pool is credited with about 10 PSE of drain and reads nothing at risk. But the
+two pools share that work: together they absorb about 10 PSE of their 19 PSE, so about
+9 PSE can expire while `pick` reports no waste. Below about 0.067 PSE/h each pool still
+shows some PSE at risk, but less than it should. The same holds for any
+provider with several accounts; this item has not checked how much it matters for the
+Claude accounts.
+
+The demand groups make it worse for Antigravity. `GROUP_FOR_PROVIDER`
+(`src/quota_router/joint.py:63`) maps each provider to one group, so the `antigravity`
+group holds the Claude-model pools and the Gemini pools together, although they serve
+different models. `measure` (`src/quota_router/forecast.py:275`) already measures each
+account's demand from its own weekly bar before it adds the accounts into a group
+(`forecast.py:301-333`), so a finer group key needs no new data.
+
+**Fix:**
+
+1. Measure first. Replay a week of Antigravity demand above 0.04 PSE/h against both Gemini
+   pools, and report the waste the objective predicts against the waste a split of the
+   demand predicts.
+2. If the gap is material, start with the groups: give the Gemini pools and the
+   Claude-model pools their own demand groups (for example keyed by the pool selector
+   `AGY_MODEL`), here and where the joint projection assigns groups (`joint.py:197`).
+   That stops Claude-model demand from counting against the Gemini pools.
+3. The groups alone still credit both Gemini pools with the whole Gemini rate. So then
+   split a group's demand across its eligible accounts in the PSE objective, for example
+   in proportion to each account's remaining PSE, and keep the per-account rate in the
+   explain output. Do not rate each pool by its own past demand alone: that demand mostly
+   reflects what the router sent it, which is why the fallback credit existed.
+
+*Risks and edge cases:* a split changes every multi-account provider's scores, Claude's
+included, and the pick goldens. Weigh it against #3 and #4, which change the joint
+objective.
+
+**Touch points:** `src/quota_router/scoring.py:443` (`rate_for`), the PSE objective in
+`scoring.py:486`, `src/quota_router/joint.py:63` and `:197`, `src/quota_router/forecast.py:275`,
+`src/quota_router/cli.py:1188` (`_working_rates`), and `tests/test_measured_rate.py`.
 
 ---
 
