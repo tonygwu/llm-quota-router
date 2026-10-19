@@ -156,6 +156,21 @@ any of the sizes, so `pick` projected no Gemini waste. A pool with no waste rank
 deadline, and Gemini binds on its weekly window, so it ranked below every account whose
 binding window reset sooner, and never first.
 
+Changed on 2026-10-19: the credit now applies only while one of the provider's accounts
+has no configured `capacity` (README.md, the paragraph on the working rate). Dry runs at
+20:51:26Z on the live config (k 4.0, capacity 2.43 and 2.45) compared the two rules at the
+same instant:
+
+| Pick | Old rule | New rule |
+|---|---|---|
+| fast | `claude_c`, Gemini 0.0 at risk | `antigravity_gemini_b`, Gemini 3.8 Flash (High), 9.354 PSE at risk |
+| standard | `claude_c`, Gemini 0.0 at risk | `antigravity_gemini_b`, Gemini 3.8 Flash (High), 9.354 PSE at risk |
+| premium | `claude_c` | `claude_c` |
+| no capability | `claude_c`, all four Antigravity pools excluded | the same |
+
+Files: `dry/settled-installed-*.json` and `dry/settled-head-*.json`. BACKLOG item 23 checks
+whether real work follows.
+
 ## Raw data
 
 The harness, raw responses, analysis and dry-run outputs are in
