@@ -1367,7 +1367,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 24. Waste figures mix raw readings with assumptions that no record explains  `[difficulty: high]`  `[filed: 2026-10-19]`
+### 24. Waste figures mix raw readings with assumptions that no record explains  `[difficulty: high]`  `[filed: 2026-10-19]`  `[claimed by: #11]`
 
 **Background:**
 
