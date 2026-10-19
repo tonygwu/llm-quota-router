@@ -131,26 +131,17 @@ so; do not start it. One bullet was closed by the operator on 2026-10-18:
 `min_remaining_configured` stays as designed. The `fable_fraction = 0.5` note was
 dropped by the author because it asked for no work; `pse.py:59-64` carries it.
 
-- **Reported waste double-counts the operator's working time across accounts.**
-  `pse.wasted_pse` credits every account with the whole working rate over its own
-  horizon, so N accounts claim N times the hours that exist. Two accounts can each read
-  "0.000 PSE nothing wasted" while one shared rate cannot absorb both pools, and
-  `status` and `explain` under-report waste more as a fleet grows. **This is a reporting
-  bug, not a routing bug, as long as the rate is the measured one.** Under one shared
-  rate, earliest-deadline-first already minimises total waste, so the ranking the router
-  produces today is the right order. With a rate far below demand it is not: on the
-  evening of 2026-10-17 PT the hardcoded 0.04 PSE/h left both `claude` (2.8 PSE, 41h to
-  reset) and
-  `claude_e` (1.5 PSE, 8h to reset) looking undrainable and ranked the bigger pile
-  first, while the measured 0.16 PSE/h drains `claude` in time and loses 0.27 PSE of
-  `claude_e`. `pick` now credits each provider with its forecast rate and reports every
-  fall-through to the default (`rate` in the payload); the double-counted *figure* is
-  still open.
-  A fleet-aware *score* that ranks the account showing unavoidable waste first spends in
-  the wrong order: it lets the earlier pool expire too. A first attempt did exactly that
-  and broke `test_ranking_across_realistic_accounts_prefers_the_soonest_deadline_with_quota_at_risk`.
-  Closes when the *reported* waste figure is computed over the whole field with one shared
-  rate, the ranking still orders by earliest deadline, and a test pins both.
+- **Reported waste still uses a static allocation rather than a timed fleet projection.**
+  The 2026-10-19 demand-allocation fix removed duplicate rate credit:
+  `src/quota_router/scoring.py:663` "Share each group's budget in proportion to spendable weekly PSE."
+  Each group shares its budget across eligible accounts, and explain shows those rates.
+  Different deadlines can still make the summed estimate differ from fleet waste,
+  because unused shares are not reassigned over time. For two 1-PSE stocks expiring
+  in 1h and 10h, with no binding five-hour cap and group demand 0.2 PSE/h, static
+  shares predict 0.9 PSE of waste versus 0.8 PSE in the timed joint projection.
+  Keep the soonest-deadline regression and #3's scarcity gate when changing reporting.
+  Closes when a reported fleet estimate spends one shared demand stream across
+  deadlines and five-hour constraints, with tests reconciling the figure.
 
 - **The capability refresher does not check which Google account answered.** Every
   Antigravity `/usage` read now compares agy's sign-in log with `identity_email`, and a
@@ -290,7 +281,8 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
 
 `[engine] objective = "joint"` ranks by projected fleet waste avoided and never scores
 unmet demand (operator decision 2026-10-14). `quotapick replay` (21 days to 2026-10-14,
-Claude group, job 0.01 PSE) is its gate, and the gate fails:
+Claude group, job 0.01 PSE) is its gate. The last historical run, before the
+2026-10-19 demand-allocation change, failed:
 
 | fleet | policy | metric PSE | waste | unmet | switches |
 |---|---|---|---|---|---|
@@ -310,6 +302,10 @@ priced in PSE), or a five-hour-aware tie-break, that passes the replay gate on b
 at job sizes 0.01 and 0.05 and forecast x0.5 and x2. Until then the default stays
 `own_waste`; `run` may still use the joint projection, because credit pools are invisible
 to `own_waste` and carry no five-hour cap.
+
+Re-run the current `own_waste` baseline when evaluating this gate. The
+[synthetic allocation replay](docs/measurements/2026-10-19-demand-allocation.md)
+does not replace the historical gate.
 
 ---
 
@@ -1357,12 +1353,13 @@ side:
   provider preference after the router ranks, or launch through `cl`; `run` cannot reach
   Antigravity at all (#20). Premium, the capability most agent work requests, stays on
   Claude. So a small change in completions may be the honest result.
-- Once Gemini demand rises, the scorer credits each Antigravity pool with the whole
-  provider's demand (#25). Both Gemini pools can then read nothing at risk while only one
-  is used, so one pool may still expire part-used. Read the week's result with that in
-  mind.
-- Every capability pick warns that Antigravity's measured demand is below the 0.04 PSE/h
-  default until that demand passes it. The warning is expected.
+- The 2026-10-19 demand-allocation fix separates Gemini and Claude-model demand and
+  shares each group's rate across eligible pools. Its offline replay corrects the
+  waste prediction; it does not prove more real completions or less aggregate waste.
+  Record which installed revision served this week's work.
+- Every capability pick warns when an Antigravity demand group's measured rate is
+  below the 0.04 PSE/h default. The warning is expected until that group's demand
+  passes the default.
 
 **Touch points:** `waste.jsonl` and the history store (read only), consumer logs outside
 this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
@@ -1396,57 +1393,6 @@ a five-hour row is unchanged by k.
 
 **Touch points:** `src/quota_router/waste.py:1286-1309` (`summarize`), the waste section
 of the README, and `tests/test_account_capacity.py`.
-
----
-
-### 25. The waste objective credits every account with its provider's whole demand  `[difficulty: high]`  `[filed: 2026-10-19]`  `[claimed by: #11]`
-
-**Background:** `rate_for` (`src/quota_router/scoring.py:443`) gives one demand rate per
-provider, and the PSE objective that `pick` uses credits every account of that provider
-with all of it. The `antigravity` provider holds two Claude-model pools and two Gemini
-pools. Until 2026-10-19 this did not matter for Antigravity, because the fallback credit
-already read every pool as drained. Since the change in `_working_rates`
-(`src/quota_router/cli.py:1188`), Antigravity is scored on its own demand. That is the
-first time the per-provider rate decides whether an Antigravity pool wins.
-
-**Impact:** reasoning from the code, not yet run. Each Gemini pool holds about 9.6 PSE
-with a week to go. If Gemini work reaches about 0.07 PSE/h with 144 hours to the weekly
-reset, each pool is credited with about 10 PSE of drain and reads nothing at risk. But the
-two pools share that work: together they absorb about 10 PSE of their 19 PSE, so about
-9 PSE can expire while `pick` reports no waste. Below about 0.067 PSE/h each pool still
-shows some PSE at risk, but less than it should. The same holds for any
-provider with several accounts; this item has not checked how much it matters for the
-Claude accounts.
-
-The demand groups make it worse for Antigravity. `GROUP_FOR_PROVIDER`
-(`src/quota_router/joint.py:63`) maps each provider to one group, so the `antigravity`
-group holds the Claude-model pools and the Gemini pools together, although they serve
-different models. `measure` (`src/quota_router/forecast.py:275`) already measures each
-account's demand from its own weekly bar before it adds the accounts into a group
-(`forecast.py:301-333`), so a finer group key needs no new data.
-
-**Fix:**
-
-1. Measure first. Replay a week of Antigravity demand above 0.04 PSE/h against both Gemini
-   pools, and report the waste the objective predicts against the waste a split of the
-   demand predicts.
-2. If the gap is material, start with the groups: give the Gemini pools and the
-   Claude-model pools their own demand groups (for example keyed by the pool selector
-   `AGY_MODEL`), here and where the joint projection assigns groups (`joint.py:197`).
-   That stops Claude-model demand from counting against the Gemini pools.
-3. The groups alone still credit both Gemini pools with the whole Gemini rate. So then
-   split a group's demand across its eligible accounts in the PSE objective, for example
-   in proportion to each account's remaining PSE, and keep the per-account rate in the
-   explain output. Do not rate each pool by its own past demand alone: that demand mostly
-   reflects what the router sent it, which is why the fallback credit existed.
-
-*Risks and edge cases:* a split changes every multi-account provider's scores, Claude's
-included, and the pick goldens. Weigh it against #3 and #4, which change the joint
-objective.
-
-**Touch points:** `src/quota_router/scoring.py:443` (`rate_for`), the PSE objective in
-`scoring.py:486`, `src/quota_router/joint.py:63` and `:197`, `src/quota_router/forecast.py:275`,
-`src/quota_router/cli.py:1188` (`_working_rates`), and `tests/test_measured_rate.py`.
 
 ---
 
