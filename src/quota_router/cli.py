@@ -1206,7 +1206,7 @@ def _working_rates(
     ``config`` is the fleet as configured, before ``--only``/``--exclude`` flip accounts
     off: those flags narrow the candidates, never the demand a fallback pool stands behind.
 
-    Two rules, both stated in the entry's ``reason``:
+    Three rules, each stated in the entry's ``reason`` when it applies:
 
     * Only providers whose candidates publish a weekly window appear. The rate is read
       by nothing else (``scoring.stocks_from_snapshot`` returns ``None`` without one),
@@ -1217,6 +1217,11 @@ def _working_rates(
       last in line, not a forecast of what it could absorb. On this fleet the Antigravity
       pools measure 0.005 PSE/h; at that rate their placeholder-sized pools (BACKLOG #9)
       read as the biggest waste in the fleet and took every capability pick.
+    * That credit lasts only while one of those accounts has no configured
+      ``capacity``. Once every one is sized, the placeholder is gone, and the credit
+      would hide real waste instead: on 2026-10-19 it held both measured Gemini pools at
+      0.000 PSE at risk, so every capability pick ranked them by deadline, never first. A sized
+      fallback provider is credited with its own measured demand, like any other.
     """
     from . import joint as joint_mod  # type: ignore[attr-defined]
     from . import scoring  # type: ignore[attr-defined]
@@ -1232,12 +1237,16 @@ def _working_rates(
     }
     metered: set[str] = set()
     fallback: set[str] = set()
+    unsized: set[str] = set()
     for account in config.enabled_accounts():
         if getattr(account, "unmetered", None) == "fallback":
             fallback.add(account.provider)
+            if getattr(account, "capacity", None) is None:
+                unsized.add(account.provider)
         else:
             metered.add(account.provider)
     fallback_only = fallback - metered
+    credited = fallback_only & unsized
 
     def measured_for(group: str) -> tuple[float | None, str | None]:
         if cached is None:
@@ -1261,7 +1270,7 @@ def _working_rates(
     rates: dict[str, dict[str, Any]] = {}
     for provider in sorted(normalizable):
         measured: float | None = None
-        if provider in fallback_only:
+        if provider in credited:
             if behind:
                 measured = sum(behind.values())
                 reason: str | None = (
@@ -1281,6 +1290,11 @@ def _working_rates(
                 reason = f"no demand forecast group covers provider {provider}"
             else:
                 measured, reason = measured_for(group)
+                if measured is not None and provider in fallback_only:
+                    reason = (
+                        "fallback pool with a measured capacity on every account: "
+                        "credited with its own demand"
+                    )
         capped = measured is not None and measured > ceiling
         rates[provider] = {
             "pse_per_h": default if measured is None else min(measured, ceiling),
@@ -1296,7 +1310,7 @@ def _working_rates(
                 f"the waste term credits each {provider} account with that guess, not "
                 f"with measured demand"
             )
-        elif capped and provider not in fallback_only:
+        elif capped and provider not in credited:
             # A fallback pool is expected to sit at the ceiling: it is credited with
             # every metered group at once. Its entry still says ``capped``.
             warnings.append(

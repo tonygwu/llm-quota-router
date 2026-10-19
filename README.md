@@ -53,7 +53,14 @@ the default put `claude` (2.8 PSE left, 41h to reset) above `claude_e` (1.5 PSE 
 metered providers' groups, capped at the five-hour ceiling. Its own measured demand is
 an artifact of being last in line: the Antigravity pools measure 0.005 PSE/h, and at
 that rate their placeholder-sized pools would read as the biggest waste in the fleet and
-take every capability pick.
+take every capability pick. The credit applies only while at least one of those accounts
+has no measured `capacity` (see below). Once every one is sized, the provider is
+credited with its own measured demand, so its real waste counts. On 2026-10-19 the
+credit held both measured Gemini pools at 0.000 PSE at risk, so every capability pick
+ranked them by deadline, below every account that resets sooner, while their quota
+went unused. The `unmetered = "fallback"`
+flag keeps its other jobs: a plain pick still never returns such a pool, and
+`report-failure` still accepts it.
 
 `tier_scale` comes from the plan tier, and an account whose tier the router cannot read
 (an Antigravity pool, for one) gets the neutral 1.0. When you have measured the real size

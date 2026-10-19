@@ -365,6 +365,134 @@ def test_explain_prints_the_fallback_rule(env) -> None:
     assert "capped from the measured 0.221 PSE/h; fallback pool: credited with the demand it stands behind" in err
 
 
+# The credit exists because a placeholder-sized pool read at its own starved rate looks
+# like the fleet's biggest waste. A measured `capacity` removes that premise, and on
+# 2026-10-19 the credit was the only thing keeping both sized Gemini pools at 0.000 PSE at
+# risk, so every capability pick ranked them by deadline, behind every account that resets sooner.
+SIZED_FALLBACK_CONFIG = FALLBACK_CONFIG + "capacity = 2.0\n"
+ANTIGRAVITY_OWN_ABOVE_DEFAULT = 0.05
+
+
+def _second_fallback_pool():
+    return account(
+        "antigravity_gemini",
+        window("5h", 0.0, length_s=FIVE_HOURS, resets_in_s=5 * HOUR),
+        window("7d", 0.0, resets_in_s=7 * 24 * HOUR),
+        tier="unknown",
+    )
+
+
+def test_a_fallback_only_provider_whose_pools_are_all_sized_is_credited_with_its_own_demand(env) -> None:
+    _config(env, SIZED_FALLBACK_CONFIG)
+    _forecast(env, extra_groups={"antigravity": (ANTIGRAVITY_OWN_ABOVE_DEFAULT, 0.0),
+                                 "codex": (CODEX_MEASURED, 0.0)})
+    code, out, err = run(
+        ["pick", "--dry-run", "--json", "--explain", "--only", "claude,claude_e,antigravity_claude"],
+        env, snapshots=(*_scenario(), _fallback_pool()), cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    payload = json.loads(out)
+    report = payload["rate"]["antigravity"]
+    assert report["source"] == "measured"
+    assert report["measured_pse_per_h"] == pytest.approx(ANTIGRAVITY_OWN_ABOVE_DEFAULT)
+    assert report["pse_per_h"] == pytest.approx(ANTIGRAVITY_OWN_ABOVE_DEFAULT)
+    assert report["capped"] is False
+    assert "stands behind" not in report["reason"]
+    assert "measured capacity" in report["reason"]
+    assert _rate_warnings(payload) == []
+    # 2.0 x 6.25 = 12.5 PSE a week, of which 0.05 PSE/h over 168 h drains 8.4: the rest
+    # is at risk, and it outweighs claude_e's 0.27 PSE.
+    scores = {row["account"]: row["score"] for row in payload["ranked"]}
+    assert scores["antigravity_claude"] > 1.0, scores
+    assert payload["decision"]["account"] == "antigravity_claude"
+    assert "rate: antigravity 0.050 PSE/h measured" in err
+    assert "fallback pool with a measured capacity" in err
+
+
+def test_a_sized_fallback_pool_below_the_default_rate_still_says_so(env) -> None:
+    """Its own demand is the truth about it once it is sized, starved or not, so the
+    usual below-default warning applies to it like any measured provider."""
+    _config(env, SIZED_FALLBACK_CONFIG)
+    _forecast(env, extra_groups={"antigravity": (ANTIGRAVITY_OWN, 0.0)})
+    payload = _pick_with_fallback(env)
+    assert payload["rate"]["antigravity"]["pse_per_h"] == pytest.approx(ANTIGRAVITY_OWN)
+    warnings = _rate_warnings(payload)
+    assert len(warnings) == 1, warnings
+    assert warnings[0].startswith("antigravity: measured demand 0.005 PSE/h")
+
+
+def test_a_sized_fallback_pool_above_the_ceiling_warns_like_any_measured_provider(env) -> None:
+    """Only a credited pool sits at the ceiling by design. A sized one is scored on its
+    own demand, so demand above the ceiling is news and is said."""
+    _config(env, SIZED_FALLBACK_CONFIG)
+    _forecast(env, extra_groups={"antigravity": (0.3, 0.0)})
+    payload = _pick_with_fallback(env)
+    report = payload["rate"]["antigravity"]
+    assert report["capped"] is True
+    assert report["pse_per_h"] == pytest.approx(scoring.MAX_SUSTAINED_RATE_PSE_PER_HOUR)
+    warnings = _rate_warnings(payload)
+    assert len(warnings) == 1, warnings
+    assert warnings[0].startswith("antigravity: measured demand 0.300 PSE/h exceeds the five-hour ceiling")
+
+
+def test_one_unsized_fallback_pool_keeps_the_credit_for_its_provider(env) -> None:
+    """The rate is per provider. While any of its fallback pools still has the
+    placeholder size, its own starved demand would make that pool read as the biggest
+    waste, so the provider keeps the demand it stands behind."""
+    _config(env, SIZED_FALLBACK_CONFIG + '\n[accounts.antigravity_gemini]\nprovider = "antigravity"\nunmetered = "fallback"\n')
+    _forecast(env, extra_groups={"antigravity": (ANTIGRAVITY_OWN, 0.0),
+                                 "codex": (CODEX_MEASURED, 0.0)})
+    code, out, err = run(
+        ["pick", "--dry-run", "--json", "--only", "claude,claude_e,antigravity_claude,antigravity_gemini"],
+        env, snapshots=(*_scenario(), _fallback_pool(), _second_fallback_pool()),
+        cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    report = json.loads(out)["rate"]["antigravity"]
+    assert report["measured_pse_per_h"] == pytest.approx(MEASURED + CODEX_MEASURED)
+    assert "stands behind" in report["reason"]
+
+
+def test_a_plain_pick_never_returns_a_sized_fallback_pool_even_when_it_wastes_most(env) -> None:
+    """Sizing a pool lets its waste count, and then it outranks every Claude account. The
+    capability-only rule is then the one thing that keeps a plain pick, whose caller
+    assumes Claude, from returning it."""
+    _config(env, SIZED_FALLBACK_CONFIG)
+    _forecast(env, extra_groups={"antigravity": (ANTIGRAVITY_OWN_ABOVE_DEFAULT, 0.0)})
+    snapshots = (*_scenario(), _fallback_pool())
+    # Named with --only, it wins on waste: the exclusion below is what stops it.
+    code, out, err = run(["pick", "--dry-run", "--json", "--only", "claude,claude_e,antigravity_claude"],
+                         env, snapshots=snapshots, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert json.loads(out)["decision"]["account"] == "antigravity_claude"
+    code, out, err = run(["pick", "--dry-run", "--json"], env, snapshots=snapshots,
+                         cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    payload = json.loads(out)
+    assert payload["decision"]["account"] == "claude_e"
+    excluded = {row["account"]: row["reason"] for row in payload["excluded"]}
+    assert "serves capability picks only" in excluded["antigravity_claude"]
+
+
+def test_a_provider_with_a_metered_account_uses_its_own_demand_whatever_its_sizes(env) -> None:
+    """The credit is for a provider whose accounts are all fallback-only. One metered
+    account makes the provider measured, so an unsized fallback pool beside it changes
+    nothing."""
+    _config(env, '[accounts.antigravity_claude]\nprovider = "antigravity"\n'
+                 '\n[accounts.antigravity_gemini]\nprovider = "antigravity"\nunmetered = "fallback"\n')
+    _forecast(env, extra_groups={"antigravity": (ANTIGRAVITY_OWN, 0.0),
+                                 "codex": (CODEX_MEASURED, 0.0)})
+    code, out, err = run(
+        ["pick", "--dry-run", "--json", "--only", "claude,claude_e,antigravity_claude,antigravity_gemini"],
+        env, snapshots=(*_scenario(), _fallback_pool(), _second_fallback_pool()),
+        cwd=_NO_CONFIG_FILES,
+    )
+    assert code == cli.EXIT_OK, err
+    report = json.loads(out)["rate"]["antigravity"]
+    assert report["measured_pse_per_h"] == pytest.approx(ANTIGRAVITY_OWN)
+    assert report["reason"] is None  # a plain measured provider: no fallback rule applied
+
+
 # ======================================================================================
 # Review follow-ups
 # ======================================================================================
