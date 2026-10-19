@@ -1399,7 +1399,7 @@ of the README, and `tests/test_account_capacity.py`.
 
 ---
 
-### 25. The waste objective credits every account with its provider's whole demand  `[difficulty: high]`  `[filed: 2026-10-19]`
+### 25. The waste objective credits every account with its provider's whole demand  `[difficulty: high]`  `[filed: 2026-10-19]`  `[claimed by: #11]`
 
 **Background:** `rate_for` (`src/quota_router/scoring.py:443`) gives one demand rate per
 provider, and the PSE objective that `pick` uses credits every account of that provider
