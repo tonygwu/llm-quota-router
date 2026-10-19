@@ -46,8 +46,7 @@ items.
 ```
 
 Items 1 to 6 and 14 predate this format: they carry no Background, Impact, Fix or Touch
-points structure, and some cite no `file:line`. Item 10 carries no Fix label and no Touch
-points either. Their difficulty and filed tags were added on 2026-10-18, with `filed` set to the
+points structure, and some cite no `file:line`. Their difficulty and filed tags were added on 2026-10-18, with `filed` set to the
 UTC date of the commit that first filed each one. The implementer derives the touch
 points from the text. The claim helper matches `### <ID>. ` exactly, so an item heading
 at any other level cannot be claimed. A paragraph starting **Operator decision** records
@@ -58,7 +57,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #10 and one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -105,8 +104,11 @@ nobody published. See the README section "An early reset is not waste".
    gives 0.26. Since 2026-10-18 those pools carry `capacity = 0.088` (#9), and `quotapick
    waste` rescales their old rows to that size in `totals_at_capacity` without rewriting
    the file; that is the total to publish. The two Gemini rows are early resets, so they
-   stay out of the waste total, but they inflate the forfeited figure by a factor nobody
-   has measured. The Gemini size is #10, and it must land before the figure is stated.
+   stay out of the waste total. Since 2026-10-19 the Gemini pools carry a measured
+   `capacity` too (2.43 and 2.45, `docs/measurements/2026-10-18-gemini-size.md`), so
+   `totals_at_capacity` rescales their rows by it. The rescale keeps the k each row was
+   logged with, and the Gemini rows were logged at k = 6.25 where the measured k is 4.0,
+   so their forfeited figure still reads about 1.56 times too high (`waste.py:1286-1309`).
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
@@ -115,8 +117,9 @@ justified by argument alone. The counterfactual comparison becomes its own item 
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
 the counterfactual says.
 
-**Operator decision 2026-10-18:** proceed. State the figure as soon as #10 has landed
-(#9 landed the same day) and the Antigravity series covers one full weekly cycle.
+**Operator decision 2026-10-18:** proceed. State the figure as soon as the Gemini size
+has landed (it did on 2026-10-19; #9 landed on 2026-10-18) and the Antigravity series
+covers one full weekly cycle.
 
 ---
 
@@ -209,10 +212,16 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   refreshes of 2026-10-18T06:49:46Z and 06:52:14Z, and `choose_gemini` matches an `argon`
   line as it is. `premium` keeps no Antigravity model; the operator should say if that is
   not wanted. A zero-code path exists today: a `[capabilities.frontier] antigravity =
-  "Gemini 4 Argon (High)"` pin, which `validate_table` accepts. Closes when `argon` is an
-  Antigravity selector (`SELECTORS`, `capability.py:82`), the default table's `frontier`
-  row names it for Antigravity (`capability.py:97`), a test pins both, and one call's
-  telemetry shows the model that actually served it.
+  "Gemini 4 Argon (High)"` pin, which `validate_table` accepts. A consumer's smoke test on
+  `antigravity_gemini_b` at 2026-10-18T22:41Z asked for Argon and succeeded. The
+  consumer's agent reported, in a note the operator passed on, that the backend selected
+  Argon; this repo holds no record of that. agy's JSON output has no served-model field,
+  so the telemetry check below must read agy's own record of the call instead, and on
+  `antigravity_gemini_b` that record belongs to another macOS user, whose database the
+  measurement's provenance read could not open. Closes
+  when `argon` is an Antigravity selector (`SELECTORS`, `capability.py:82`), the default
+  table's `frontier` row names it for Antigravity (`capability.py:97`), a test pins both,
+  and one call's telemetry shows the model that actually served it.
 
 - **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
   of the Antigravity measurement (`docs/measurements/2026-10-12-antigravity-capacity.md`)
@@ -303,7 +312,7 @@ to `own_waste` and carry no five-hour cap.
 
 ---
 
-### 4. The joint projection cannot move work across providers  `[difficulty: xhigh]`  `[filed: 2026-10-14]`  `[BLOCKED: the Antigravity half of (a) waits on #10; (c) is #15]`
+### 4. The joint projection cannot move work across providers  `[difficulty: xhigh]`  `[filed: 2026-10-14]`
 
 The projection and the replay keep provider groups apart: Claude work stays on Claude
 accounts. That makes #3's stall figure an upper bound for work that could have run on
@@ -328,12 +337,14 @@ the effective deadline forward. Then re-run the replay gate with cross-provider 
 
 *Antigravity part of (a), as of 2026-10-18:* the Claude/GPT pools were measured on
 2026-10-12. Their k = 2.0 and their capacity of 0.088 have been in the operator config
-since 2026-10-18 (#9, shipped), so the Claude/GPT half of this part is done. The Gemini
-pools have a measured k = 15 that is not applied and a size nobody has measured (#10).
+since 2026-10-18 (#9, shipped). The Gemini pools have carried k = 4.0 and a measured
+capacity (2.43 and 2.45) since 2026-10-19 (`docs/measurements/2026-10-18-gemini-size.md`).
+So the Antigravity part of (a) is done, with one open doubt: #21.
 
 *Split 2026-10-18:* part (c), the early-reset hazard, is #15 and needs nothing from this
 item. The Codex half of (a) needs a Codex size measurement that no item carries yet.
-**Operator decision 2026-10-18:** proceed with the rest as soon as #10 lands.
+**Operator decision 2026-10-18:** proceed with the rest once the Gemini size lands. It
+landed on 2026-10-19.
 
 ---
 
@@ -381,121 +392,126 @@ stay byte-identical.
 
 ---
 
-### 10. The Gemini pools' measured k = 15 waits on a size nobody has measured  `[difficulty: high]`  `[filed: 2026-10-18]`  `[claimed by: #1]`
+### 19. Antigravity Gemini quota expires unused, because `pick` assumes the pools will be drained  `[difficulty: high]`  `[filed: 2026-10-19]`  `[BLOCKED: operator decision pending on the Fix]`
 
-**Background.** The 2026-10-12 measurement read k = 15.0 for both Antigravity Gemini pools
-(details in `docs/measurements/2026-10-12-antigravity-capacity.md`).
-The reads were consecutive and came from one `/usage` replica: 13 of 16 changes on
-`antigravity_gemini` (mean 15.0006) and 12 of 16 on `antigravity_gemini_b` (mean
-15.0005). Whole-rep k does not reproduce (6.5 to 31.9), because the Gemini five-hour bar
-sometimes jumps in one read, out of step with the weekly bar. Of seven flagged jumps,
-five read 0.0100 to 0.0113 and two read 0.0009 and 0.0058. The operator
-config leaves both Gemini pools on the
-default 6.25. Their size in PSE was never measured, so their capacity stays at the
-tier's placeholder 1.0; the per-account `capacity` key that #9 added on 2026-10-18 holds a
-measured size once there is one.
+**Background:** the operator reports that the Antigravity pools sit at 99-100% and that
+their quota almost always expires unused (2026-10-18). The cause is in `pick`, and it is
+not the pool size. `_working_rates` (`src/quota_router/cli.py:1188`) credits a provider
+whose enabled accounts are all `unmetered = "fallback"` with the demand of the metered
+providers, capped at 0.2 PSE/h (`cli.py:1232-1287`; README.md:52-56). Over the 6.1 days
+to the Gemini weekly reset on 2026-10-19T01:34Z, that was about 29 PSE, more than either
+measured Gemini week (9.74 and 9.80 PSE, `docs/measurements/2026-10-18-gemini-size.md`).
+So `pick` projects that the Gemini pools lose nothing, and a pool that loses nothing ranks
+by deadline (`scoring.py:486`, `pse_objective`). The Gemini pools bind on their weekly
+window, so every Claude account that resets sooner ranks above them.
 
-The effect of applying k = 15 alone, in a standard dry run on the 2026-10-13T03:03:47Z
-snapshot that #9 used:
+Evidence, dry runs of fast, standard and premium capability picks on the live data, the
+live row at 2026-10-19T13:42:28Z and the scratch row at 13:43:38Z:
 
-| Config | Standard winner | Gemini PSE at risk | `claude_b` |
+| Config | fast and standard | premium | Gemini PSE at risk |
 |---|---|---|---|
-| Live, k = 6.25 | `claude_b`, `claude-sonnet-5-5` | 0.428 / 0.383 | 2.803 |
-| k = 15 | `antigravity_gemini_b`, `Gemini 3.8 Flash (High)` | 9.130 / 9.099 | 2.803 |
+| Live (fallback credit applies) | `claude_c` | `claude_c` | 0.000 / 0.000 |
+| Scratch copy without the fallback flag (credit off) | `antigravity_gemini_b`, `Gemini 3.8 Flash (High)` | `claude_c` | 8.458 / 7.334 |
 
-Premium picks did not change, because no Antigravity Gemini model counts as pro (see the
-Gemini 4 Argon bullet in #2).
+The rule was right when it was written. Then both Antigravity sizes were placeholders, and
+at the pools' own measured demand (0.005 PSE/h then, 0.003 on 2026-10-19) the
+placeholders read as the biggest waste
+in the fleet. Since 2026-10-19 all four pools carry a measured `capacity`, so that premise
+is gone. Consumer-side evidence from 2026-10-18 agrees: in 168 agent attempts of one
+consumer, Antigravity was an eligible ranked candidate in 114 and ranked first in none.
+Pick history overstates Antigravity's share of the work, because a pick is not a completed
+call, history carries no client or completion field, and Antigravity picks arrive in
+bursts.
 
-**Impact.** k = 15 is right and 6.25 is wrong, but k multiplies the placeholder capacity.
-Applied alone, it sizes each Gemini week at 15 PSE, which is 2.4 Max-20x weeks. Every
-standard pick then moves from Claude Sonnet to Gemini Flash on a size nobody measured.
-Even a pool whose reset slides 168 hours ahead, so that it never reaches the reset (see
-the note carried from #9 below),
-would read 8.28 PSE at risk at the old default rate: `pse.wasted_pse` gives 15 minus
-0.04 PSE/h over 168 hours, where k = 6.25 gives 0.000 (at the 0.2 PSE/h ceiling `pick`
-now credits a fallback-only provider with, both read 0.000, so the mis-sizing shows in
-`waste`, not in routing). A Gemini week that expires would log 14.94 PSE instead of
-6.23. Nobody has checked Flash's
-quality on the standard tier's real work.
+**Impact:** quota the operator already pays for expires every week. Meanwhile Claude
+quota, the scarcer and more capable pool, serves fast and standard work that Gemini Flash
+could serve. Demand ran above the Claude fleet's weekly capacity in two of the four weeks
+to 2026-10-14 (#12), so Claude quota saved in quiet hours has value in busy ones.
 
-**Operator decision 2026-10-18: measure the size first, then set k and capacity
-together** (the third option below). **Operator decision 2026-10-18:** step 1's price
-basis is approved: list-price dollars, the same basis as the 2026-10-12 measurement.
+**Fix:** *Operator decision pending.* The options:
 
-How the size-first decision was reached: on 2026-10-13 the operator questioned holding back
-a measured k. The measuring agent agreed that k = 15 is correct and that
-6.25 only hides part of the capacity error. Its proposal is the third option below:
+- **A. Credit the metered demand only to a fallback pool that has no measured size**
+  (recommended). In `_working_rates`, a fallback-only provider whose accounts all carry a
+  configured `capacity` uses its own measured demand, like a metered provider. The flag
+  keeps its other two roles: a pool without a reading serves only as a last resort
+  (`_fallback_only`, `cli.py:1687`), and a plain pick never returns a fallback pool
+  (`cli.py:853`). Effect: the table's second row. Fast and standard capability picks go to
+  Gemini Flash while Gemini holds the most quota at risk. Then the demand forecast rises
+  and the waste objective balances the pools. Cost: Flash serves `standard` work, and
+  nobody has checked its quality on that work.
+- **B. Remove `unmetered = "fallback"` from the Gemini pools in the operator config.**
+  It is not a fix. Without the flag, a plain pick may return a Gemini pool to a caller
+  that assumes Claude. The 2026-10-12 audit found four call sites that mishandle that
+  (README section "Antigravity pools as a last resort"). `report-failure` also refuses
+  the pool.
+- **C. A per-account `prefer = true`, the mirror of `deprioritize`.** It ranks a
+  preferred pool above any candidate whose PSE at risk is below a stated threshold. It is
+  more machinery than A, and it hard-codes a preference that A lets the waste objective
+  find.
 
-- *Apply k = 15 alone now.* The config matches the measurement at once. Standard picks
-  move to Flash on a placeholder size, sliding Gemini pools read 8.28 PSE at risk, and
-  waste rows grow 2.4 times.
-- *Keep 6.25.* Routing stays as it is today, on a k known to be wrong.
-- *Apply k = 15 and a measured capacity together. This is the recommendation, and the
-  operator's decision of 2026-10-18.* Both numbers are measured when routing changes. It
-  costs a size measurement. #9 shipped on 2026-10-18, and the operator approved step 1's
-  price basis the same day, so nothing blocks it.
+For A, the steps:
 
-**Hazards for whoever measures it:**
+1. Change the rule in `_working_rates` and its docstring, and say in the `rate` reason
+   which rule applied.
+2. Tests: a sized fallback-only provider gets its own demand; an unsized one keeps the
+   credit; a mixed fleet is unchanged; a plain pick still never returns a fallback pool.
+3. README.md:52-56 states the new rule and the date.
+4. **Success is measured in completions, not picks.** For a week after the change, record
+   real Antigravity completions from the consumer side, with account identity, the served
+   model and useful output. More picks alone prove nothing.
 
-- **Two backend replicas answer `/usage`.** A 120 s poll lands on the other replica about
-  49% of the time. One replica, called X in the analysis, was trustworthy. The other read
-  offsets that were not constant. The largest gap was 1.4% of the weekly pool, on one
-  pair read during a rep, so lag may explain part of it. Never difference a reading
-  against one from the other replica.
-- **An idle pool's weekly reset either slides with the clock or stays fixed** (carried from
-  #9, below), and
-  nobody knows what decides it. Record the reset time on every reading during the run,
-  so the analysis can tell which behavior applied.
-- **Both Gemini pools reset early on 2026-10-16**, at 22:06Z and 22:15Z, with 99.4% and
-  99.6% left (`kind: early`). Do not count on time before a scheduled reset to measure.
-- **Gemini 3.1 Pro left both accounts' model lists on 2026-10-12**, between 21:30Z and
-  22:30Z. Fourteen eval calls failed with `gemini-3.1-pro-high not recognized`, so the reps
-  used Gemini 3.8 Flash.
-- **The two Google accounts ran different agy versions** during the eval: 1.3.2 on `_b`
-  and 1.3.3 on the primary.
+*Risks and edge cases:*
 
-**Carried from #9 (shipped and deleted 2026-10-18): an idle Antigravity pool's weekly
-reset behaves two ways, and nobody knows why.**
+- **Quality.** Work that needs per-run tool denies, MCP substitution or an exact-model
+  benchmark pin is Claude-constrained, and it must stay pinned.
+- **Consumers this item cannot reach.** Most consumers do not route by capability today.
+  Several pin providers, apply their own provider preference after the router ranks, or
+  launch through `cl`. Those need changes in their own repos.
+- **Premium.** The capability most agent work requests is `premium`. Premium stays on
+  Claude in the dry run: the Antigravity Claude pools read no PSE at risk, because the
+  provider's demand fills their 0.177 PSE weeks. So this item moves fast and standard
+  work only. The Argon `frontier` mapping (#2) does not move premium either.
+- **`run`.** `run` cannot reach Antigravity at all; see #20.
 
-- *Sliding.* Every poller record from 2026-10-18T01:24:21Z to 01:40:09Z shows all four
-  pools at `used 0.000`, with the weekly reset exactly 168.00 hours after the reading.
-  The reset moves forward with the clock. The Gemini pools slid like this straight
-  after their early resets on 2026-10-16.
-- *Fixed.* After `antigravity_claude`'s scheduled reset at 2026-10-13T16:01:20Z, the next
-  reset stayed fixed at 2026-10-20T16:01:20Z with `used 0.0` until about
-  2026-10-14T09:00Z. Then, still with no use, it jumped to 168 hours ahead
-  (`2026-10-21T09:01:36Z` at 09:01:29Z) and slid from then on. `antigravity_claude_b`
-  did the same for about 17 hours after its reset on 2026-10-15.
+*Why high, not medium:* it changes ranking for every capability pick, and its success
+test is a consumer-side measurement.
 
-So a sliding pool cannot reach its reset, and it loses nothing while it slides. What
-switches a pool between the two behaviors, and whether the first use fixes the boundary,
-is unknown. Find out before relying on either. Both scheduled Antigravity rows in
-`waste.jsonl` come from pools that the 2026-10-12 measurement used part-way and then left.
+**Touch points:** `src/quota_router/cli.py:1188-1300` (`_working_rates`), README.md:52-56,
+and the rate tests beside the existing fallback-credit tests.
 
-**What would close it:** the operator chose *Together* on 2026-10-18 (above), and it
-closes with steps 1 to 4. For the record, *Keep 6.25* would have closed when the config
-said why in a comment, and *Apply alone* with step 3 using `capacity` left unset.
-The steps:
+---
 
-1. Done 2026-10-18: the operator approved comparing Flash work with Claude work in
-   list-price dollars, the same basis as the 2026-10-12 measurement, where one PSE is about
-   $283 of Opus 5.5 work.
-2. Measure the size of both Gemini pools, reading only one replica. Start
-   from `harness2.py` and `analyze2.py` in `measurements/agy-capacity-2026-10-12/`, in the
-   checkout container beside the checkouts (outside git).
-3. Set `weekly_to_session = 15.0` and the measured `capacity` on both Gemini pools in one
-   config change, with a backup. Record the standard dry run before and after.
-4. Say in the closing commit which idle-reset behavior (sliding or fixed, see the note
-   carried from #9) each pool showed during the run, from the reset times recorded on
-   every reading. If the run cannot tell, file the open question as its own item before
-   deleting this one.
+### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`
 
-*Risks and edge cases:* priced at list dollars, a cheap model may make the pool tiny, so
-Gemini rarely wins a pick. That is the honest answer, for the same reason the Claude pools
-now rank last at 0.088.
+**Background:** `run` narrows its candidates to Claude subscriptions and credit pools
+(`src/quota_router/run.py:443-446`). An `--only` that names anything else is refused.
+Consumers that send tool-less calls through `run` therefore never reach Antigravity,
+whatever capability they ask for, and #19 cannot help them.
 
-*Why high, not medium:* the method needs a judgment, and the run spends quota against a
-noisy meter.
+**Impact:** tool-less work, the cheapest to move between providers, stays on Claude even
+when an Antigravity pool has idle quota.
+
+**Fix:** an Antigravity target for `run`, with every guarantee `run` makes today and none
+weakened:
+
+- **No tools.** `run.py:166-196` gives the Claude child `--tools ""` and a strict MCP
+  config. agy needs an equivalent that is proved, not assumed.
+- **Output.** agy's output is parsed into the same result shape.
+- **Identity.** agy's sign-in log names the account, as the `/usage` read already checks.
+
+Prove each with a probe on one pool before building, the way #16 proves #12's facts, and
+keep the probe records outside git.
+
+*Risks and edge cases:* agy may offer no way to turn tools off in headless mode. Then this
+item stops at the probe and says so. agy's output format and failure taxonomy also differ
+from Claude Code's.
+
+*Why xhigh, not high:* it is a new execution target, and its safety guarantees depend on
+agy behavior that nobody has verified.
+
+**Touch points:** `src/quota_router/run.py` (candidate narrowing at 443-446, target
+construction, `judge`), the Antigravity provider's launch recipe, `tests/test_run.py`, and
+the README section on `run`.
 
 ---
 
@@ -515,9 +531,10 @@ the poller's log. The last record in the rotated poller log at 2026-10-18T01:21:
   window's boundary slides about two minutes per poll, and the pairs run from 2026-09-25
   to 2026-10-17.
 - 4,442 came from the four Antigravity `7d` windows. Only 10 of them are `incoherent pair`
-  warnings, from the replica flips in #10. The rest are `reset time moved forward`. At
-  that time every pool's weekly reset sat 168 hours ahead and slid with the clock (the
-  note carried from #9 into #10).
+  warnings, from the `/usage` replica flips (see
+  `docs/measurements/2026-10-18-gemini-size.md`). The rest are `reset time moved
+  forward`. At that time every pool's weekly reset sat 168 hours ahead and slid with the
+  clock (#22).
 
 **Impact.** Each poller log file holds about 7 records: the rotated file ran from
 01:04:32Z to 01:21:53Z, and the live file from 01:24:21Z to 01:37:47Z. The two together
@@ -1283,6 +1300,100 @@ a project config file from the directory the suite runs in, if one exists; none 
 any checkout today.
 
 **Touch points:** the eleven call sites above, and one new guard test.
+
+---
+
+### 21. The Gemini meter charges provisional 1% jumps and settles later, and nobody knows its rules  `[difficulty: high]`  `[filed: 2026-10-19]`
+
+**Background:** the 2026-10-18 measurement (`docs/measurements/2026-10-18-gemini-size.md`)
+found three things on the Gemini `/usage` bars:
+
+- **Fine movement.** Inside one replica, the five-hour bar moves exactly 4.0 times the
+  weekly bar (92 intervals).
+- **Jumps.** On top of that, the five-hour bar drops by 0.0100 at once, and the weekly bar
+  by 0.0027 to 0.0037, one replica at a time. Each pool showed two jumps in about 2.5
+  hours: one at the first call of a five-hour window, and one when the fine five-hour use
+  reached about 1%.
+- **Settling.** About an hour after the run, both replicas moved to one value per pool and
+  the bars rose (02:29:25Z and 02:22:45Z on 2026-10-19). The weekly values then held on
+  every poller record to 13:38Z (288 and 291 records). The settled charge is about twice the fine movement and less than the end-of-run
+  values, so settlement took back part of the jumps.
+
+The sizes in the operator config (`capacity` 2.43 and 2.45, README.md:58-72 describes the
+key) come from the settled values. **Operator decision 2026-10-19:** encode the settled
+values.
+
+**Impact:**
+
+- **Routing.** `pick` reads the live bars, not the settled ones. Between a jump and its
+  settlement, it sees a Gemini pool as more used than it will be, so it may send Gemini
+  less work than the pool can take.
+- **Size.** The size rests on one settled reading per pool after one workload. The two
+  pools agree within 1%, but a workload with a different input-to-output mix may settle at
+  a different charge per dollar.
+
+**Fix:**
+
+1. Run a second controlled run on one Gemini pool, with a workload whose input-to-output
+   mix differs from the 2026-10-18 prompts. Read the settled value only after both replicas
+   agree and hold. If its weekly size differs from 9.74 to 9.80 PSE by more than 15%,
+   propose new values to the operator, and change the config only on their decision, with
+   a backup.
+2. From the poller history of that run, record when each jump comes, how long settlement
+   takes, and how much of each jump it takes back.
+3. If the provisional jumps hold Gemini picks back for a measurable time, file a routing
+   item.
+
+Reuse `harness2.py` and `analyze5.py` from the 2026-10-18 measurement folder, outside git.
+Take the pool out of routing for the run and put it back with an exit trap, as the
+2026-10-18 run did.
+
+*Risks and edge cases:* the ratio can change without notice. It went from 15.0 on
+2026-10-12 to 4.0 on 2026-10-18, possibly with the early reset on 2026-10-16. Check k
+again on the run, and say if it moved.
+
+**Touch points:** `docs/measurements/2026-10-18-gemini-size.md`, and the Gemini sections
+of the operator config.
+
+---
+
+### 22. An idle Antigravity pool's weekly reset slides or stays fixed, and nobody knows why  `[difficulty: medium]`  `[filed: 2026-10-19]`
+
+**Background:** carried from #9 through #10 (both closed). `detect_resets`
+(`src/quota_router/waste.py:730`) records a reset from the reset times each reading
+reports, so which behavior applies changes what it writes. Two behaviors were seen:
+
+- *Sliding.* Every poller record from 2026-10-18T01:24:21Z to 01:40:09Z shows all four
+  pools at `used 0.000`, with the weekly reset exactly 168.00 hours after the reading, so
+  the reset moves with the clock. The Gemini pools slid like this straight after their
+  early resets on 2026-10-16.
+- *Fixed.* After `antigravity_claude`'s scheduled reset at 2026-10-13T16:01:20Z, the next
+  reset stayed fixed at 2026-10-20T16:01:20Z with `used 0.0` until about
+  2026-10-14T09:00Z. Then, still with no use, it jumped to 168 hours ahead
+  (`2026-10-21T09:01:36Z` at 09:01:29Z) and slid from then on. `antigravity_claude_b`
+  did the same for about 17 hours after its reset on 2026-10-15.
+
+The five-hour window shows the same pattern, and it is cheaper to study, because it
+repeats every few hours. After a scheduled five-hour reset with no use, the next window's
+reset stays fixed for 33 to 50 minutes, then slides; the first call fixes it again. Both
+Gemini pools did this twice on 2026-10-18/19 (`docs/measurements/2026-10-18-gemini-size.md`,
+"Reset behavior seen"). The 2026-10-18 measurement could not answer the weekly version,
+because both Gemini pools had been used earlier that week.
+
+**Impact:** a sliding pool never reaches its reset, so it loses nothing while it slides.
+If the waste report or the scorer treats a sliding pool as one whose quota expires at the
+reported reset, it counts waste that never happens. Both scheduled Antigravity rows in
+`waste.jsonl` come from pools that the 2026-10-12 measurement used part-way and then left.
+
+**Fix:** read the poller's retained history (`usage-poll.log` and the history store) for
+every Antigravity five-hour and weekly window since 2026-10-12. Classify each idle stretch as sliding
+or fixed, and find what switches it: a scheduled reset, an early reset, the first use, or
+time since the last use. Write down the rule and the evidence. If the waste report or the
+scorer handles a sliding pool wrongly, file that as its own item.
+
+**Touch points:** `src/quota_router/waste.py:730` (`detect_resets`, how a reset is
+recorded), and `src/quota_router/history.py:413` (`iter_records`, the reader that
+`--backfill` uses).
 
 ---
 
