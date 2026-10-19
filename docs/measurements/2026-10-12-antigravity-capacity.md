@@ -26,14 +26,16 @@ dollars means equal work. On the Claude side, every call's telemetry named
 records a model code, not a name, and an earlier scan mapped that code to Opus 5.5.
 
 **The Gemini pools.** k = 15.0 on both Google accounts. Their size in PSE was not
-measured.
+measured. *Superseded 2026-10-18:* a new run read k = 4.0 and sized both pools; see
+`2026-10-18-gemini-size.md`.
 
 **What uses these numbers today:**
 - `weekly_to_session = 2.0` is in the operator config for both Antigravity Claude/GPT
   pools.
 - A per-account `capacity` key holds the measured size (BACKLOG item 9 added it). The
   operator config has set `capacity = 0.088` on both Claude/GPT pools since 2026-10-18.
-- Gemini k = 15 is not applied. See BACKLOG item 10.
+- Gemini k = 15 was never applied. Since 2026-10-19 the Gemini pools carry k = 4.0 and a
+  measured capacity (`2026-10-18-gemini-size.md`).
 
 ## Method
 
@@ -134,7 +136,7 @@ Using each Claude rep's own window value gives a range of 0.082 to 0.100.
   moves its bar. Check for foreign busy sessions before and during every rep.
 - **An idle Antigravity pool's weekly reset slides 168 hours ahead of the clock** at some
   times and stays fixed at others. This was seen after the measurement, and its cause is
-  unknown. BACKLOG item 10 carries the observation and the open question.
+  unknown. BACKLOG item 22 carries the observation and the open question.
 
 ## Raw data
 
