@@ -187,4 +187,3 @@ def test_invalid_backup_is_counted_as_failure(reconstruction, tmp_path):
     assert (evidence["attempted"], evidence["succeeded"], evidence["failed"], evidence["excluded"]) == (1, 0, 1, 0)
     assert evidence["failed_by_kind"] == {"invalid_config": 1}
     assert "invalid_config" in warnings[0]
-

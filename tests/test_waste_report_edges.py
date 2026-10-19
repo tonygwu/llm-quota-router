@@ -189,3 +189,55 @@ def test_unobserved_rows_do_not_count_default_assumptions():
     report = waste.summarize([replace(sample, observed=False, wasted_pse=None)])
     assert report["unmeasured_default_rows"] == 0
     assert report["unknown_basis_source_rows"] == 0
+
+
+@pytest.mark.parametrize("fractions,expected", [((0.2, 0.8), [1.44, 5.76]), ((0.2, None), [1.44, 3.6])])
+def test_pool_fraction_remains_unresolved_after_k_and_capacity_resolve(fractions, expected):
+    from tests.test_waste_v3 import history
+
+    sample = next(item for item in waste.detect_resets(history(0.1, scoped=True)).records if item.scoped)
+    choices = [{"label": str(fraction), "value": {"weekly_to_session": 4, "window_size": 2,
+                **({"fable_fraction": fraction} if fraction is not None else {})}}
+               for fraction in fractions]
+    ledger = [belief("pool", "weekly_pool", None, candidates=choices),
+              belief("k", "weekly_to_session", 4, recorded="2026-10-20T00:00:00Z"),
+              belief("size", "capacity", 2, recorded="2026-10-20T00:00:00Z")]
+    report = waste.summarize([sample], ledger=ledger)
+    current = report["rows"][0]["current"]
+    assert current["status"] == "unresolved"
+    assert [candidate["wasted_pse"] for candidate in current["candidates"]] == pytest.approx(expected)
+    assert report["scoped_totals"]["wasted_pse"] == 0
+    ledger.append(belief("fraction", "fable_fraction", 0.3, recorded="2026-10-21T00:00:00Z"))
+    resolved = waste.summarize([sample], ledger=ledger)
+    assert resolved["rows"][0]["current"]["status"] == "belief"
+    assert resolved["scoped_totals"]["wasted_pse"] == pytest.approx(2.16)
+
+
+@pytest.mark.parametrize("reset,status,value", [
+    ("2026-10-18T12:00:00Z", "belief", 0.78125),
+    ("2026-10-19T00:00:00Z", "logged_unrecomputable", 3.125),
+    ("2026-10-19T12:00:00Z", "logged_unrecomputable", 3.125),
+    ("2026-10-20T00:00:00Z", "belief", 1.5625),
+])
+def test_corrected_tier_preserves_uncertainty_inside_scale_change_bounds(reset, status, value):
+    from dataclasses import replace
+    from tests.test_calibrations import encoding
+
+    sample = replace(row(), reset_at_s=calibrations.parse_time(reset))
+    ledger = [
+        encoding("old-scale", 0.25, key="tier_scale", scope="tier:max_5x", account=None,
+                 effective_to="2026-10-18T00:00:00Z", recorded_at="2026-10-20T00:00:00Z"),
+        encoding("new-scale", 0.5, key="tier_scale", scope="tier:max_5x", account=None,
+                 effective_from="2026-10-19T00:00:00Z", effective_to="2026-10-20T00:00:00Z",
+                 recorded_at="2026-10-20T00:00:00Z"),
+        belief("tier", "tier", "max_5x", recorded="2026-10-20T00:00:00Z"),
+    ]
+    current = waste.summarize([sample], ledger=ledger)["rows"][0]["current"]
+    assert current["status"] == status
+    assert current["wasted_pse"] == pytest.approx(value)
+    if status == "logged_unrecomputable":
+        assert "uncertain" in current["reason"]
+        ledger.append(belief("scale", "tier_scale", 0.4, recorded="2026-10-21T00:00:00Z"))
+        resolved = waste.summarize([sample], ledger=ledger)["rows"][0]["current"]
+        assert resolved["status"] == "belief"
+        assert resolved["wasted_pse"] == pytest.approx(1.25)

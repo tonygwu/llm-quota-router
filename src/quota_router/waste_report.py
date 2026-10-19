@@ -14,6 +14,12 @@ def _at(text: str) -> float:
     return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
 
 
+def _uncertain_change(entries, at_s):
+    return any(entry["effective_from"] is not None and entry["effective_to"] is not None
+               and _at(entry["effective_from"]) <= at_s < _at(entry["effective_to"])
+               for entry in entries)
+
+
 def _effective(row, basis, beliefs, ledger, replacements=None):
     """Compose beliefs by component, retaining explicit capacity over a tier scale.
 
@@ -36,6 +42,12 @@ def _effective(row, basis, beliefs, ledger, replacements=None):
             mode = "pool"
             if value is not None and "fable_fraction" in value:
                 slots["fable_fraction"] = (value["fable_fraction"], belief)
+            elif value is None and any("fable_fraction" in candidate["value"]
+                                       for candidate in belief["candidates"]):
+                # Any candidate supplying the optional component owns its
+                # uncertainty. A candidate omitting it retains the prior value
+                # when _effective is rerun with that candidate selected.
+                slots["fable_fraction"] = (None, belief)
         elif key == "weekly_to_session":
             slots["k"] = (value, belief)
         elif key == "capacity":
@@ -53,11 +65,14 @@ def _effective(row, basis, beliefs, ledger, replacements=None):
         else:
             # A corrected tier does not authorize today's mapping. Use an encoding
             # known to exist by the reset, or leave the old figure visibly logged.
-            candidates = [entry for entry in ledger if entry["kind"] == "encoding"
-                          and entry["scope"] == "tier:" + str(slots["tier"][0])
-                          and entry["key"] == "tier_scale" and entry["effective_to"] is not None
+            events = [entry for entry in ledger if entry["kind"] == "encoding"
+                      and entry["scope"] == "tier:" + str(slots["tier"][0])
+                      and entry["key"] == "tier_scale" and entry["annotates"] is None]
+            candidates = [entry for entry in events if entry["effective_to"] is not None
                           and _at(entry["effective_to"]) <= row.reset_at_s]
-            if candidates:
+            if _uncertain_change(events, row.reset_at_s):
+                missing = "corrected tier scale is uncertain at this reset within encoding change bounds"
+            elif candidates:
                 chosen = max(enumerate(candidates), key=lambda pair: (_at(pair[1]["effective_to"]), pair[0]))[1]
                 slots["window_size"] = (chosen["value"], None)
                 extra_ids.append(chosen["id"])
@@ -153,9 +168,7 @@ def _row_report(row: waste.ResetRecord, ledger: Sequence[Mapping[str, Any]]) -> 
                   and entry["scope"] == "account" and entry["account"] == row.account
                   and entry["key"] == key and entry["annotates"] is None]
         # A reset inside a change's bounds cannot be assigned either encoding.
-        if any(entry["effective_from"] is not None and entry["effective_to"] is not None
-               and _at(entry["effective_from"]) <= row.reset_at_s < _at(entry["effective_to"])
-               for entry in events):
+        if _uncertain_change(events, row.reset_at_s):
             return None
         applicable = [(float("-inf") if entry["effective_to"] is None else _at(entry["effective_to"]), index, entry)
                       for index, entry in enumerate(events)
