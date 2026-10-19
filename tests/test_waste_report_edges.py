@@ -70,6 +70,30 @@ def test_tier_scale_belief_does_not_override_explicit_capacity():
     current = report["rows"][0]["current"]
     assert current["values"]["window_size"] == 2
     assert current["wasted_pse"] == pytest.approx(0.5 * 6.25 * 2)
+    assert current["status"] == "logged"
+    assert current["ledger_ids"] == []
+    assert current["reason"] == "no belief covers this reset"
+
+
+def test_weekly_belief_does_not_value_unsupported_unscoped_window():
+    from tests.test_waste_v3 import history
+
+    readings = history()
+    for index, reading in enumerate(readings):
+        windows = reading["accounts"][0]["windows"]
+        windows.append(dict(windows[0], key="30d", length_s=2592000,
+                            resets_at_s=1000.5 + index * 2592000))
+    records = waste.detect_resets(readings).records
+    monthly = next(record for record in records if record.window == "30d")
+    assert monthly.wasted_pse is None
+    report = waste.summarize(records, ledger=[
+        belief("weekly-pool", "weekly_pool", {"weekly_to_session": 4, "window_size": 2}),
+    ])
+    current = next(item["current"] for item in report["rows"] if item["window"] == "30d")
+    assert current["wasted_pse"] is None
+    assert current["status"] == "logged_unrecomputable"
+    assert "30d" in current["reason"]
+    assert report["totals"]["wasted_pse"] == pytest.approx((1 - 0.1234567890123) * 8)
 
 
 def test_capacity_belief_still_beats_later_tier_scale_belief():

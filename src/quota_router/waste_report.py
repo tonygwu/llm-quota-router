@@ -78,6 +78,8 @@ def _effective(row, basis, beliefs, ledger, replacements=None):
 def _value(row: waste.ResetRecord, values: Mapping[str, Any]) -> tuple[float | None, str | None]:
     if not row.observed:
         return None, "reset was not observed"
+    if not row.scoped and row.window != waste.WINDOW_KEY_7D:
+        return None, f"no conversion exists for unscoped window {row.window!r}"
     k, size = values["k"], values["window_size"]
     if k is None or size is None:
         return None, "conversion is missing k or window size"
@@ -127,7 +129,7 @@ def _row_report(row: waste.ResetRecord, ledger: Sequence[Mapping[str, Any]]) -> 
                                "values": candidate_values, "wasted_pse": figure,
                                "reason": reason or arithmetic_reason})
         value, status, reason = None, "unresolved", "operator belief remains unresolved"
-    elif beliefs:
+    elif active or missing is not None:
         value, arithmetic_reason = _value(row, values)
         reason = missing or arithmetic_reason
         status = "belief" if reason is None else "logged_unrecomputable"

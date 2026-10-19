@@ -102,6 +102,24 @@ The tool refuses an existing destination directory, a destination outside tempor
 incomplete re-analysis, or contradictory historical tiers that need a dated belief.
 The full proposal includes every ledger entry; keep it private with the config.
 
+Completeness is checked against evidence content. The proposal lists attempted,
+succeeded, failed and excluded backup reads and waste rows, with failure/exclusion
+reasons, followed by the required coverage checks. It needs at least two dated
+config snapshots with account evidence, the pre-August-25 `claude_c` override,
+the before/after states supporting each October 12/18/19 transition in the table,
+a nonempty status account list, both October 16 Gemini reset rows, and both Gemini
+re-analysis measurements. Missing, empty or malformed required histories leave
+`complete: false`; the tool refuses to create a reconstruction marker in that case.
+An undated backup is a reported exclusion, not a fabricated chronological input.
+
+Removing a builtin account table restores its inherited settings and is recorded
+as a bounded encoding change. Removing a custom table makes that account inactive:
+one `capacity: null` encoding with `source: account_absent` identifies that state,
+with every removed setting in its reason and in the evidence manifest. It means
+the entire account is absent, **not** that capacity falls back to a tier. Restoring
+the custom table emits its settings again even when their values match those before
+removal. These events retain both backup bounds.
+
 Before live adoption, the operator must approve the concrete proposal and a backup
 of existing state. The reconstructed ledger and its marker must be in place **before
 any v3 writer is installed**, and installation must use `repo-prod`. The October 16

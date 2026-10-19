@@ -144,19 +144,35 @@ def historical_code_encodings(recorded_at: str) -> list[dict]:
     return rows
 
 
-def backup_encodings(config_dir: Path, recorded_at: str) -> tuple[list[dict], list[str]]:
+def input_summary(inputs: list[dict]) -> dict:
+    counts = Counter(item["outcome"] for item in inputs)
+    return {"attempted": len(inputs), "succeeded": counts["succeeded"], "failed": counts["failed"],
+            "excluded": counts["excluded"], "failed_by_kind": dict(Counter(
+                item["reason"] for item in inputs if item["outcome"] == "failed")), "inputs": inputs}
+
+
+def backup_encodings(config_dir: Path, recorded_at: str, *, evidence: dict | None = None) -> tuple[list[dict], list[str]]:
     """Only explicit account values are recovered; filenames carry backup stamps.
 
     A backup contains the configuration BEFORE an edit. It constrains an edit to
     an interval; it does not establish the edit happened at the filename's clock.
     Undated backups are read for validity and named as exclusions, never dated by mtime.
     """
-    backups, warnings = [], []
+    from quota_router.config import builtin_config
+
+    builtin_accounts = set(builtin_config().accounts)
+    backups, warnings, inputs, events = [], [], [], []
     for path in sorted(config_dir.glob("config.toml.bak-*")):
-        data = tomllib.loads(path.read_text())
-        accounts = data.get("accounts", {})
-        if not isinstance(accounts, dict):
-            raise ValueError(f"{path.name}: accounts must be a table")
+        try:
+            data = tomllib.loads(path.read_text())
+            accounts = data.get("accounts", {})
+            if not isinstance(accounts, dict) or any(not isinstance(values, dict) for values in accounts.values()):
+                raise ValueError("accounts and account entries must be tables")
+        except (OSError, ValueError) as exc:
+            reason = "read_error" if isinstance(exc, OSError) else "invalid_config"
+            inputs.append({"name": path.name, "outcome": "failed", "reason": reason, "detail": str(exc)})
+            warnings.append(f"{path.name}: {reason}: {exc}")
+            continue
         suffix = path.name.removeprefix("config.toml.bak-")
         if re.fullmatch(r"\d{8}T\d{6}Z", suffix):
             when = datetime.strptime(suffix, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
@@ -167,38 +183,112 @@ def backup_encodings(config_dir: Path, recorded_at: str) -> tuple[list[dict], li
             warnings.append(path.name + ": date-only stamp retains a whole UTC-day bound, not an invented instant")
         else:
             warnings.append(path.name + ": no parseable evidence timestamp; excluded from chronology (never dated by mtime)")
+            inputs.append({"name": path.name, "outcome": "excluded", "reason": "undated_backup"})
             continue
+        inputs.append({"name": path.name, "outcome": "succeeded", "earliest": earliest, "latest": latest})
         backups.append((earliest, latest, path.name, accounts))
     rows, previous = [], {}
     for earliest, latest, filename, accounts in sorted(backups):
-        for account, values in sorted(accounts.items()):
-            if not isinstance(values, dict):
-                raise ValueError(f"{filename}: account {account} must be a table")
+        for account in sorted(set(accounts) | set(previous)):
+            old_account = previous.get(account)
+            present = account in accounts
+            # Builtins survive table removal through the zero-config layer. A
+            # custom account disappears entirely; do not invent fallback values.
+            active = present or account in builtin_accounts
+            values = accounts[account] if present else {}
+            if not active:
+                if old_account["active"]:
+                    removed = {key: old_account["values"].get(key) for key in KEYS}
+                    events.append({"event": "custom_account_removed", "account": account,
+                                   "effective_from": old_account["at"], "effective_to": latest,
+                                   "removed_settings": removed, "evidence": [old_account["file"], filename]})
+                    rows.append(encoding(f"encoding-backup-{len(rows):04d}-{account}-absent", account, "capacity", None,
+                        recorded_at, latest, [old_account["file"], filename],
+                        "Custom account table removed: the account is inactive, not a tier fallback. "
+                        "No numeric setting remains active. Removed settings: " + json.dumps(removed, sort_keys=True),
+                        lower=old_account["at"], upper=latest, source="account_absent"))
+                previous[account] = {"values": old_account["values"], "at": earliest, "file": filename, "active": False}
+                continue
+            restored = old_account is not None and not old_account["active"]
+            if restored:
+                events.append({"event": "custom_account_restored", "account": account,
+                               "effective_from": old_account["at"], "effective_to": latest,
+                               "evidence": [old_account["file"], filename]})
             for key in KEYS:
                 value = values.get(key)
-                pair = (account, key)
-                old = previous.get(pair)
+                old = ((old_account["values"].get(key), old_account["at"], old_account["file"])
+                       if old_account is not None else None)
                 if old is None and value is None and key in {"weekly_to_session", "capacity"}:
                     rows.append(encoding(f"encoding-backup-{len(rows):04d}-{account}-{key}", account, key,
                         6.25 if key == "weekly_to_session" else None, recorded_at, latest, [filename],
                         "No explicit override in the first surviving backup; onset unknown. Inherited 6.25 is the code default after August 16, "
                         "not a measurement of this account; older code-default 12 is recorded separately. Unset capacity falls back to the observed tier.",
                         source="code_default" if key == "weekly_to_session" else "tier_fallback"))
-                if value is not None and (old is None or old[0] != value):
+                if value is not None and (old is None or old[0] != value or restored):
                     rows.append(encoding(f"encoding-backup-{len(rows):04d}-{account}-{key}", account, key,
                         value, recorded_at, latest, [filename] + ([old[2]] if old else []),
                         "Backup holds config before an edit: change is bounded by observations, not assigned to the backup instant."
                         if old else "First surviving explicit setting; earlier onset is unknown.",
                         lower=old[1] if old else None, upper=latest))
-                elif value is None and old is not None and old[0] is not None:
+                elif value is None and old is not None and (old[0] is not None or restored):
                     # Removing an override is itself an encoding change.
                     replacement = {"weekly_to_session": 6.25, "capacity": None, "tier": "unknown"}[key]
                     rows.append(encoding(f"encoding-backup-{len(rows):04d}-{account}-{key}", account, key,
                         replacement, recorded_at, latest, [old[2], filename],
-                        "Explicit override removed between backups; the router falls back to its code default or observed tier.",
-                        lower=old[1], upper=latest, source="code_default"))
-                previous[pair] = (value, earliest, filename)
+                        ("Custom account restored; " if restored else "Explicit override removed between backups; ") +
+                        "the router uses its code default or observed tier. A removed builtin account table remains active through the builtin layer.",
+                        lower=old[1], upper=latest, source="tier_fallback" if key == "capacity" else "code_default"))
+            previous[account] = {"values": values, "at": earliest, "file": filename, "active": True}
+    if evidence is not None:
+        evidence.update(input_summary(inputs))
+        evidence["account_events"] = events
+        evidence["snapshots"] = [{"earliest": a, "latest": b, "name": name,
+            "accounts": {account: {key: values[key] for key in KEYS if key in values}
+                         for account, values in accounts.items()}} for a, b, name, accounts in sorted(backups)]
     return rows, warnings
+
+
+def historical_coverage(backups: dict, waste_rows: list[dict], waste_inputs: dict, status_accounts: dict,
+                        have_analysis: bool) -> dict:
+    """Check the actual states that support this dated reconstruction's claims."""
+    checks = []
+
+    def check(name, passed, reason):
+        checks.append({"name": name, "outcome": "succeeded" if passed else "failed", "reason": reason})
+
+    snapshots = backups["snapshots"]
+    check("backup_chronology", len(snapshots) >= 2 and any(s["accounts"] for s in snapshots),
+          "At least two dated config snapshots with account evidence are needed to bound historical edits")
+    check("backup_reads", backups["failed"] == 0, "Every discovered backup must be readable and valid")
+    check("status_accounts", bool(status_accounts), "Saved status must contain observed account tiers")
+    check("waste_rows", bool(waste_rows) and waste_inputs["failed"] == 0,
+          "Historical waste must contain valid rows; absent, empty or malformed evidence cannot initialize detection")
+    check("gemini_analysis", have_analysis, "Both Gemini re-analysis measurements are required")
+    check("claude_c_prior_override", any(s["latest"] <= "2026-08-25T00:00:00Z" and
+          s["accounts"].get("claude_c", {}).get("weekly_to_session") == 9.8 for s in snapshots),
+          "A backup by the August 24 UTC day must support claude_c k=9.8")
+    transitions = [
+        ("antigravity_claude", "weekly_to_session", 2.0, "2026-10-12T20:50:17Z", "2026-10-12T23:51:14Z"),
+        ("antigravity_claude_b", "weekly_to_session", 2.0, "2026-10-12T23:51:14Z", "2026-10-14T17:35:30Z"),
+    ]
+    transitions += [(a, "capacity", 0.088, "2026-10-18T21:57:48Z", "2026-10-18T23:00:00Z")
+                    for a in ("antigravity_claude", "antigravity_claude_b")]
+    for account, size in (("antigravity_gemini", 1.96), ("antigravity_gemini_b", 2.24)):
+        transitions += [(account, key, value, "2026-10-19T13:42:01Z", "2026-10-19T20:33:00Z")
+                        for key, value in (("weekly_to_session", 4.0), ("capacity", size))]
+    for account, key, value, lower, upper in transitions:
+        before = [s for s in snapshots if account in s["accounts"] and s["earliest"] >= lower
+                  and s["accounts"][account].get(key) is None]
+        after = [s for s in snapshots if s["latest"] <= upper and s["accounts"].get(account, {}).get(key) == value]
+        supported = any(a["latest"] <= b["earliest"] for a in before for b in after)
+        check(account + "/" + key, supported,
+              f"Backups must support unset -> {value} for {account}/{key} within {lower} .. {upper}")
+    for account in ("antigravity_gemini", "antigravity_gemini_b"):
+        check(account + "/oct16_reset", any(r["account"] == account and r.get("window") == "7d" and
+              isinstance(r.get("reset_at_s"), (int, float)) and
+              utc("2026-10-16T00:00:00Z").timestamp() <= r["reset_at_s"] < utc("2026-10-17T00:00:00Z").timestamp()
+              for r in waste_rows), "The unresolved October 16 weekly reset must be present for " + account)
+    return input_summary(checks)
 
 
 def documented_gemini_encodings(recorded_at: str) -> list[dict]:
@@ -285,10 +375,27 @@ def build_proposal(config_dir: Path, status_file: Path, recorded_at: str, analys
         raise ValueError("The reconstruction cannot predate its status evidence")
     observed_tiers = {account["id"]: account["tier"] for account in status["accounts"]}
     historical_tiers = dict(observed_tiers)
+    waste_rows, waste_attempts, input_warnings = [], [], []
     if waste_file is not None:
-        for line_number, line in enumerate(waste_file.read_text().splitlines(), 1):
-            row = json.loads(line)
-            tier = row["basis"]["tier"] if row["v"] == 3 else row["tier"]
+        try:
+            lines = waste_file.read_text().splitlines()
+        except OSError as exc:
+            lines = []
+            waste_attempts.append({"name": waste_file.name, "outcome": "failed", "reason": "read_error", "detail": str(exc)})
+        for line_number, line in enumerate(lines, 1):
+            try:
+                row = json.loads(line)
+                if row["v"] not in (1, 2, 3) or not isinstance(row["account"], str) or not row["account"]:
+                    raise ValueError("unsupported version or invalid account")
+                tier = row["basis"]["tier"] if row["v"] == 3 else row["tier"]
+                if not isinstance(tier, str) or not tier:
+                    raise ValueError("historical tier is missing")
+            except (ValueError, KeyError, TypeError) as exc:
+                waste_attempts.append({"line": line_number, "outcome": "failed", "reason": "invalid_row", "detail": str(exc)})
+                input_warnings.append(f"Historical waste row {line_number}: invalid_row: {exc}")
+                continue
+            waste_attempts.append({"line": line_number, "outcome": "succeeded"})
+            waste_rows.append(row)
             # v1 did not store provider; canonical Claude account ids identify the
             # tier evidence without inventing a provider field in the old row.
             if (row["account"] == "claude" or row["account"].startswith("claude_")) and tier != "unknown":
@@ -300,7 +407,9 @@ def build_proposal(config_dir: Path, status_file: Path, recorded_at: str, analys
     config = load_config(explicit_path=config_dir / "config.toml", cwd="/",
                          env={"XDG_CONFIG_HOME": str(config_dir / ".no-implicit-config")})
     records = historical_measurements(recorded_at) + historical_code_encodings(recorded_at)
-    historical, warnings = backup_encodings(config_dir, recorded_at)
+    backup_evidence = {}
+    historical, warnings = backup_encodings(config_dir, recorded_at, evidence=backup_evidence)
+    warnings.extend(input_warnings)
     records.extend(historical)
     records.extend(documented_gemini_encodings(recorded_at))
     for index, value in enumerate(calibrations.loaded_values(config, observed_tiers=observed_tiers)):
@@ -336,7 +445,11 @@ def build_proposal(config_dir: Path, status_file: Path, recorded_at: str, analys
     records.extend(beliefs)
     for index, row in enumerate(records):
         calibrations.validate_record(row, records[:index])
-    return {"recorded_at": recorded_at, "complete": analysis_file is not None and waste_file is not None,
+    waste_evidence = input_summary(waste_attempts)
+    required_checks = historical_coverage(backup_evidence, waste_rows, waste_evidence, observed_tiers, analysis_file is not None)
+    warnings.extend("Incomplete reconstruction: " + item["reason"] for item in required_checks["inputs"] if item["outcome"] == "failed")
+    return {"recorded_at": recorded_at, "complete": required_checks["failed"] == 0,
+            "evidence_coverage": {"backups": backup_evidence, "waste_rows": waste_evidence, "required_checks": required_checks},
             "operator_gates": ["Approve a backup and live reconstruction before installing any v3 writer",
                                "Choose the Gemini belief for the window ending October 16; it remains unresolved"],
             "counts": dict(Counter(row["kind"] for row in records)), "warnings": warnings, "records": records}
@@ -355,7 +468,7 @@ def main() -> None:
     proposal = build_proposal(args.config_dir, args.status_file, args.recorded_at, args.gemini_analysis, args.waste_file)
     if destination is not None:
         if not proposal["complete"]:
-            raise ValueError("Cannot initialize an incomplete reconstruction; supply --gemini-analysis and --waste-file")
+            raise ValueError("Cannot initialize an incomplete reconstruction: " + "; ".join(proposal["warnings"]))
         from quota_router import calibrations
         destination.mkdir(parents=True, exist_ok=False)
         env = {"XDG_STATE_HOME": str(destination)}
