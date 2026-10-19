@@ -1407,6 +1407,8 @@ than by evidence. `waste.jsonl` is the measurement.
 quotapick waste            # per account per window: resets, observed, missed, PSE
 quotapick waste --json
 quotapick waste --backfill # re-scan retained history for resets not yet recorded
+quotapick waste --beliefs-as-of 2026-10-19T12:00:00Z --json
+quotapick calibrations --json # inspect the append-only assumption ledger
 ```
 
 ```
@@ -1423,18 +1425,83 @@ Early resets, kept out of the total above: 2 across 1 event(s), 9.94 PSE forfeit
   2026-10-11 03:57 - 03:59            codex, codex_b               3.0d-3.1d       9.94  2 accounts at once
 ```
 
-A row is written at the capacity the account had at the time, and the file is never
-rewritten. When an account's configured `capacity` later differs from a row's logged
-`tier_scale`, the report adds a section naming, per account, how many rows that is and
-what they come to at the configured size (`rescaled` and `totals_at_capacity` in
-`--json`). The logged totals above it stay as logged.
+A reset's current figure uses the value we currently believe held at that reset.
+Changing today's config alone cannot change a historical waste figure. Three layers
+keep the evidence and that judgment separate:
+
+- **Raw reset log, `waste.jsonl` v3.** The `raw` block preserves the last reading before
+  the reset and the first after, including the unrounded `used_fraction`, published
+  boundary and observation time. Fable rows also retain the weekly reading at the
+  same moment. The `basis` block holds the writer's original k, window size and its
+  source (`capacity` or `tier`), Fable fraction, logged PSE and ledger ids. The file
+  is never rewritten. A v3 upgrade of an existing occurrence copies its earliest
+  logged basis; missing historical fields remain null with reasons. V1 and v2 rows
+  remain readable, and replay always uses the logged figure.
+- **Assumption ledger, `calibrations.jsonl`.** Measurements describe experiments,
+  encodings record what the router used, and beliefs state what an account's value
+  was over an interval. Every entry has its own id and UTC `recorded_at`; reconstructed
+  entries also retain the historical evidence date. Corrections and disputes append
+  new records referencing old ones. A correction to an experiment does not itself
+  change a belief or claim that the provider changed its quota.
+- **Derived report, `quotapick waste`.** Each reset shows its logged and current
+  figures, their ledger ids and the reason for using them. The newest belief covering
+  the reset wins; intervals include their start and exclude their end. Equal recording
+  times use append order. Without a belief, the row is flagged `logged` and keeps its
+  original figure. An `unresolved` belief lists each candidate figure and excludes
+  the row from current totals. Fable uses the coupled minimum; a legacy row without
+  the necessary weekly reading stays logged with an explicit reason.
+
+JSON exposes per-reset `rows`, current `totals`, `scoped_totals`, `early_totals` and
+`early_scoped_totals`, and a parallel `logged_totals` object. It also counts
+`unresolved_rows`, `unrecomputable_rows`, `unmeasured_default_rows` and
+`unknown_basis_source_rows`. An inherited default is not evidence that somebody
+measured that account. Tier-level evidence can support an explicit account belief;
+it is never automatically applied to every provider.
+The provenance counts cover observed rows with a reported figure. Each row lists
+`assumption_provenance`, `unmeasured_default_components` and
+`unknown_basis_source_components` for k, window size, and the Fable fraction where
+applicable. A measurement for another account or another key cannot establish that
+component's provenance. Unresolved and missed rows have no reported figure to count.
+
+`--beliefs-as-of` accepts an explicit UTC instant and uses only ledger entries recorded
+**before** it. A cutoff before the first entry uses every row's logged basis and says
+so. Reports are calculated on demand and never saved back into either log.
+
+To add evidence, prepare a JSON object or array of complete ledger records and run
+`quotapick calibrations --append records.json --json`. The command validates the whole
+batch before appending and stamps `recorded_at` with the append time, including for
+reconstructed records. A measurement names its account or tier/default scope, key,
+value, spread, experiment interval, method, evidence and caveats. A belief names an
+account, its effective interval, value or labeled unresolved candidates, reasons,
+supporting/disputed measurement ids and decision maker. A weekly-pool belief pairs
+`weekly_to_session` with `window_size`, so uncertainty about one does not silently
+choose the other. The supported keys also include `capacity`, `tier`, `tier_scale`
+and `fable_fraction`. See [the ledger schema](src/quota_router/calibrations.py).
+
+After reconstruction is marked complete, each `status` compares loaded values and
+their sources with the latest encodings. A changed value is appended once as
+`unexplained`; the warning remains until an explained encoding record references its
+id through `annotates` and supplies evidence. Annotating an old change preserves its
+value and change-time bounds and cannot restore it as today's setting. Unknown or
+corrupt ledger data is reported; an invalid ledger stops waste recording for that
+status run. With no completed reconstruction, detection stays off and status emits
+one reconstruction warning instead of creating an entry for every value.
+
+**Deployment requires an operator decision.** Develop and test with scratch
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME`. Reconstruct and review the proposed ledger
+there first. Writing it into live state requires approval and a backup, and must
+precede installing any v3 writer. Only then mark reconstruction complete with
+`quotapick calibrations --mark-reconstructed "reviewed reconstruction reason"`.
+Installing the writer is a separate operator decision and runs only from `repo-prod`.
+The Gemini window ending on 2026-10-16 remains `unresolved` until the operator chooses
+its belief; preserving both candidate figures is part of the reconstruction.
 
 One line per window reset per account, written by `quotapick status` — which the poller
 already runs, so a reset is at most one poll interval stale when it is seen. Never on
 `pick`: scanning retained history costs ~130 ms once history is a month deep, and the
 launcher caps its whole routing decision at three seconds.
 
-Five things the record does deliberately:
+The record also preserves these distinctions:
 
 - **PSE as well as the fraction.** 55% of a max_20x pool and 55% of a max_5x pool are
   different amounts of lost work, so fractions cannot be summed across a fleet — and a
@@ -1445,8 +1512,9 @@ Five things the record does deliberately:
   remainder measured eight minutes out is solid; one measured seven hours out is a
   guess. Recorded rather than thresholded — picking a cutoff now would bake one reader's
   answer into a series meant to outlive the question.
-- **`k` on every row**, because it is calibrated per account and will change. A series
-  computed under one `k` must not be silently reinterpreted under a later one.
+- **Original assumptions in `basis`**, including k, because calibration changes.
+  A later belief can change the derived figure while the original figure and its
+  assumptions remain available for comparison.
 - **Idempotent on the window that ended.** A row's identity is the account, the
   window, and the boundary that window had published, so re-running — or `--backfill`
   over a longer history — cannot double-count.
@@ -1477,7 +1545,7 @@ sub-cap both expire; the five-hour window does not — it refills, so its rollov
 quota rather than losing it (see [The rule](#the-rule)). The Fable figure is a *slice of
 the same weekly pool*, so it is listed separately and never added into the total. When
 that coupling binds — the sub-cap held plenty but the weekly pool it draws on did not —
-`remaining_fraction` and `wasted_pse` on that row stop agreeing, and the row carries a
+`remaining_fraction` and `basis.wasted_pse` on that row stop agreeing, and the row carries a
 `weekly-coupled` note saying which ceiling produced the number. Without it that
 divergence is indistinguishable from an arithmetic bug six months later.
 
@@ -1517,8 +1585,9 @@ was paired with a gap of zero, as a perfect measurement.
 
 **Version 1 rows are corrected by appending, never by rewriting.** Version 1 keyed an
 early reset on the boundary that never came. That row and the version-2 row for the
-same window share an identity, and the reader keeps the higher version. The writer
-appends a version-2 row once for every reset that history still covers. A version-1 row
+same window share an identity, and the reader keeps the higher version. The v3 writer
+appends its raw readings once for every reset that history still covers, preserving
+the earliest row's conversion basis. A version-1 row
 older than history stays in the total with no `kind`, and the report counts it as
 unclassified.
 

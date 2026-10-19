@@ -18,7 +18,7 @@ from dataclasses import replace
 
 import pytest
 
-from quota_router import cli, joint, replay, scoring, waste
+from quota_router import calibrations, cli, joint, replay, scoring, waste
 from quota_router.config import ConfigError, load_config
 from quota_router.scoring import stocks_from_snapshot
 from quota_router.types import AccountSnapshot
@@ -205,7 +205,7 @@ def test_a_configured_capacity_is_stamped_on_the_waste_row(tmp_path) -> None:
 
 
 # ======================================================================================
-# Rows already logged at another size (BACKLOG #9 step 6)
+# Historical sizes require explicit beliefs (BACKLOG #24)
 # ======================================================================================
 
 
@@ -237,16 +237,18 @@ def _row(
     )
 
 
-def test_summarize_rescales_rows_logged_at_another_size_and_leaves_the_file_alone() -> None:
-    """The series is never rewritten. A row written while an account was sized at the
-    placeholder keeps its logged figure; the report rescales it to the configured
-    capacity (``wasted_pse`` is linear in ``tier_scale``) and says how many rows it
-    rescaled, per account, with both figures. A row with no ``tier_scale`` cannot be
-    rescaled and is counted as such, never guessed. A model-scoped row at another size
-    is counted and left as logged: the scoped totals are listed, not added. A missed
-    reset that somehow carries a PSE figure is admitted into neither total, as
-    ``_absorb`` already refuses it.
-    """
+def _capacity_belief():
+    return {"version": 1, "id": "ag-capacity-belief", "kind": "belief",
+            "recorded_at": "2026-08-10T00:00:00Z", "reconstructed": False,
+            "evidence_at": None, "scope": "account", "account": "antigravity_claude",
+            "key": "weekly_pool", "valid_from": None, "valid_to": None,
+            "status": "resolved", "value": {"weekly_to_session": 2.0, "window_size": MEASURED},
+            "candidates": [], "reason": "Operator judgment that this pool size held throughout",
+            "measurement_ids": [], "disputed_measurement_ids": [], "decided_by": "operator"}
+
+
+def test_summarize_applies_explicit_historical_belief_and_keeps_logged_figures() -> None:
+    """Current beliefs apply to raw remainders; current config cannot rescale history."""
     rows = (
         _row("antigravity_claude", wasted=2.0, scale=1.0),
         _row("antigravity_claude", wasted=1.0, scale=1.0, kind=waste.KIND_EARLY,
@@ -258,60 +260,38 @@ def test_summarize_rescales_rows_logged_at_another_size_and_leaves_the_file_alon
         _row("claude", wasted=3.0, scale=1.0),
         _row("codex", wasted=1.5, scale=None),
     )
-    capacities = {"antigravity_claude": MEASURED, "codex": 0.5}
-
-    summary = waste.summarize(rows, capacities=capacities)
-
-    rescaled = summary["rescaled"]
-    assert set(rescaled) == {"antigravity_claude", "codex"}
-    entry = rescaled["antigravity_claude"]
-    assert entry["capacity"] == pytest.approx(MEASURED)
-    assert entry["rows"] == 2
-    assert entry["logged_scales"] == [1.0]
-    assert entry["wasted_pse_logged"] == pytest.approx(2.0)
-    assert entry["wasted_pse_at_capacity"] == pytest.approx(2.0 * MEASURED)
-    assert entry["forfeited_pse_logged"] == pytest.approx(1.0)
-    assert entry["forfeited_pse_at_capacity"] == pytest.approx(1.0 * MEASURED)
-    assert entry["rows_without_scale"] == 0
-    assert entry["scoped_rows_not_rescaled"] == 1
-    assert rescaled["codex"]["rows"] == 0
-    assert rescaled["codex"]["rows_without_scale"] == 1
-
-    # The logged totals are what they always were; the rescaled totals sit beside them.
-    # The scoped row is in the scoped totals as logged; the missed row is in neither.
-    assert summary["totals"]["wasted_pse"] == pytest.approx(2.0 + 0.044 + 3.0 + 1.5)
-    assert summary["scoped_totals"]["wasted_pse"] == pytest.approx(0.7)
-    assert summary["early_totals"]["forfeited_pse"] == pytest.approx(1.0)
-    assert summary["totals_at_capacity"]["wasted_pse"] == pytest.approx(
-        2.0 * MEASURED + 0.044 + 3.0 + 1.5
-    )
-    assert summary["totals_at_capacity"]["forfeited_pse"] == pytest.approx(1.0 * MEASURED)
-
-    # Without configured capacities nothing is rescaled and the two totals agree, the
-    # missed row's stray figure included.
+    original = [row.to_dict() for row in rows]
     plain = waste.summarize(rows)
-    assert plain["rescaled"] == {}
-    assert plain["totals_at_capacity"]["wasted_pse"] == pytest.approx(plain["totals"]["wasted_pse"])
-    assert plain["totals_at_capacity"]["forfeited_pse"] == pytest.approx(
-        plain["early_totals"]["forfeited_pse"]
-    )
+    revised = waste.summarize(rows, ledger=[_capacity_belief()])
+    assert "rescaled" not in revised and "totals_at_capacity" not in revised
+    assert plain["totals"]["wasted_pse"] == pytest.approx(2.0 + 0.044 + 3.0 + 1.5)
+    assert revised["logged_totals"]["totals"] == plain["totals"]
+    assert revised["totals"]["wasted_pse"] == pytest.approx(2 * 0.5 * 2 * MEASURED + 3.0 + 1.5)
+    assert revised["early_totals"]["forfeited_pse"] == pytest.approx(0.5 * 2 * MEASURED)
+    # Old Fable rows lack the weekly raw reading and cannot be safely recomputed.
+    assert revised["scoped_totals"]["wasted_pse"] == pytest.approx(0.7)
+    assert revised["unrecomputable_rows"] >= 1
+    assert [row.to_dict() for row in rows] == original
 
 
-def test_a_disabled_account_is_still_rescaled_in_the_waste_report(tmp_path) -> None:
-    """Disabling a pool removes it from routing, not from the series it already wrote."""
+def test_a_disabled_account_still_uses_its_explicit_belief_in_the_waste_report(tmp_path) -> None:
+    """Routing eligibility cannot remove an account's evidence or recorded resets."""
     env = _env(tmp_path)
     waste.append_records([_row("antigravity_claude", wasted=2.0, scale=1.0)], env=env)
+    original = waste.waste_path(env).read_bytes()
+    calibrations.append_records([_capacity_belief()], env=env)
     path = _config(
         tmp_path,
         '[accounts.antigravity_claude]\nprovider = "antigravity"\nenabled = false\n'
         "capacity = 0.088\n",
     )
-
     code, out, _ = _run(["waste", "--config", str(path), "--json"], env, [], T0)
     assert code == cli.EXIT_OK
     payload = json.loads(out)
-    assert payload["rescaled"]["antigravity_claude"]["rows"] == 1
-    assert payload["totals_at_capacity"]["wasted_pse"] == pytest.approx(2.0 * MEASURED)
+    assert payload["totals"]["wasted_pse"] == pytest.approx(0.5 * 2 * MEASURED)
+    assert payload["logged_totals"]["totals"]["wasted_pse"] == 2.0
+    assert payload["rows"][0]["current"]["ledger_ids"] == ["ag-capacity-belief"]
+    assert waste.waste_path(env).read_bytes() == original
 
 
 # ======================================================================================
@@ -359,36 +339,33 @@ def test_replay_scores_a_pool_at_the_capacity_history_recorded() -> None:
     )
 
 
-def test_the_waste_command_reports_rows_logged_at_a_placeholder_size(tmp_path) -> None:
+def test_current_config_changes_alone_cannot_rescale_logged_waste(tmp_path) -> None:
     env = _env(tmp_path)
     write = waste.append_records(
-        [
-            _row("antigravity_claude", wasted=2.0, scale=1.0),
-            _row("antigravity_claude", wasted=0.99, scale=1.0, reset_at_s=T0 + 2 * SEVEN_DAYS),
-        ],
+        [_row("antigravity_claude", wasted=2.0, scale=1.0),
+         _row("antigravity_claude", wasted=0.99, scale=1.0, reset_at_s=T0 + 2 * SEVEN_DAYS)],
         env=env,
     )
     assert write.appended == 2, write
+    original = waste.waste_path(env).read_bytes()
     path = _config(
         tmp_path, '[accounts.antigravity_claude]\nprovider = "antigravity"\ncapacity = 0.088\n'
     )
-
     code, out, _ = _run(["waste", "--config", str(path)], env, [], T0)
     assert code == cli.EXIT_OK
-    assert "2.99 PSE expired unused" in out, "the logged total is still the logged total"
-    assert "logged at another size" in out
-    assert "antigravity_claude: 2 row(s) at tier_scale 1, configured capacity 0.088" in out
-    assert "0.26 PSE wasted" in out
-
+    assert "2.99 PSE expired unused" in out
+    assert "every row uses its logged basis" in out
     code, out, _ = _run(["waste", "--config", str(path), "--json"], env, [], T0)
-    payload = json.loads(out)
-    assert payload["rescaled"]["antigravity_claude"]["rows"] == 2
-    assert payload["totals"]["wasted_pse"] == pytest.approx(2.99)
-    assert payload["totals_at_capacity"]["wasted_pse"] == pytest.approx(2.99 * MEASURED)
-
-    code, out, _ = _run(["waste"], env, [], T0)
     assert code == cli.EXIT_OK
-    assert "another size" not in out, "nothing configured, nothing rescaled"
+    configured = json.loads(out)
+    assert configured["totals"]["wasted_pse"] == pytest.approx(2.99)
+    assert configured["totals"] == configured["logged_totals"]["totals"]
+    assert all(row["current"]["status"] == "logged" for row in configured["rows"])
+    assert "rescaled" not in configured and "totals_at_capacity" not in configured
+    code, out, _ = _run(["waste", "--json"], env, [], T0)
+    assert code == cli.EXIT_OK
+    assert json.loads(out)["rows"] == configured["rows"]
+    assert waste.waste_path(env).read_bytes() == original
 
 
 # ======================================================================================
@@ -492,15 +469,14 @@ def test_capacities_always_include_disabled_accounts(tmp_path) -> None:
     assert cfg.capacities() == {"antigravity_claude": pytest.approx(MEASURED)}
 
 
-def test_the_waste_text_prints_no_empty_scale_list(tmp_path) -> None:
-    """An account whose only off-size rows lack a scale gets a line about those rows,
-    not ``0 row(s) at tier_scale ,``."""
+def test_waste_preserves_unknown_historical_scale_despite_current_config(tmp_path) -> None:
     env = _env(tmp_path)
     waste.append_records([_row("codex", wasted=1.5, scale=None)], env=env)
     path = _config(tmp_path, "[accounts.codex]\ncapacity = 0.5\n")
-
-    code, out, _ = _run(["waste", "--config", str(path)], env, [], T0)
+    code, out, _ = _run(["waste", "--config", str(path), "--json"], env, [], T0)
     assert code == cli.EXIT_OK
-    assert "tier_scale ," not in out, out
-    assert "0 row(s) at tier_scale" not in out, out
-    assert "codex: 1 row(s) carry no tier_scale and cannot be rescaled" in out, out
+    row, = json.loads(out)["rows"]
+    assert row["logged"]["basis"]["window_size"] is None
+    assert row["current"]["values"]["window_size"] is None
+    assert row["current"]["wasted_pse"] == 1.5
+    assert row["current"]["status"] == "logged"

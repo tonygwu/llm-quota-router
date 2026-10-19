@@ -143,6 +143,15 @@ channel between them.
 
 ## Test-suite notes
 
+The historical calibration reconstruction is read-only by default:
+`PYTHONPATH=src ./.venv/bin/python ops/reconstruct-calibrations.py --help`.
+The Gemini re-analysis uses saved responses only:
+`./.venv/bin/python ops/reanalyze-gemini-oct12.py --help`.
+See `docs/measurements/2026-10-19-calibration-reconstruction.md` for the required
+inputs and the operator gate. Do not install the v3 waste writer until the operator
+has approved the reconstructed ledger and it has been backed up and adopted in live
+state. Develop against scratch XDG state; never rewrite `waste.jsonl`.
+
 The offline #25 demand-allocation experiment is reproducible with
 `PYTHONPATH=src ./.venv/bin/python ops/replay-demand-allocation.py`; it reads no operator
 config or state and emits JSON. See `docs/measurements/2026-10-19-demand-allocation.md`.

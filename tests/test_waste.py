@@ -836,7 +836,7 @@ def test_a_version_2_row_supersedes_the_version_1_row_that_misdated_it(env, tmp_
     rows, _ = waste.read_records(path=path)
     assert len(rows) == 2
     current = waste.current_records(rows)
-    assert [(row.version, row.kind) for row in current] == [(2, "early")]
+    assert [(row.version, row.kind) for row in current] == [(waste.WASTE_VERSION, "early")]
     summary = waste.summarize(rows)
     assert summary["totals"]["wasted_pse"] == pytest.approx(0.0)
     assert summary["totals"]["resets"] == 0

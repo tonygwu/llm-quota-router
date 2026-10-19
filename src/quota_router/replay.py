@@ -682,8 +682,8 @@ def recorded_waste(
 ) -> float:
     """Waste the series measured for these accounts' scheduled weekly resets in the window."""
     wanted = set(accounts)
-    return sum(
-        row.wasted_pse or 0.0
+    eligible = (
+        row
         for row in waste.current_records(list(rows))
         if row.account in wanted
         and row.window == WINDOW_KEY_7D
@@ -692,6 +692,13 @@ def recorded_waste(
         and (row.kind or waste.KIND_SCHEDULED) == waste.KIND_SCHEDULED
         and start_s <= (row.scheduled_reset_at_s or row.reset_at_s) < end_s
     )
+    total = 0.0
+    for row in eligible:
+        value = row.logged_basis()["wasted_pse"]
+        if value is None:
+            raise ValueError(f"{row.account}/{row.window} at {row.reset_at_s}: missing logged PSE")
+        total += value
+    return total
 
 
 def fidelity(simulated: float, recorded: float) -> bool:

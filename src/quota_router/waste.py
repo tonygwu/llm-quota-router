@@ -8,19 +8,16 @@ wastes less than the dial it replaced.
 
 WHAT IS RECORDED
 ----------------
-One line in ``waste.jsonl`` per window reset, per account. The remainder is expressed
-two ways on purpose:
+Version 3 retains the history's unrounded readings before and after a reset,
+including the simultaneous weekly reading for a Fable sub-cap. The immutable
+``basis`` records the first writer's conversion assumptions and logged PSE.
+When upgrading an occurrence, its earliest row supplies that basis; missing
+legacy fields stay unknown. No schema upgrade adopts today's configuration.
 
-* ``remaining_fraction`` -- what the vendor published, kept verbatim so a row can be
-  checked against the raw history it came from.
-* ``wasted_pse`` -- the same remainder in absolute units. 55% of a max_20x pool and 55%
-  of a max_5x pool are different amounts of lost work, so fractions cannot be summed
-  across a fleet and a fleet total is the whole point. The conversion is
-  :mod:`quota_router.pse`'s, not a second copy of it.
-
-``k`` (the weekly:session capacity ratio) is on every row because it is calibrated per
-account and will change. A series computed under one ``k`` must never be silently
-reinterpreted under a later one.
+The append-only assumption ledger in :mod:`quota_router.calibrations` records
+measurements, encodings and beliefs separately. :mod:`quota_router.waste_report`
+derives current figures at the reset time, alongside the logged figures. It
+never writes a derived report back into either durable file.
 
 ``observation_gap_s`` -- how long before the reset the last reading was taken -- is
 recorded rather than thresholded. A remainder measured eight minutes out is solid; one
@@ -80,8 +77,8 @@ for a scheduled reset). A version-1 row has the same identity as the version-2 r
 for the same window, even when version 1 misdated it.
 
 The correction is therefore appended, never written over. The writer appends a
-version-2 row for every reset that history still covers, once, and
-:func:`current_records` keeps the highest version of each identity. A version-1 row
+version-3 row for every reset that history still covers, once, and
+:func:`current_records` keeps the highest version of each identity, preserving the earliest basis. A version-1 row
 that history no longer reaches keeps ``kind: None`` and is reported as
 *unclassified*: still in the total, and counted, so a reader can see how much of the
 total predates early-reset detection.
@@ -90,7 +87,10 @@ total predates early-reset detection.
 from __future__ import annotations
 
 import json
+import fcntl
+import math
 import os
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -125,8 +125,10 @@ __all__ = [
 ]
 
 #: Record schema version (``v`` on every line). Version 2 added ``kind``,
-#: ``scheduled_reset_at``, ``first_observed_after_at`` and ``provider``.
-WASTE_VERSION: Final[int] = 2
+#: ``scheduled_reset_at``, ``first_observed_after_at`` and ``provider``. Version 3
+#: separates unrounded raw readings from the immutable original conversion basis.
+WASTE_VERSION: Final[int] = 3
+LOCK_TIMEOUT_S: Final[float] = 2.0
 
 #: The window ran to the boundary the provider had published.
 KIND_SCHEDULED: Final[str] = "scheduled"
@@ -170,11 +172,9 @@ USED_QUANTUM: Final[float] = 0.005
 #: reported with the count that was cut, never silently absorbed.
 MAX_MISSED_ENUMERATED: Final[int] = 64
 
-#: Decimal places kept on the two derived quantities, so a row a human opens reads
-#: ``0.07`` rather than ``0.06999999999999995``. This is display precision, not a cap on
-#: the measurement: the vendor publishes integer percentages, so the fraction carries two
-#: real decimals and ``k`` three significant figures, and everything past the sixth place
-#: is IEEE noise from ``1 - used``. Nothing downstream is sensitive at that scale.
+#: Compatibility precision for the derived remaining_fraction field. Version 3
+#: separately preserves full-precision used_fraction in raw.before; no new analysis
+#: should recover its input by undoing this display rounding.
 _ROUND_PLACES: Final[int] = 6
 
 
@@ -288,6 +288,8 @@ class ResetRecord:
     first_observed_after_s: float | None = None
     provider: str | None = None
     version: int = WASTE_VERSION
+    raw: Mapping[str, Any] | None = None
+    basis: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "signals", tuple(self.signals))
@@ -317,7 +319,7 @@ class ResetRecord:
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready mapping (plain types only)."""
-        return {
+        data = {
             "v": self.version,
             "account": self.account,
             "provider": self.provider,
@@ -350,6 +352,27 @@ class ResetRecord:
             "source": self.source,
             "signals": list(self.signals),
             "reason": self.reason,
+        }
+        if self.version >= 3:
+            for name in ("k", "tier", "tier_scale", "wasted_pse"):
+                del data[name]
+            data["raw"] = self.raw
+            data["basis"] = self.logged_basis()
+        return data
+
+    def logged_basis(self) -> dict[str, Any]:
+        """The original writer's conversion, never filled from today's config."""
+        if self.basis is not None:
+            return dict(self.basis)
+        return {
+            "k": self.k, "tier": self.tier, "window_size": self.tier_scale,
+            "window_size_source": None, "fable_fraction": None,
+            "wasted_pse": self.wasted_pse, "ledger_ids": None,
+            "missing_reasons": {
+                "window_size_source": "not recorded by the original writer",
+                "fable_fraction": "not recorded by the original writer",
+                "ledger_ids": "not recorded by the original writer",
+            },
         }
 
 
@@ -387,6 +410,36 @@ def record_from_dict(data: Mapping[str, Any]) -> ResetRecord | None:
         if isinstance(raw_version, int) and not isinstance(raw_version, bool)
         else 1
     )
+    basis = data.get("basis") if version >= 3 else None
+    raw = data.get("raw") if version >= 3 else None
+    if version >= 3:
+        if version != 3 or not isinstance(basis, Mapping):
+            return None
+        required = {"k", "tier", "window_size", "window_size_source", "fable_fraction",
+                    "wasted_pse", "ledger_ids", "missing_reasons"}
+        if not required.issubset(basis):
+            return None
+        for name in ("k", "window_size", "fable_fraction", "wasted_pse"):
+            value = basis[name]
+            if value is not None and (isinstance(value, bool) or
+                    not isinstance(value, (float, int)) or not math.isfinite(value)):
+                return None
+            if value is not None and (value < 0 or (name != "wasted_pse" and value == 0)):
+                return None
+        if basis["k"] is not None and basis["k"] < 1:
+            return None
+        if basis["fable_fraction"] is not None and basis["fable_fraction"] > 1:
+            return None
+        if basis["window_size_source"] not in (None, "capacity", "tier"):
+            return None
+        if basis["tier"] is not None and not isinstance(basis["tier"], str):
+            return None
+        if basis["ledger_ids"] is not None and not isinstance(basis["ledger_ids"], Mapping):
+            return None
+        if not isinstance(basis["missing_reasons"], Mapping):
+            return None
+        if raw is not None and not _valid_raw(raw):
+            return None
     signals = data.get("signals")
     return ResetRecord(
         account=account,
@@ -395,12 +448,12 @@ def record_from_dict(data: Mapping[str, Any]) -> ResetRecord | None:
         observed=bool(data.get("observed")),
         scoped=bool(data.get("scoped")),
         remaining_fraction=_optional_float("remaining_fraction"),
-        wasted_pse=_optional_float("wasted_pse"),
+        wasted_pse=basis["wasted_pse"] if basis is not None else _optional_float("wasted_pse"),
         last_observed_at_s=_optional_float("last_observed_at_s"),
         observation_gap_s=_optional_float("observation_gap_s"),
-        tier=_optional_str("tier"),
-        tier_scale=_optional_float("tier_scale"),
-        k=_optional_float("k"),
+        tier=basis["tier"] if basis is not None else _optional_str("tier"),
+        tier_scale=basis["window_size"] if basis is not None else _optional_float("tier_scale"),
+        k=basis["k"] if basis is not None else _optional_float("k"),
         source=_optional_str("source"),
         signals=tuple(s for s in signals if isinstance(s, str))
         if isinstance(signals, Sequence) and not isinstance(signals, str)
@@ -411,7 +464,33 @@ def record_from_dict(data: Mapping[str, Any]) -> ResetRecord | None:
         first_observed_after_s=_optional_float("first_observed_after_s"),
         provider=_optional_str("provider"),
         version=version,
+        basis=basis,
+        raw=raw,
     )
+
+
+def _valid_raw(raw: Any) -> bool:
+    if not isinstance(raw, Mapping) or set(raw) != {"before", "after", "weekly_before"}:
+        return False
+    for reading in raw.values():
+        if reading is None:
+            continue
+        if not isinstance(reading, Mapping) or set(reading) != {
+                "key", "used_fraction", "resets_at_s", "observed_at_s", "length_s", "applies_to"}:
+            return False
+        if not isinstance(reading["key"], str) or not isinstance(reading["applies_to"], list):
+            return False
+        if any(not isinstance(value, str) for value in reading["applies_to"]):
+            return False
+        for key in ("used_fraction", "resets_at_s", "observed_at_s", "length_s"):
+            value = reading[key]
+            if key == "observed_at_s" and value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return False
+        if not 0 <= reading["used_fraction"] <= 1 or reading["length_s"] <= 0:
+            return False
+    return True
 
 
 # ======================================================================================
@@ -426,6 +505,7 @@ class _WindowReading:
     length_s: float
     resets_at_s: float
     applies_to: frozenset[str]
+    observed_at_s: float | None = None
 
     @property
     def scoped(self) -> bool:
@@ -452,6 +532,7 @@ class _Reading:
     source: str
     provider: str | None
     windows: Mapping[str, _WindowReading]
+    window_size_source: str = "tier"
 
 
 def _window_reading(data: Mapping[str, Any]) -> _WindowReading | None:
@@ -473,6 +554,7 @@ def _window_reading(data: Mapping[str, Any]) -> _WindowReading | None:
         applies_to=frozenset(s for s in applies_to if isinstance(s, str))
         if isinstance(applies_to, Sequence) and not isinstance(applies_to, str)
         else frozenset(),
+        observed_at_s=data.get("observed_at_s"),
     )
 
 
@@ -554,6 +636,7 @@ def _series(records: Iterable[Mapping[str, Any]]) -> dict[str, list[_Reading]]:
                         else None
                     ),
                     windows=windows,
+                    window_size_source="capacity" if capacity is not None else "tier",
                 )
             )
 
@@ -673,7 +756,7 @@ def _observed_record(
         observed=True,
         scoped=window.scoped,
         remaining_fraction=round(max(0.0, 1.0 - window.used), _ROUND_PLACES),
-        wasted_pse=None if wasted is None else round(wasted, _ROUND_PLACES),
+        wasted_pse=wasted,
         last_observed_at_s=before.observed_at_s,
         first_observed_after_s=after.observed_at_s,
         observation_gap_s=max(0.0, reset_at_s - before.observed_at_s),
@@ -685,7 +768,32 @@ def _observed_record(
         reason=reason,
         kind=kind,
         provider=before.provider,
+        raw={
+            "before": _raw_window(window),
+            "after": _raw_window(after.windows[key]),
+            "weekly_before": _raw_window(before.windows.get(WINDOW_KEY_7D)),
+        },
+        basis=_basis(before, window, plan, wasted),
     )
+
+
+def _raw_window(window: _WindowReading | None) -> dict[str, Any] | None:
+    if window is None:
+        return None
+    return {"key": window.key, "used_fraction": window.used,
+            "resets_at_s": window.resets_at_s, "observed_at_s": window.observed_at_s,
+            "length_s": window.length_s, "applies_to": sorted(window.applies_to)}
+
+
+def _basis(before: _Reading, window: _WindowReading, plan: Plan,
+           wasted: float | None) -> dict[str, Any]:
+    return {
+        "k": plan.weekly_to_session, "tier": before.tier,
+        "window_size": before.tier_scale, "window_size_source": before.window_size_source,
+        "fable_fraction": plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None,
+        "wasted_pse": wasted, "ledger_ids": None,
+        "missing_reasons": {"ledger_ids": "no ledger supplied to the writer"},
+    }
 
 
 def readings_by_account(records: Iterable[Mapping[str, Any]]) -> dict[str, list[_Reading]]:
@@ -827,6 +935,9 @@ def detect_resets(
                             ),
                             kind=KIND_SCHEDULED,
                             provider=before.provider,
+                            basis=_basis(before, window, plan, None),
+                            raw={"before": _raw_window(window), "after": _raw_window(later),
+                                 "weekly_before": _raw_window(before.windows.get(WINDOW_KEY_7D))},
                         )
                     )
                 elif window.resets_at_s - after.observed_at_s > EARLY_RESET_MIN_S:
@@ -901,6 +1012,9 @@ def detect_resets(
                             k=plan.weekly_to_session,
                             kind=KIND_SCHEDULED,
                             provider=before.provider,
+                            basis=_basis(before, window, plan, None),
+                            raw={"before": _raw_window(window), "after": _raw_window(later),
+                                 "weekly_before": _raw_window(before.windows.get(WINDOW_KEY_7D))},
                             signals=("resets_at_advanced",),
                             reason=(
                                 f"unobserved: the reset time jumped "
@@ -1014,47 +1128,60 @@ def append_records(
     that a hard requirement rather than a default.
     """
     target = Path(path) if path is not None else waste_path(env)
-    existing, warnings = read_records(target)
-    seen = {record.key for record in existing if record.version >= WASTE_VERSION}
-
-    fresh: list[ResetRecord] = []
     skipped = 0
-    for record in records:
-        if record.key in seen:
-            skipped += 1
-            continue
-        seen.add(record.key)
-        fresh.append(record)
-
-    if not fresh:
-        return WasteWrite(ok=True, path=target, appended=0, skipped=skipped,
-                          warnings=warnings)
-
+    appended = 0
+    warnings: tuple[str, ...] = ()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return WasteWrite(
-            ok=False,
-            path=target,
-            skipped=skipped,
-            warnings=warnings + (f"cannot create waste directory: {exc}",),
-        )
-
-    try:
         with open(target, "a", encoding="utf-8") as handle:
-            for record in fresh:
-                handle.write(json.dumps(record.to_dict(), separators=(",", ":")) + "\n")
+            # The lock covers read, deduplication and append. Concurrent status and
+            # backfill invocations must agree on the first writer's immutable basis.
+            deadline = time.monotonic() + LOCK_TIMEOUT_S
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        return WasteWrite(ok=False, path=target, warnings=(
+                            f"waste lock timed out after {LOCK_TIMEOUT_S:g}s; no rows appended",))
+                    time.sleep(0.01)
+            existing, warnings = read_records(target)
+            if warnings:
+                return WasteWrite(ok=False, path=target, warnings=warnings + (
+                    "refusing to append behind unreadable waste rows; preserve and inspect the file",
+                ))
+            earliest: dict[tuple[str, str, str], ResetRecord] = {}
+            seen = {record.key for record in existing if record.version >= WASTE_VERSION}
+            for old in existing:
+                earliest.setdefault(old.key, old)
+            with open(target, "rb") as reader:
+                reader.seek(0, os.SEEK_END)
+                if reader.tell():
+                    reader.seek(-1, os.SEEK_END)
+                    if reader.read(1) != b"\n":
+                        handle.write("\n")
+            for record in records:
+                if record.key in seen:
+                    skipped += 1
+                    continue
+                payload = record.to_dict()
+                old = earliest.get(record.key)
+                if record.version >= 3 and old is not None:
+                    original = old.logged_basis()
+                    original["copied_from_version"] = old.version
+                    original["copied_from_occurrence"] = list(old.key)
+                    payload["basis"] = original
+                handle.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
+                seen.add(record.key)
+                appended += 1
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError as exc:
-        return WasteWrite(
-            ok=False,
-            path=target,
-            skipped=skipped,
-            warnings=warnings + (f"cannot append to waste file {target}: {exc}",),
-        )
-
-    return WasteWrite(
-        ok=True, path=target, appended=len(fresh), skipped=skipped, warnings=warnings
-    )
+        return WasteWrite(ok=False, path=target, appended=appended, skipped=skipped,
+                          warnings=warnings + (f"cannot append to waste file {target}: {exc}",))
+    return WasteWrite(ok=True, path=target, appended=appended, skipped=skipped,
+                      warnings=warnings)
 
 
 def update_from_history(
@@ -1064,6 +1191,7 @@ def update_from_history(
     path: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | None = None,
     now_s: float | None = None,
+    ledger: Sequence[Mapping[str, Any]] = (),
 ) -> WasteWrite:
     """Detect resets in a history and append the ones not already recorded.
 
@@ -1073,7 +1201,21 @@ def update_from_history(
     file-maintenance path trusted a caller-supplied clock it deleted 38 hours of data.
     """
     detection = detect_resets(records, plans=plans)
-    write = append_records(detection.records, path=path, env=env)
+    annotated = []
+    for record in detection.records:
+        payload = record.to_dict()
+        if ledger:
+            from . import calibrations
+            payload["basis"]["ledger_ids"] = calibrations.basis_ledger_ids(
+                ledger, record.account, record.reset_at_s)
+            payload["basis"]["missing_reasons"].pop("ledger_ids", None)
+        payload["basis"]["k_source"] = (
+            "config" if plans and record.account in plans else "code_default")
+        restored = record_from_dict(payload)
+        if restored is None:
+            raise ValueError("writer generated an invalid v3 reset record")
+        annotated.append(restored)
+    write = append_records(annotated, path=path, env=env)
     return WasteWrite(
         ok=write.ok,
         path=write.path,
@@ -1208,123 +1350,10 @@ def _early_events(records: Sequence[ResetRecord]) -> list[dict[str, Any]]:
     ]
 
 
-def _blank_rescale(capacity: float) -> dict[str, Any]:
-    return {
-        "capacity": capacity,
-        "rows": 0,
-        "rows_without_scale": 0,
-        "scoped_rows_not_rescaled": 0,
-        "logged_scales": set(),
-        "wasted_pse_logged": 0.0,
-        "wasted_pse_at_capacity": 0.0,
-        "forfeited_pse_logged": 0.0,
-        "forfeited_pse_at_capacity": 0.0,
-    }
-
-
 def summarize(
-    records: Iterable[ResetRecord], *, capacities: Mapping[str, float] | None = None
+    records: Iterable[ResetRecord], *, ledger: Sequence[Mapping[str, Any]] = (),
+    beliefs_as_of: str | None = None,
 ) -> dict[str, Any]:
-    """Per account per window, what expired unused, with totals in PSE.
-
-    Reads :func:`current_records`, so a corrected occurrence counts once.
-
-    Scoped sub-caps are totalled **separately**. A Fable PSE is a weekly PSE seen a
-    second time through a narrower window -- adding the two would double-count the same
-    lost work, which is the same coupling mistake :mod:`quota_router.pse` exists to
-    prevent on the routing side.
-
-    Early resets are totalled separately as well, as *forfeited* rather than wasted,
-    and grouped into ``early_events``. See the module docstring for why. A version-1 row
-    with no ``kind`` stays in the waste total and is counted as ``unclassified``.
-
-    ``capacities`` is the operator's configured ``capacity`` per account, in PSE. A row
-    written while the account was sized differently keeps its logged figure -- the file
-    is never rewritten -- and is reported again under ``rescaled``: per account, how
-    many account-wide rows were logged at another ``tier_scale``, the logged PSE and
-    the PSE at the configured capacity (``wasted_pse`` is linear in ``tier_scale``, so
-    the row's own ``k`` and ``tier_scale`` make the conversion exact). A row with no
-    ``tier_scale`` cannot be rescaled and is counted, never guessed. A model-scoped row
-    at another size is counted too (``scoped_rows_not_rescaled``) and left as logged in
-    the scoped totals, which are listed, not added. ``totals_at_capacity`` is the
-    account-wide waste and forfeit totals with every rescaled row substituted; it admits
-    exactly the rows ``totals`` and ``early_totals`` admit, so without ``capacities`` it
-    equals them.
-    """
-    current = current_records(records)
-    accounts: dict[str, dict[str, dict[str, Any]]] = {}
-    totals = _blank_bucket()
-    scoped_totals = _blank_bucket()
-    early_totals = _blank_early_bucket()
-    early_scoped_totals = _blank_early_bucket()
-    span: list[float] = []
-    configured = dict(capacities or {})
-    rescaled: dict[str, dict[str, Any]] = {}
-    at_capacity = {"wasted_pse": 0.0, "forfeited_pse": 0.0}
-
-    for record in current:
-        bucket = accounts.setdefault(record.account, {}).setdefault(
-            record.window,
-            {**_blank_bucket(), "early": 0, "forfeited_pse": 0.0, "scoped": record.scoped},
-        )
-        if record.kind == KIND_EARLY:
-            bucket["early"] += 1
-            if record.wasted_pse is not None:
-                bucket["forfeited_pse"] += record.wasted_pse
-            _absorb_early(early_scoped_totals if record.scoped else early_totals, record)
-        else:
-            _absorb(bucket, record)
-            _absorb(scoped_totals if record.scoped else totals, record)
-        span.append(record.reset_at_s)
-
-        if record.wasted_pse is None:
-            continue
-        if record.kind != KIND_EARLY and not record.observed:
-            # Mirrors _absorb: the writer never gives a missed reset a PSE figure, and a
-            # row that carries one anyway is not admitted into either total.
-            continue
-        capacity = configured.get(record.account)
-        if record.scoped:
-            scale = record.tier_scale
-            if capacity is not None and scale is not None and abs(scale - capacity) > 1e-9:
-                entry = rescaled.setdefault(record.account, _blank_rescale(capacity))
-                entry["scoped_rows_not_rescaled"] += 1
-            continue
-        value = record.wasted_pse
-        if capacity is not None:
-            entry = rescaled.setdefault(record.account, _blank_rescale(capacity))
-            scale = record.tier_scale
-            if scale is None or scale <= 0.0:
-                entry["rows_without_scale"] += 1
-            elif abs(scale - capacity) > 1e-9:
-                value = record.wasted_pse * capacity / scale
-                entry["rows"] += 1
-                entry["logged_scales"].add(scale)
-                if record.kind == KIND_EARLY:
-                    entry["forfeited_pse_logged"] += record.wasted_pse
-                    entry["forfeited_pse_at_capacity"] += value
-                else:
-                    entry["wasted_pse_logged"] += record.wasted_pse
-                    entry["wasted_pse_at_capacity"] += value
-        at_capacity["forfeited_pse" if record.kind == KIND_EARLY else "wasted_pse"] += value
-
-    for entry in rescaled.values():
-        entry["logged_scales"] = sorted(entry["logged_scales"])
-    rescaled = {
-        account_id: entry
-        for account_id, entry in rescaled.items()
-        if entry["rows"] or entry["rows_without_scale"] or entry["scoped_rows_not_rescaled"]
-    }
-
-    return {
-        "accounts": accounts,
-        "totals": totals,
-        "scoped_totals": scoped_totals,
-        "early_totals": early_totals,
-        "early_scoped_totals": early_scoped_totals,
-        "early_events": _early_events(current),
-        "rescaled": rescaled,
-        "totals_at_capacity": at_capacity,
-        "first_reset_at_s": min(span) if span else None,
-        "last_reset_at_s": max(span) if span else None,
-    }
+    """Derive an auditable report; today's config cannot reinterpret a reset."""
+    from .waste_report import summarize as derive
+    return derive(records, ledger=ledger, beliefs_as_of=beliefs_as_of)

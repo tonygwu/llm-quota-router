@@ -69,6 +69,7 @@ from . import reserve as reserve_mod
 from . import model_classes as mc
 from . import pse
 from . import waste as waste_mod
+from . import calibrations as calibrations_mod
 from .config import BANNED_EXEC_ENV, Config, ConfigError, PileupConfig, load_config
 from .state import GLOBAL_SCOPE, StateSnapshot, StateStore
 from .types import (
@@ -2580,7 +2581,8 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     """
     plans, warnings = _plans_for(config)
     records = history_mod.iter_records(env=env, include_rotated=True)
-    write = waste_mod.update_from_history(records, plans=plans, env=env)
+    ledger = calibrations_mod.read_records(env=env)
+    write = waste_mod.update_from_history(records, plans=plans, env=env, ledger=ledger)
     return warnings + list(write.warnings)
 
 
@@ -2635,6 +2637,17 @@ def _cmd_status(
 ) -> int:
     prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False)
     model_class = prepared.model.model_class
+    try:
+        calibration_notes = calibrations_mod.detect_config_changes(
+            prepared.config, env=env, now_s=now_s,
+            observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots
+                            if snapshot.windows})
+    except (calibrations_mod.LedgerError, OSError) as exc:
+        # Routing can still show usage, but no reset may acquire an unauditable basis.
+        calibration_notes = [f"calibration ledger invalid; waste recording stopped: {exc}"]
+        ledger_valid = False
+    else:
+        ledger_valid = True
 
     # Two populations of warning, and only one of them is about this reading. The waste
     # scan re-walks every retained history record on every run, so its notes describe
@@ -2643,7 +2656,7 @@ def _cmd_status(
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
     # --verbose prints both in full, and --json still carries both, in that order.
-    notes = _record_waste(prepared.config, env)
+    notes = _record_waste(prepared.config, env) if ledger_valid else []
     forecast_notes = _refresh_forecast(prepared.config, env, now_s)
     # Joint status reports refresh problems here. Own-waste pick reports an unusable
     # working rate when it needs one, so status does not repeat those warnings.
@@ -2652,7 +2665,8 @@ def _cmd_status(
         notes = notes + forecast_notes
     history_notes = tuple(dict.fromkeys(notes))
     live_warnings = tuple(
-        note for note in dict.fromkeys(prepared.warnings) if note not in set(history_notes)
+        note for note in dict.fromkeys(prepared.warnings + tuple(calibration_notes))
+        if note not in set(history_notes)
     )
     prepared.warnings = live_warnings + history_notes
 
@@ -3132,9 +3146,12 @@ def _cmd_waste(
     path = waste_mod.waste_path(env)
     records, read_warnings = waste_mod.read_records(env=env)
     warnings.extend(read_warnings)
-    # Every configured account, disabled ones included: a pool measured, configured and
-    # then disabled still has rows in the series, and its size did not change.
-    summary = waste_mod.summarize(records, capacities=config.capacities())
+    try:
+        ledger = calibrations_mod.read_records(env=env)
+        summary = waste_mod.summarize(records, ledger=ledger,
+                                     beliefs_as_of=getattr(args, "beliefs_as_of", None))
+    except (calibrations_mod.LedgerError, OSError) as exc:
+        raise ConfigError(str(exc)) from exc
     totals = summary["totals"]
     scoped = summary["scoped_totals"]
 
@@ -3235,44 +3252,34 @@ def _cmd_waste(
                 f"\n"
             )
 
-    rescaled = summary["rescaled"]
-    if rescaled:
-        # The series is never rewritten, so a row written while an account was sized
-        # at a placeholder keeps its logged figure. The report says, per account, how
-        # many rows that is and what they come to at the configured size.
+    logged = summary["logged_totals"]
+    stdout.write(
+        f"\nLogged basis: {logged['totals']['wasted_pse']:.2f} PSE expired unused; "
+        f"{logged['early_totals']['forfeited_pse']:.2f} PSE forfeited.\n"
+        f"Current beliefs: {summary['unresolved_rows']} unresolved row(s) excluded; "
+        f"{summary['unrecomputable_rows']} row(s) cannot be recomputed and remain logged.\n"
+        f"{summary['unmeasured_default_rows']} row(s) rely on an unmeasured default; "
+        f"{summary['unknown_basis_source_rows']} have an unknown original basis source.\n"
+    )
+    if summary["basis_mode"] == "logged_only_no_ledger_records":
+        stdout.write("No ledger records at this cutoff; every row uses its logged basis.\n")
+    if summary["beliefs_as_of"] is not None:
+        stdout.write(f"Beliefs recorded before {summary['beliefs_as_of']}.\n")
+    stdout.write("\nPer reset: logged PSE -> current PSE; current belief ids; original ledger ids\n")
+    for row in summary["rows"]:
+        current = row["current"]
+        original = row["logged"]
+        def figure(value):
+            return "unknown" if value is None else f"{value:.6f}"
         stdout.write(
-            "\nRows logged at another size than the account's configured capacity. The file "
-            "is never rewritten; each figure below rescales the logged PSE by "
-            "configured capacity / logged tier_scale:\n"
-        )
-        for account_id in sorted(rescaled):
-            entry = rescaled[account_id]
-            parts = []
-            if entry["rows"]:
-                scales = ", ".join(f"{scale:g}" for scale in entry["logged_scales"])
-                parts.append(
-                    f"{entry['rows']} row(s) at tier_scale {scales}, configured capacity "
-                    f"{entry['capacity']:g}: {entry['wasted_pse_at_capacity']:.2f} PSE wasted "
-                    f"and {entry['forfeited_pse_at_capacity']:.2f} forfeited at that size "
-                    f"(logged {entry['wasted_pse_logged']:.2f} and "
-                    f"{entry['forfeited_pse_logged']:.2f})"
-                )
-            if entry["rows_without_scale"]:
-                parts.append(
-                    f"{entry['rows_without_scale']} row(s) carry no tier_scale and "
-                    f"cannot be rescaled"
-                )
-            if entry["scoped_rows_not_rescaled"]:
-                parts.append(
-                    f"{entry['scoped_rows_not_rescaled']} model-scoped row(s) at another "
-                    f"size stay as logged in the scoped totals"
-                )
-            stdout.write(f"  {account_id}: " + "; ".join(parts) + "\n")
-        at_capacity = summary["totals_at_capacity"]
-        stdout.write(
-            f"  With every such row rescaled: {at_capacity['wasted_pse']:.2f} PSE expired "
-            f"unused, {at_capacity['forfeited_pse']:.2f} PSE forfeited.\n"
-        )
+            f"  {row['account']}/{row['window']} {row['reset_at']}: "
+            f"{figure(original['wasted_pse'])} -> {figure(current['wasted_pse'])} "
+            f"({current['status']}); {current['ledger_ids']}; "
+            f"logged {original['basis']['ledger_ids']}\n")
+        if current["reason"] is not None:
+            stdout.write(f"    {current['reason']}\n")
+        for candidate in current["candidates"]:
+            stdout.write(f"    {candidate['label']}: {figure(candidate['wasted_pse'])} PSE\n")
     for warning in dict.fromkeys(warnings):
         stderr.write(f"! {warning}\n")
     return EXIT_OK
@@ -3281,6 +3288,51 @@ def _cmd_waste(
 # ======================================================================================
 # Argument parsing
 # ======================================================================================
+
+
+def _cmd_calibrations(args, env, now_s, deps, stdout, stderr, cwd):
+    """Inspect or append explicit evidence and beliefs; never edit older entries."""
+    if args.append is not None:
+        try:
+            with open(args.append, encoding="utf-8") as stream:
+                submitted = calibrations_mod.parse_json(stream.read())
+        except (OSError, calibrations_mod.LedgerError) as exc:
+            raise ConfigError(f"cannot read calibration records: {exc}") from exc
+        records = submitted if isinstance(submitted, list) else [submitted]
+        stamped = []
+        for record in records:
+            if not isinstance(record, dict):
+                raise ConfigError("every calibration record must be a JSON object")
+            # recorded_at is the append time, including reconstructed evidence. Its
+            # historical clock belongs in evidence_at and the effective/valid interval.
+            stamped.append({**record, "recorded_at": calibrations_mod.format_time(now_s)})
+        try:
+            ids = calibrations_mod.append_records(stamped, env=env)
+        except (calibrations_mod.LedgerError, OSError) as exc:
+            raise ConfigError(str(exc)) from exc
+        if not args.json:
+            stdout.write(f"appended {len(ids)} calibration record(s): {', '.join(ids)}\n")
+    if args.mark_reconstructed is not None:
+        try:
+            calibrations_mod.mark_reconstruction_complete(
+                env=env, now_s=now_s, reason=args.mark_reconstructed)
+        except (calibrations_mod.LedgerError, OSError) as exc:
+            raise ConfigError(str(exc)) from exc
+    try:
+        records = calibrations_mod.read_records(env=env)
+        ready = calibrations_mod.reconstruction_ready(env=env)
+    except (calibrations_mod.LedgerError, OSError) as exc:
+        raise ConfigError(str(exc)) from exc
+    payload = {"path": str(calibrations_mod.ledger_path(env)), "records": records,
+               "reconstruction_complete": ready}
+    if args.json:
+        _dump_json(payload, stdout)
+    else:
+        stdout.write(f"{len(records)} ledger record(s); reconstruction complete: {ready}\n")
+        for record in records:
+            stdout.write(f"{record['id']} {record['kind']} {record['account'] or record['scope']} "
+                         f"{record['key']} recorded {record['recorded_at']}\n")
+    return EXIT_OK
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -3550,6 +3602,14 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="report quota that expired unused at each window reset",
     )
+    waste_parser.add_argument("--beliefs-as-of", metavar="UTC",
+                              help="use only ledger records written before this UTC instant")
+    calibration_parser = subparsers.add_parser(
+        "calibrations", parents=[common], help="inspect or append the assumption ledger")
+    calibration_parser.add_argument("--append", metavar="JSON",
+                                    help="append validated records; recorded_at is stamped now")
+    calibration_parser.add_argument("--mark-reconstructed", metavar="REASON",
+                                    help="explicitly enable encoding detection after reconstruction")
     run_parser = subparsers.add_parser(
         "run",
         help="execute one tool-less call from a JSON request on stdin; print what served it",
@@ -4552,6 +4612,7 @@ _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
     "explain": _cmd_explain,
     "calibrate": _cmd_calibrate,
     "waste": _cmd_waste,
+    "calibrations": _cmd_calibrations,
     "forecast": _cmd_forecast,
     "replay": _cmd_replay,
     "credits": _cmd_credits,

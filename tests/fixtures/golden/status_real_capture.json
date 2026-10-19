@@ -179,6 +179,7 @@
   "warnings": [
     "account 'claude_d' is configured under provider 'claude' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the claude adapter does not read declared accounts",
     "account 'codex' is configured under provider 'codex' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the codex adapter does not read declared accounts",
-    "account 'cursor' is configured under provider 'cursor' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the cursor adapter does not read declared accounts"
+    "account 'cursor' is configured under provider 'cursor' but no adapter reported it, so it cannot be routed to. Look for a warning above that names it; if there is none, the cursor adapter does not read declared accounts",
+    "calibration reconstruction is absent or incomplete; encoding detection is disabled"
   ]
 }
