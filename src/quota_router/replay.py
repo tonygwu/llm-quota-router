@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Final
 
 from . import forecast as forecast_mod
+from .demand import group_for
 from . import joint
 from . import waste
 from .pse import Plan, SESSION_LENGTH_S
@@ -260,6 +261,7 @@ def reconstruct(
     start_s: float,
     end_s: float,
     bin_s: float,
+    demand_groups: Mapping[str, str] | None = None,
 ) -> tuple[list[PoolSpec], Trace]:
     """Pools and demand for one group over ``[start_s, end_s)``.
 
@@ -278,7 +280,7 @@ def reconstruct(
     for account_id, series in sorted(readings.items()):
         series = forecast_mod.dedupe_readings(series)
         provider = next((r.provider for r in reversed(series) if r.provider), None)
-        if joint.GROUP_FOR_PROVIDER.get(provider or "") != group:
+        if group_for(account_id, provider or "", demand_groups) != group:
             continue
         weekly_series = [r for r in series if WINDOW_KEY_7D in r.windows]
         before = [r for r in weekly_series if r.observed_at_s <= start_s]
@@ -452,11 +454,11 @@ def _snapshot(pool: _Pool, t: float) -> AccountSnapshot:
     )
 
 
-def _stock(pool: _Pool, t: float) -> joint.Stock:
+def _stock(pool: _Pool, t: float, group: str | None = None) -> joint.Stock:
     spec = pool.spec
     return joint.Stock(
         id=spec.id,
-        group=joint.GROUP_FOR_PROVIDER.get(spec.provider, spec.provider),
+        group=group or group_for(spec.id, spec.provider) or spec.provider,
         kind=joint.KIND_SUBSCRIPTION,
         weekly_rem=0.0 if pool.retired else pool.weekly_rem,
         weekly_cap=spec.weekly_cap,
@@ -480,10 +482,13 @@ def _trailing_rate(trace: Trace, index: int, window_bins: int, scale: float) -> 
     return scale * total / hours, (fable / total if total > 0 else 0.0)
 
 
-def _cfg(specs: Sequence[PoolSpec], rate: float | None) -> dict[str, Any]:
+def _cfg(specs: Sequence[PoolSpec], rate: float | None, group: str | None = None) -> dict[str, Any]:
     cfg: dict[str, Any] = {
         "accounts": {s.id: {"weekly_to_session": s.plan.weekly_to_session} for s in specs},
         "min_remaining_floor": 0.02,
+        "demand_group_by_account": {
+            s.id: group or group_for(s.id, s.provider) or s.provider for s in specs
+        },
     }
     if rate is not None:
         cfg["rate_pse_per_hour"] = rate
@@ -532,15 +537,15 @@ def simulate(
         snaps = [_snapshot(p, t) for p in live]
         model_class = MODEL_CLASS_FABLE if fable else None
         if policy == "own_waste":
-            decision = select(snaps, t, _cfg(specs, None), model_class, state)
+            decision = select(snaps, t, _cfg(specs, None, group), model_class, state)
             return decision.chosen
         rate, fable_share = _trailing_rate(trace, index, window_bins, forecast_scale)
         if policy == "own_waste_measured_rate":
-            decision = select(snaps, t, _cfg(specs, rate), model_class, state)
+            decision = select(snaps, t, _cfg(specs, rate, group), model_class, state)
             return decision.chosen
         if policy == "joint":
             context = joint.JointContext(
-                stocks=[_stock(p, t) for p in pools],
+                stocks=[_stock(p, t, group) for p in pools],
                 streams=[
                     joint.Stream(group, joint.STREAM_OTHER, rate, fable_share),
                     joint.Stream(group, joint.STREAM_RUN, 0.0, 0.0),
@@ -551,7 +556,7 @@ def simulate(
                 job_pse=size,
                 fable_ids=frozenset(p.spec.id for p in pools) if fable else frozenset(),
             )
-            decision = select(snaps, t, _cfg(specs, None), model_class, state, joint=context)
+            decision = select(snaps, t, _cfg(specs, None, group), model_class, state, joint=context)
             if decision.chosen is not None:
                 result = context.score(decision.chosen)
                 clamped += bool(result is not None and result.clamped)
@@ -630,7 +635,7 @@ def _tail(
     """The same neutral drain for every policy: earliest deadline at trailing demand."""
     rate, fable_share = _trailing_rate(trace, min(index, len(trace.group_pse)), window_bins, 1.0)
     projection = joint.project(
-        [_stock(p, t) for p in pools],
+        [_stock(p, t, group) for p in pools],
         [joint.Stream(group, joint.STREAM_OTHER, rate, fable_share)],
         now_s=t,
         horizon_s=_WEEK_S,
@@ -707,6 +712,7 @@ def run_replay(
     forecast_scale: float = 1.0,
     bin_s: float = 900.0,
     without: Sequence[str] = (),
+    demand_groups: Mapping[str, str] | None = None,
 ) -> ReplayResult:
     """Replay ``policies`` over ``[count_from_s, end_s)``.
 
@@ -725,6 +731,7 @@ def run_replay(
         start_s=count_from_s,
         end_s=end_s,
         bin_s=bin_s,
+        demand_groups=demand_groups,
     )
     dropped = set(without)
     unknown = dropped - {spec.id for spec in specs}
@@ -759,7 +766,7 @@ def run_replay(
     notes = (
         "all demand in the group is treated as reroutable; some was pinned (cl records no picks)",
         "one point of a 20x weekly bar is 0.0625 PSE, so small differences are noise",
-        "PSE compares only within one provider group",
+        "PSE compares only within one demand group",
     ) + (
         (f"what-if: pools dropped, demand kept: {', '.join(sorted(dropped))}",)
         if dropped

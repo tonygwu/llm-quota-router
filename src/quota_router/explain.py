@@ -297,6 +297,7 @@ def _rows(breakdowns: Iterable[ScoreBreakdown], regime: str | None) -> list[list
                 str(index),
                 row.account_id,
                 f"{row.score:.4f}",
+                "-" if row.rate_pse_per_hour is None else f"{row.rate_pse_per_hour:.4f}",
                 format_fraction(row.min_slack),
                 (
                     "-"
@@ -336,7 +337,7 @@ def format_ranked_table(decision: Decision) -> str:
     a retry order, so a human reading the table is reading the same fallback sequence the
     machine will follow.
     """
-    headers = ("#", "account", "score", "min_slack", "min_remain", "binds", "fits", "note")
+    headers = ("#", "account", "score", "rate PSE/h", "min_slack", "min_remain", "binds", "fits", "note")
     return _render_table(headers, _rows(decision.ranked, decision.regime))
 
 
@@ -349,7 +350,7 @@ def format_excluded(decision: Decision) -> str:
 
 
 def format_rates(rates: Mapping[str, Mapping[str, Any]]) -> str:
-    """One line per provider: the working rate the waste term used, and its provenance."""
+    """One line per demand group: its budget before allocation, and its provenance."""
     lines: list[str] = []
     for provider, report in sorted(rates.items()):
         line = f"rate: {provider} {float(report['pse_per_h']):.3f} PSE/h {report['source']}"
@@ -382,7 +383,7 @@ def explain_verbose(
     """Full rendering: headline, ranked table, per-window arithmetic, exclusions.
 
     ``objective`` names what ranked the table; ``None`` is today's per-account waste.
-    ``rates`` is the working rate per provider that waste was computed at, rendered
+    ``rates`` is the working rate per demand group before allocation, rendered
     under the objective line (it plays no part under the joint objective).
     """
     blocks: list[str] = [

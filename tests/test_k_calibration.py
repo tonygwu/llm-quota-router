@@ -575,8 +575,8 @@ def test_a_configured_k_reaches_a_real_pick(tmp_path) -> None:
     it, while ``status`` stamped 9.8 on the same account's waste rows.
 
     Two identical accounts, one configured to 9.8. The weekly pool is untouched, so the
-    PSE at risk is ``k - absorbable`` and the absorbable term is the same for both: the
-    scores must differ by exactly 9.8 - 6.25.
+    PSE at risk is ``k - absorbable``. A single group budget is shared in proportion
+    to the two weekly stocks, so both the stock and its demand share depend on k.
     """
     from quota_router import cli
     from tests.test_cli import FIVE_HOURS, _NO_CONFIG_FILES, account, run, window
@@ -607,7 +607,8 @@ def test_a_configured_k_reaches_a_real_pick(tmp_path) -> None:
     payload = json.loads(out)
     scores = {row["account"]: row["score"] for row in payload["ranked"]}
 
-    assert scores["claude_c"] - scores["claude_b"] == pytest.approx(9.8 - 6.25), scores
+    assert scores["claude_b"] == pytest.approx(6.25 - 0.04 * 6.25 / 16.05 * 72.0)
+    assert scores["claude_c"] == pytest.approx(9.8 - 0.04 * 9.8 / 16.05 * 72.0)
     assert payload["decision"]["account"] == "claude_c"
 
 

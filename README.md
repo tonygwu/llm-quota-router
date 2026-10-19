@@ -31,7 +31,7 @@ fable capacity   = fable_fraction     x weekly         (0.5, documented)
 fable_remaining  = min(fable sub-cap remaining, weekly remaining)
 
 absorbable = min( what the 5h window supplies over the horizon,
-                  your working rate x the horizon )
+                  account's share of working rate x the horizon )
 
 waste      = max(0, weekly_remaining - absorbable)      ->  argmax
 ```
@@ -40,15 +40,27 @@ waste      = max(0, weekly_remaining - absorbable)      ->  argmax
 account will waste anything, drain the one whose window resets soonest.
 
 `your working rate` is measured, not assumed. `pick` reads the demand forecast that
-`status` keeps (`quotapick forecast`: both streams of the provider's group) and credits
-every account of that provider with it. When the forecast is missing, older than
+`status` keeps (`quotapick forecast`: both streams of the demand group). It shares that
+group's rate among eligible accounts in proportion to their remaining weekly PSE,
+after holds and reservations. The total is capped at 0.20 PSE/h before sharing it.
+Accounts filtered out for this request receive no share; a lone eligible account gets
+the whole rate. An idle account's share depends on its quota, not its own past demand.
+
+Antigravity has separate `antigravity_gemini` and `antigravity_claude` demand groups,
+selected by each configured account's `AGY_MODEL`, using the same rule as model routing.
+Changing a pool selector invalidates forecasts whose recorded members no longer match;
+`status` refreshes them. History records do not store the pool selector: measurement
+applies the current selector to that account's retained history. Use distinct account IDs
+for different model pools instead of repurposing an existing ID. A legacy combined
+Antigravity forecast is not reused for either group. When the forecast is missing, older than
 `[engine] forecast_max_age_s`, or below `[engine] forecast_min_coverage`, the rate falls
-back to 0.04 PSE/h, and the pick says so: a warning per provider, and a `rate` block in
-the JSON naming the rate applied, its source and the reason. The rate decides the whole
+back to 0.04 PSE/h for the group, and the pick says so: a warning per group, and a `rate`
+block in the JSON naming its budget, source and reason. `explain` shows each account's
+allocated `rate_pse_per_hour` in JSON and a `rate PSE/h` column in text. The rate decides the whole
 ranking whenever every pool looks too big to drain. On the evening of 2026-10-17 PT
 the default put `claude` (2.8 PSE left, 41h to reset) above `claude_e` (1.5 PSE left,
-8h to reset), while the measured 0.16 PSE/h said `claude` would be drained anyway and
-`claude_e` would lose 0.27 PSE. One exception: a provider whose accounts are all
+8h to reset), while the measured 0.16 PSE/h favored the earlier deadline. One exception:
+a provider whose accounts are all
 `unmetered = "fallback"` is credited with the demand it stands behind, the sum over the
 metered providers' groups, capped at the five-hour ceiling. Its own measured demand is
 an artifact of being last in line: the Antigravity pools measure 0.005 PSE/h, and at
@@ -61,6 +73,12 @@ ranked them by deadline, below every account that resets sooner, while their quo
 went unused. The `unmetered = "fallback"`
 flag keeps its other jobs: a plain pick still never returns such a pool, and
 `report-failure` still accepts it.
+
+The proportional estimate conserves one group's demand, but it does not schedule future
+work or transfer demand across groups. The [offline replay](docs/measurements/2026-10-19-demand-allocation.md)
+shows why sharing matters: two Gemini pools could each report zero waste from the same
+0.07 PSE/h workload while together leaving 7.565 PSE unused. The split predicted that
+remainder; it did not reduce total waste in that fixed-demand simulation.
 
 `tier_scale` comes from the plan tier, and an account whose tier the router cannot read
 (an Antigravity pool, for one) gets the neutral 1.0. When you have measured the real size
@@ -379,7 +397,7 @@ quotapick capabilities                   # which model each account resolves, pe
 echo '{"capability":"fast","prompt":"..."}' | quotapick run   # the router runs one call
 quotapick credits                        # API credit pool balances
 quotapick credits set anthropic_api_d --remaining 199.98 --expires 2026-10-19T00:00:00Z
-quotapick forecast                       # measured demand per provider group, PSE/h
+quotapick forecast                       # measured demand per model-pool group, PSE/h
 quotapick replay --without claude_d      # last 21 days of demand through each policy
 ```
 
@@ -1251,9 +1269,10 @@ card_on_file = false               # required; true is refused (promotional cred
 
 ### The joint objective — `[engine]`, `forecast`, `replay`
 
-Today's objective values each account alone, giving each the whole working rate. Pools
-that share one stream of work therefore both claim it, and a small pool (a $200 credit
-pool is 0.66 PSE) never wins. `[engine] objective = "joint"` instead scores each
+Today's objective gives each eligible subscription a proportional share of its group's
+working rate. It estimates each account's waste at that static share; it neither
+schedules the shared work over time nor scores API credit pools. A small credit pool
+(a $200 grant is 0.66 PSE) therefore needs the joint projection. `[engine] objective = "joint"` scores each
 candidate by the **fleet** waste a job avoids there: forecast demand is spread over every
 stock hour by hour, earliest deadline first, under each five-hour cap, and the score is
 the drop in total leftover at the deadlines. Ties, which are common, go to the earlier
@@ -1266,7 +1285,7 @@ would win only in the hours after every subscription's weekly reset has passed b
 its expiry, often less than a day per grant. A tie at zero still goes to the earlier
 deadline: nothing is saved, so credit-first would only spend credit.
 
-- `quotapick forecast` measures demand per provider group from history (`status`
+- `quotapick forecast` measures demand per model-pool group from history (`status`
   refreshes the cache every 15 minutes); a stale or thin forecast falls the decision
   back to `own_waste`, with a warning.
 - `quotapick replay` routes the last N days of real demand through each policy with the

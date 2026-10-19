@@ -4,8 +4,8 @@ Every assertion here protects a property that is *invisible at runtime* until th
 matters, which is exactly why it needs a test rather than a comment:
 
 1. **Purity.** :mod:`quota_router.scoring` and :mod:`quota_router.select` import nothing
-   but the standard library and :mod:`quota_router.types` (plus ``scoring`` itself, which
-   ``select`` builds on), and touch no process, environment, filesystem or clock. That is
+   but the standard library and their pure helpers, and touch no process, environment,
+   filesystem or clock. That is
    what lets the decision function be replayed, unit-tested at an arbitrary ``now_s``, and
    lifted into another host without dragging the oracle layer along.
 
@@ -45,10 +45,11 @@ ALL_MODULES: tuple[Path, ...] = tuple(sorted(PACKAGE_DIR.rglob("*.py")))
 
 #: The modules that must stay pure, and what each is allowed to import from the package.
 PURE_MODULES: dict[str, frozenset[str]] = {
+    "demand.py": frozenset(),
     "pse.py": frozenset({"types"}),
-    "scoring.py": frozenset({"types", "pse"}),
+    "scoring.py": frozenset({"types", "pse", "demand"}),
     "select.py": frozenset({"types", "scoring", "pse"}),
-    "joint.py": frozenset({"types", "scoring", "pse"}),
+    "joint.py": frozenset({"types", "scoring", "pse", "demand"}),
 }
 
 

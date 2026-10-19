@@ -95,7 +95,7 @@ def test_deprioritization_still_outranks_the_objective() -> None:
 def _scenario():
     """claude_b: 10% of its week left, resets in 2h. claude: 80% left, resets in 24h.
 
-    Today's objective gives each the whole working rate and picks claude, the bigger
+    Own-waste shares the default rate over both pools and picks claude, the bigger
     pile. Spread over the fleet, 0.11 PSE/h cannot drain either before its reset, so a
     job avoids the same waste on both and the earlier deadline, claude_b, wins.
     """

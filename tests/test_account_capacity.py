@@ -140,7 +140,8 @@ def test_a_configured_capacity_reaches_a_real_pick(tmp_path) -> None:
     Built like ``test_a_configured_k_reaches_a_real_pick``: the fixture goes through
     ``pick`` itself, so the key has to survive the loader, the snapshot and the scorer.
     The control run, with no config, scores the two accounts identically. With the key,
-    the 0.088 pool is too small to show any PSE at risk, so it scores zero and ranks last.
+    the 0.088 pool has much less stock and receives proportionally less demand;
+    its PSE at risk shrinks and it ranks last.
     """
     path = _config(tmp_path, "[accounts.claude_c]\ncapacity = 0.088\n")
 
@@ -167,13 +168,10 @@ def test_a_configured_capacity_reaches_a_real_pick(tmp_path) -> None:
     assert control["claude_b"] > 0.0, "the control must show PSE at risk at capacity 1.0"
 
     sized, payload = scores(["pick", "--config", str(path), "--dry-run", "--json"])
-    assert sized["claude_b"] == pytest.approx(control["claude_b"]), "the other account is untouched"
-    # Nothing is at risk in a 0.088 pool over this horizon, so the score falls to the
-    # earliest-deadline tie-break term: _DEADLINE_EPS over the hours to the weekly
-    # reset, which the fixture puts 72 hours out. Any PSE at risk would dwarf it.
-    assert sized["claude_c"] == pytest.approx(scoring._DEADLINE_EPS / 72.0), (
-        f"the configured capacity never reached the scorer: {sized}"
-    )
+    assert control["claude_b"] == pytest.approx(6.25 - 0.02 * 72.0)
+    # One 0.04 PSE/h budget is shared over 6.25 + 0.55 PSE of stock.
+    assert sized["claude_b"] == pytest.approx(6.25 - 0.04 * 6.25 / 6.8 * 72.0)
+    assert sized["claude_c"] == pytest.approx(0.55 - 0.04 * 0.55 / 6.8 * 72.0)
     assert payload["decision"]["account"] == "claude_b"
 
 

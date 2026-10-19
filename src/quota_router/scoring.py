@@ -3,7 +3,7 @@
 This module is the arithmetic half of the router. It is **pure** in the strict sense the
 project uses that word:
 
-* it imports the standard library and :mod:`quota_router.types`, nothing else,
+* it imports only the standard library and the pure types, PSE and demand helpers,
 * it never touches the filesystem, the environment, the network or the wall clock --
   every time-dependent value is derived from the ``now_s`` the caller passes in,
 * the same inputs always produce the same outputs, including tie order.
@@ -30,8 +30,9 @@ the others)::
     capacity      = the account's configured capacity, else its tier's ratio
                     (max_20x 1.0, max_5x 0.25, pro 1.0)
 
-And then one of two mandatory regimes, decided **globally** over the whole candidate
-field before anybody is scored:
+Accounts with a weekly window use the PSE waste objective, with each group's demand
+shared over its eligible weekly stocks. Without a weekly window, the fallback uses
+one of two regimes, decided **globally** before anybody is scored:
 
 ``REGIME_A`` -- some candidate has ``min_slack > 0``
     ``score = provider_weight * capacity * min_slack``. Spend the quota most at risk of
@@ -59,6 +60,7 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
+from .demand import group_for
 from .pse import MIN_WEEKLY_TO_SESSION, Plan, Stocks, rank_key, wasted_pse
 from .types import (
     MODEL_CLASS_FABLE,
@@ -440,18 +442,17 @@ def stocks_from_snapshot(
     )
 
 
-def rate_for(cfg: Any, provider: str) -> float:
-    """The working rate, in PSE per hour, to credit an account of ``provider`` with.
+def rate_for(cfg: Any, provider: str, *, group: str | None = None) -> float:
+    """The group's working rate in PSE/hour, before sharing it across accounts.
 
-    Three sources; the first one present wins:
+    Four sources; the first one present wins:
 
     1. ``rate_pse_per_hour`` -- one explicit scalar for the whole field. The replay sets
        it to score a day's decisions at that day's trailing demand.
-    2. ``rate_pse_per_hour_by_provider`` -- a mapping ``{provider: rate}``. The CLI
-       fills it from the demand forecast, one rate per provider group, so a
-       cross-provider capability pick credits each account with its own group's
-       measured demand.
-    3. :data:`DEFAULT_RATE_PSE_PER_HOUR` -- the guess documented above. The CLI reports
+    2. ``rate_pse_per_hour_by_group`` -- the CLI's demand forecast, with separate
+       Gemini and Claude-model groups for Antigravity.
+    3. ``rate_pse_per_hour_by_provider`` -- the older library caller's mapping.
+    4. :data:`DEFAULT_RATE_PSE_PER_HOUR` -- the guess documented above. The CLI reports
        every fall-through to it, because the rate decides the whole ranking whenever
        every pool looks too big to drain.
 
@@ -460,6 +461,17 @@ def rate_for(cfg: Any, provider: str) -> float:
     """
     raw = cfg_get(cfg, "rate_pse_per_hour")
     source = "rate_pse_per_hour"
+    if raw is None:
+        by_group = cfg_get(cfg, "rate_pse_per_hour_by_group")
+        if by_group is not None:
+            if not isinstance(by_group, Mapping):
+                raise ValueError(
+                    "rate_pse_per_hour_by_group must be a mapping of group to "
+                    f"PSE/hour, got {by_group!r}"
+                )
+            resolved_group = group or group_for("", provider) or provider
+            raw = by_group.get(resolved_group)
+            source = f"rate_pse_per_hour_by_group[{resolved_group!r}]"
     if raw is None:
         by_provider = cfg_get(cfg, "rate_pse_per_hour_by_provider")
         if by_provider is not None:
@@ -508,17 +520,21 @@ def account_score(
     cfg: Any = None,
     model_class: str | None = None,
     regime: str | None = REGIME_A,
+    *,
+    allocated_rate: float | None = None,
 ) -> ScoreBreakdown:
     """Score one account under one regime and explain the result.
 
     Args:
         snap: The candidate.
         now_s: Epoch seconds. Nothing here reads a clock.
-        cfg: Optional policy object/mapping; only ``provider_weights`` is consulted.
+        cfg: Optional policy object/mapping (weights, calibrated plans and demand rates).
         model_class: Which model class the call targets, gating ``applies_to`` windows.
         regime: :data:`REGIME_A` or :data:`REGIME_B`. Pass the regime :func:`decide_regime`
             chose for the whole field. ``None`` is a single-account convenience that
             derives the regime from this account alone -- never use it to score a field.
+        allocated_rate: This account's share of the group rate, computed by ``rank``.
+            Omitted for standalone scoring, where this is the only account in the field.
 
     Returns:
         A :class:`ScoreBreakdown` whose ``score`` is scaled and whose ``min_slack`` is
@@ -564,9 +580,12 @@ def account_score(
     stocks = stocks_from_snapshot(snap, now_s, capacity, plan_for(cfg, snap.id))
     applied_rate: float | None = None
     if stocks is not None:
-        # Per provider from the demand forecast (the CLI fills the map), one scalar from
-        # the replay, else the documented default. See rate_for.
-        rate = rate_for(cfg, snap.provider)
+        group = group_for(snap.id, snap.provider, cfg_get(cfg, "demand_group_by_account"))
+        rate = (
+            rate_for(cfg, snap.provider, group=group)
+            if allocated_rate is None
+            else rate_for({"rate_pse_per_hour": allocated_rate}, snap.provider)
+        )
         score, waste_pse, label = pse_objective(stocks, now_s, model_class, rate)
         objective = waste_pse
         applied_rate = min(rate, MAX_SUSTAINED_RATE_PSE_PER_HOUR)
@@ -627,8 +646,48 @@ def rank(
     """
     candidates = tuple(snapshots)
     regime = decide_regime(candidates, now_s, model_class)
-    rows = [account_score(snap, now_s, cfg, model_class, regime) for snap in candidates]
+    rates = _allocated_rates(candidates, now_s, cfg, model_class)
+    rows = [
+        account_score(snap, now_s, cfg, model_class, regime, allocated_rate=rates.get(snap.id))
+        for snap in candidates
+    ]
     if joint is not None:
         rows = list(joint.rescore(rows))
     rows.sort(key=ranking_sort_key)
     return rows
+
+
+def _allocated_rates(
+    candidates: tuple[AccountSnapshot, ...], now_s: float, cfg: Any, model_class: str | None
+) -> dict[str, float]:
+    """Share each group's budget in proportion to spendable weekly PSE.
+
+    Selection passes its eligible field here, after cooldowns, floors and capability
+    filtering. Recompute on every call: an idle account receives credit even when it
+    has never served work, and an excluded account receives none of the field's rate.
+    This is a static estimate, not the joint objective's scheduled projection.
+    """
+    groups: dict[str, list[tuple[AccountSnapshot, float]]] = {}
+    mapping = cfg_get(cfg, "demand_group_by_account")
+    for snap in candidates:
+        if not snap.available or not fits(snap, model_class):
+            continue
+        stocks = stocks_from_snapshot(snap, now_s, snap.capacity, plan_for(cfg, snap.id))
+        if stocks is None or stocks.weekly_remaining <= 0.0:
+            continue
+        group = group_for(snap.id, snap.provider, mapping) or snap.provider
+        groups.setdefault(group, []).append((snap, stocks.weekly_remaining))
+
+    rates: dict[str, float] = {}
+    for group, members in groups.items():
+        # Legacy callers can supply a provider map even for two providers in one
+        # group. Conflicting rates have no unique budget; refuse rather than use
+        # whichever account happens to appear first.
+        budgets = {rate_for(cfg, snap.provider, group=group) for snap, _ in members}
+        if len(budgets) != 1:
+            raise ValueError(f"conflicting provider demand rates for group {group!r}")
+        budget = min(budgets.pop(), MAX_SUSTAINED_RATE_PSE_PER_HOUR)
+        total = math.fsum(remaining for _, remaining in members)
+        for snap, remaining in members:
+            rates[snap.id] = budget * (remaining / total)
+    return rates

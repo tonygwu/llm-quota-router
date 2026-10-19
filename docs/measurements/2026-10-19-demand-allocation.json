@@ -1,0 +1,2197 @@
+{
+  "anchor_at_144_hours": {
+    "proportional_remaining": {
+      "antigravity_gemini": {
+        "hours_to_reset": 144.0,
+        "predicted_waste_pse": 4.603455737704918,
+        "rate_pse_per_hour": 0.03485655737704918,
+        "remaining_pse": 9.6228
+      },
+      "antigravity_gemini_b": {
+        "hours_to_reset": 144.0,
+        "predicted_waste_pse": 4.641344262295082,
+        "rate_pse_per_hour": 0.03514344262295082,
+        "remaining_pse": 9.702
+      }
+    },
+    "whole_group": {
+      "antigravity_gemini": {
+        "hours_to_reset": 144.0,
+        "predicted_waste_pse": 0.0,
+        "rate_pse_per_hour": 0.07,
+        "remaining_pse": 9.6228
+      },
+      "antigravity_gemini_b": {
+        "hours_to_reset": 144.0,
+        "predicted_waste_pse": 0.0,
+        "rate_pse_per_hour": 0.07,
+        "remaining_pse": 9.702
+      }
+    }
+  },
+  "claude_synthetic_sensitivity": [
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 0.5,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.020000000000021
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0600000000000627
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006496
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006562
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 2276,
+        "metric_pse": 6.320000000000214,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.760000000000733,
+        "switches": 31,
+        "tail_pse": 0.0,
+        "unmet_pse": 0.3399999999999994,
+        "waste_pse": 6.320000000000214
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 0.5,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.020000000000021
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0500000000000638
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006618
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006518
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 2276,
+        "metric_pse": 6.310000000000215,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.760000000000733,
+        "switches": 54,
+        "tail_pse": 0.0,
+        "unmet_pse": 0.3399999999999994,
+        "waste_pse": 6.310000000000215
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 2.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.020000000000021
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0500000000000638
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006407
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006562
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 2276,
+        "metric_pse": 6.3100000000002145,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.760000000000733,
+        "switches": 27,
+        "tail_pse": 0.0,
+        "unmet_pse": 0.3399999999999994,
+        "waste_pse": 6.3100000000002145
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3000000000000003,
+          "succeeded": 330,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 2.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.020000000000021
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0500000000000638
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006407
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.1200000000000664
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 2276,
+        "metric_pse": 6.310000000000215,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.760000000000733,
+        "switches": 31,
+        "tail_pse": 0.0,
+        "unmet_pse": 0.3399999999999994,
+        "waste_pse": 6.310000000000215
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 4.440892098500626e-16
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 6.661338147750939e-16
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 6.661338147750939e-16
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 0.5,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.0000000000000036
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001029
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 456,
+        "metric_pse": 6.200000000000049,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.800000000000175,
+        "switches": 29,
+        "tail_pse": 1.554312234475219e-14,
+        "unmet_pse": 0.2999999999999998,
+        "waste_pse": 6.200000000000034
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 4.440892098500626e-16
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 4.440892098500626e-16
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 6,
+          "served_pse": 2.9999999999999996,
+          "succeeded": 60,
+          "unmet_pse": 0.3000000000000007
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 0.5,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.0000000000000036
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.1000000000000104
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 456,
+        "metric_pse": 6.200000000000049,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.800000000000175,
+        "switches": 49,
+        "tail_pse": 1.554312234475219e-14,
+        "unmet_pse": 0.29999999999999993,
+        "waste_pse": 6.200000000000034
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 6.661338147750939e-16
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 6.661338147750939e-16
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 2.0,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.0000000000000036
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001029
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 456,
+        "metric_pse": 6.200000000000049,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.800000000000175,
+        "switches": 27,
+        "tail_pse": 1.554312234475219e-14,
+        "unmet_pse": 0.2999999999999998,
+        "waste_pse": 6.200000000000034
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 2.220446049250313e-16
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 6.661338147750939e-16
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 0,
+          "served_pse": 3.3,
+          "succeeded": 66,
+          "unmet_pse": 4.440892098500626e-16
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        }
+      ],
+      "fleet": "full",
+      "forecast_scale": 2.0,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_0",
+          "hour": 24.0,
+          "waste_pse": 4.0000000000000036
+        },
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001029
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 456,
+        "metric_pse": 6.200000000000049,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 22.800000000000175,
+        "switches": 31,
+        "tail_pse": 1.554312234475219e-14,
+        "unmet_pse": 0.2999999999999998,
+        "waste_pse": 6.200000000000034
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 35,
+          "served_pse": 2.9500000000000006,
+          "succeeded": 295,
+          "unmet_pse": 0.34999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 45,
+          "served_pse": 2.8500000000000005,
+          "succeeded": 285,
+          "unmet_pse": 0.44999999999999973
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 0.5,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0600000000000627
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006318
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.1200000000000664
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1862,
+        "metric_pse": 2.300000000000192,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.620000000000104,
+        "switches": 22,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.479999999999995,
+        "waste_pse": 2.300000000000192
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 46,
+          "served_pse": 2.8400000000000007,
+          "succeeded": 284,
+          "unmet_pse": 0.45999999999999974
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 0.5,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0600000000000627
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006407
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006551
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1862,
+        "metric_pse": 2.300000000000192,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.620000000000104,
+        "switches": 19,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.479999999999995,
+        "waste_pse": 2.300000000000192
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 46,
+          "served_pse": 2.8400000000000007,
+          "succeeded": 284,
+          "unmet_pse": 0.45999999999999974
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 2.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0600000000000627
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006407
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006551
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1862,
+        "metric_pse": 2.300000000000192,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.620000000000104,
+        "switches": 17,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.479999999999995,
+        "waste_pse": 2.300000000000192
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 330,
+          "day": 1,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 2,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 3,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 4,
+          "failed": 34,
+          "served_pse": 2.960000000000001,
+          "succeeded": 296,
+          "unmet_pse": 0.33999999999999964
+        },
+        {
+          "attempted": 330,
+          "day": 5,
+          "failed": 46,
+          "served_pse": 2.8400000000000007,
+          "succeeded": 284,
+          "unmet_pse": 0.45999999999999974
+        },
+        {
+          "attempted": 330,
+          "day": 6,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        },
+        {
+          "attempted": 330,
+          "day": 7,
+          "failed": 133,
+          "served_pse": 1.9700000000000006,
+          "succeeded": 197,
+          "unmet_pse": 1.3299999999999996
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 2.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0600000000000627
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.12000000000006407
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.12000000000006551
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1862,
+        "metric_pse": 2.300000000000192,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.620000000000104,
+        "switches": 21,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.479999999999995,
+        "waste_pse": 2.300000000000192
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.3000000000000004
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 10,
+          "served_pse": 2.8,
+          "succeeded": 56,
+          "unmet_pse": 0.5000000000000006
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 0.5,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001018
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 376,
+        "metric_pse": 2.200000000000031,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.800000000000118,
+        "switches": 19,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.299999999999999,
+        "waste_pse": 2.200000000000031
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 10,
+          "served_pse": 2.8,
+          "succeeded": 56,
+          "unmet_pse": 0.5000000000000006
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 0.5,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001018
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 376,
+        "metric_pse": 2.200000000000031,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.800000000000118,
+        "switches": 19,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.299999999999999,
+        "waste_pse": 2.200000000000031
+      },
+      "rule": "proportional_remaining"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 10,
+          "served_pse": 2.8,
+          "succeeded": 56,
+          "unmet_pse": 0.5000000000000006
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 2.0,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001018
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 376,
+        "metric_pse": 2.200000000000031,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.800000000000118,
+        "switches": 17,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.299999999999999,
+        "waste_pse": 2.200000000000031
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 66,
+          "day": 1,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.3000000000000005
+        },
+        {
+          "attempted": 66,
+          "day": 2,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 3,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.30000000000000016
+        },
+        {
+          "attempted": 66,
+          "day": 4,
+          "failed": 6,
+          "served_pse": 3.0,
+          "succeeded": 60,
+          "unmet_pse": 0.3000000000000005
+        },
+        {
+          "attempted": 66,
+          "day": 5,
+          "failed": 10,
+          "served_pse": 2.8,
+          "succeeded": 56,
+          "unmet_pse": 0.5000000000000006
+        },
+        {
+          "attempted": 66,
+          "day": 6,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        },
+        {
+          "attempted": 66,
+          "day": 7,
+          "failed": 26,
+          "served_pse": 2.0,
+          "succeeded": 40,
+          "unmet_pse": 1.3000000000000003
+        }
+      ],
+      "fleet": "one_20x_removed",
+      "forecast_scale": 2.0,
+      "job_pse": 0.05,
+      "reset_waste": [
+        {
+          "account": "claude_1",
+          "hour": 72.0,
+          "waste_pse": 2.0000000000000107
+        },
+        {
+          "account": "claude_2",
+          "hour": 120.0,
+          "waste_pse": 0.10000000000000984
+        },
+        {
+          "account": "claude_3",
+          "hour": 168.0,
+          "waste_pse": 0.10000000000001018
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 376,
+        "metric_pse": 2.200000000000031,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 18.800000000000118,
+        "switches": 21,
+        "tail_pse": 0.0,
+        "unmet_pse": 4.299999999999999,
+        "waste_pse": 2.200000000000031
+      },
+      "rule": "proportional_remaining"
+    }
+  ],
+  "gemini": [
+    {
+      "daily": [
+        {
+          "attempted": 168,
+          "day": 1,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 3.7668983606557376,
+                "rate_pse_per_hour": 0.03485655737704918,
+                "remaining_pse": 9.6228
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 3.7979016393442624,
+                "rate_pse_per_hour": 0.03514344262295082,
+                "remaining_pse": 9.702
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 9.6228
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 9.702
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 2,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 3.405291838955411,
+                "rate_pse_per_hour": 0.03151047334058768,
+                "remaining_pse": 7.9428000000000365
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 4.159508161044625,
+                "rate_pse_per_hour": 0.038489526659412326,
+                "remaining_pse": 9.702
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.9428000000000365
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 9.702
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 3,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 3.5551451593506096,
+                "rate_pse_per_hour": 0.03289712367207863,
+                "remaining_pse": 7.502800000000045
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 4.009654840649461,
+                "rate_pse_per_hour": 0.03710287632792138,
+                "remaining_pse": 8.462000000000026
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.502800000000045
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 0.062000000000026034,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 8.462000000000026
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 4,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 3.7879075268817726,
+                "rate_pse_per_hour": 0.03505096326164875,
+                "remaining_pse": 7.1528000000000524
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 3.776892473118333,
+                "rate_pse_per_hour": 0.034949036738351265,
+                "remaining_pse": 7.132000000000055
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 0.4328000000000518,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.1528000000000524
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 0.4120000000000541,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.132000000000055
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 5,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 3.7346278750952733,
+                "rate_pse_per_hour": 0.03455794617923332,
+                "remaining_pse": 6.222800000000072
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 3.8301721249048692,
+                "rate_pse_per_hour": 0.035442053820766685,
+                "remaining_pse": 6.382000000000071
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 1.1828000000000713,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 6.222800000000072
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 1.3420000000000698,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 6.382000000000071
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 6,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 3.8242235500879618,
+                "rate_pse_per_hour": 0.035387009373169284,
+                "remaining_pse": 5.522800000000087
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 3.7405764499122167,
+                "rate_pse_per_hour": 0.03461299062683072,
+                "remaining_pse": 5.402000000000092
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 2.162800000000087,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 5.522800000000087
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 2.0420000000000913,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 5.402000000000092
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 7,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 3.725447975077988,
+                "rate_pse_per_hour": 0.034473001038421616,
+                "remaining_pse": 4.552800000000107
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 3.8393520249222255,
+                "rate_pse_per_hour": 0.035526998961578383,
+                "remaining_pse": 4.692000000000107
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 2.872800000000107,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 4.552800000000107
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 3.0120000000001066,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 4.692000000000107
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        }
+      ],
+      "forecast_scale": 1.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "antigravity_gemini",
+          "hour": 168.0,
+          "waste_pse": 3.7728000000001245
+        },
+        {
+          "account": "antigravity_gemini_b",
+          "hour": 168.0,
+          "waste_pse": 3.792000000000126
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1176,
+        "metric_pse": 15.324800000000224,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 11.759999999999794,
+        "switches": 25,
+        "tail_pse": 7.759999999999973,
+        "unmet_pse": 0.0,
+        "waste_pse": 7.56480000000025
+      },
+      "rule": "whole_group"
+    },
+    {
+      "daily": [
+        {
+          "attempted": 168,
+          "day": 1,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 3.7668983606557376,
+                "rate_pse_per_hour": 0.03485655737704918,
+                "remaining_pse": 9.6228
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 3.7979016393442624,
+                "rate_pse_per_hour": 0.03514344262295082,
+                "remaining_pse": 9.702
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 9.6228
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 168.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 9.702
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 2,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 3.7782842219804307,
+                "rate_pse_per_hour": 0.034961915125136016,
+                "remaining_pse": 8.812800000000017
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 3.786515778019605,
+                "rate_pse_per_hour": 0.035038084874863984,
+                "remaining_pse": 8.832000000000019
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 8.812800000000017
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 144.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 8.832000000000019
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 3,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 3.739943716175622,
+                "rate_pse_per_hour": 0.03460713569853679,
+                "remaining_pse": 7.892800000000037
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 3.824856283824449,
+                "rate_pse_per_hour": 0.03539286430146321,
+                "remaining_pse": 8.072000000000035
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.892800000000037
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 120.0,
+                "predicted_waste_pse": 0.0,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 8.072000000000035
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 4,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 3.809090322580697,
+                "rate_pse_per_hour": 0.0352469758064516,
+                "remaining_pse": 7.192800000000051
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 3.755709677419408,
+                "rate_pse_per_hour": 0.0347530241935484,
+                "remaining_pse": 7.092000000000055
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 0.47280000000005007,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.192800000000051
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 96.0,
+                "predicted_waste_pse": 0.37200000000005407,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 7.092000000000055
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 5,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 3.824650723533962,
+                "rate_pse_per_hour": 0.035390962173140375,
+                "remaining_pse": 6.372800000000069
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 3.7401492764661803,
+                "rate_pse_per_hour": 0.03460903782685963,
+                "remaining_pse": 6.232000000000074
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 1.3328000000000682,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 6.372800000000069
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 72.0,
+                "predicted_waste_pse": 1.192000000000073,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 6.232000000000074
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 6,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 3.7896014059754837,
+                "rate_pse_per_hour": 0.03506663737551259,
+                "remaining_pse": 5.472800000000088
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 3.775198594024695,
+                "rate_pse_per_hour": 0.034933362624487416,
+                "remaining_pse": 5.4520000000000906
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 2.112800000000088,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 5.472800000000088
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 48.0,
+                "predicted_waste_pse": 2.0920000000000902,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 5.4520000000000906
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        },
+        {
+          "attempted": 168,
+          "day": 7,
+          "failed": 0,
+          "same_state_prediction": {
+            "proportional_remaining": {
+              "antigravity_gemini": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 3.7827273104881645,
+                "rate_pse_per_hour": 0.035003028729664244,
+                "remaining_pse": 4.622800000000106
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 3.78207268951205,
+                "rate_pse_per_hour": 0.03499697127033576,
+                "remaining_pse": 4.622000000000108
+              }
+            },
+            "whole_group": {
+              "antigravity_gemini": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 2.942800000000106,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 4.622800000000106
+              },
+              "antigravity_gemini_b": {
+                "hours_to_reset": 24.0,
+                "predicted_waste_pse": 2.942000000000108,
+                "rate_pse_per_hour": 0.07,
+                "remaining_pse": 4.622000000000108
+              }
+            }
+          },
+          "served_pse": 1.6800000000000002,
+          "succeeded": 168,
+          "unmet_pse": 0.0
+        }
+      ],
+      "forecast_scale": 1.0,
+      "job_pse": 0.01,
+      "reset_waste": [
+        {
+          "account": "antigravity_gemini",
+          "hour": 168.0,
+          "waste_pse": 3.8628000000001226
+        },
+        {
+          "account": "antigravity_gemini_b",
+          "hour": 168.0,
+          "waste_pse": 3.702000000000128
+        }
+      ],
+      "result": {
+        "clamped": 0,
+        "forfeited_pse": 0.0,
+        "jobs": 1176,
+        "metric_pse": 15.324800000000224,
+        "observed_waste_pse": 0.0,
+        "policy": "own_waste_measured_rate",
+        "served_pse": 11.759999999999794,
+        "switches": 35,
+        "tail_pse": 7.759999999999973,
+        "unmet_pse": 0.0,
+        "waste_pse": 7.56480000000025
+      },
+      "rule": "proportional_remaining"
+    }
+  ],
+  "kind": "offline_synthetic_counterfactual",
+  "limitations": [
+    "Synthetic demand and deadlines, not an observed historical replay or #3 gate.",
+    "Fixed weekly resets; no claim about Antigravity's sliding/early resets.",
+    "One Gemini demand group; model-specific grouping is outside this measurement.",
+    "Failure counts are unserved job-sized demand chunks; no network requests occur.",
+    "Production selection, hysteresis, five-hour caps, 2% floor, and replay are retained.",
+    "Tail uses the production neutral projection; compare waste and unmet separately."
+  ],
+  "scenario": {
+    "bin_hours": 1,
+    "duration_days": 7,
+    "gemini_rate_pse_per_hour": 0.07,
+    "gemini_weekly_cap_pse": {
+      "antigravity_gemini": 9.72,
+      "antigravity_gemini_b": 9.8
+    },
+    "initial_used_fraction": 0.01,
+    "warmup_days": 7
+  },
+  "schema": 1
+}

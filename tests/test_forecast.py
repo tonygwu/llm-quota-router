@@ -1,4 +1,4 @@
-"""The demand forecast: how much work, in PSE per hour, each provider group runs.
+"""The demand forecast: how much work, in PSE per hour, each model-pool group runs.
 
 The joint projection spreads this forecast over the fleet's stocks, so every number
 here becomes routing. What it must get right:

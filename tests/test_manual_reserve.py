@@ -168,7 +168,7 @@ def test_with_spendable_below_the_floor_pick_routes_to_the_second_account(env) -
     payload = pick(
         ["pick", "--only", "codex,codex_b", "--min-remaining", "0.5", "--dry-run"],
         env,
-        snapshots=[codex(), codex_b()],
+        snapshots=[codex(), codex_b(used=0.4)],
     )
     assert payload["decision"]["account"] == "codex_b", payload["decision"]
     reason = next(row["reason"] for row in payload["excluded"] if row["account"] == "codex")
@@ -181,16 +181,16 @@ def test_without_a_reserve_the_same_floor_keeps_the_first_account(env) -> None:
     payload = pick(
         ["pick", "--only", "codex,codex_b", "--min-remaining", "0.5", "--dry-run"],
         env,
-        snapshots=[codex(), codex_b()],
+        snapshots=[codex(), codex_b(used=0.4)],
     )
     assert payload["decision"]["account"] == "codex", payload["decision"]
 
 
 def test_routing_still_spends_the_surplus_above_the_reserve(env) -> None:
-    """39% spendable clears the default floor, and codex resets first, so it is spent first."""
+    """39% spendable stays usable beside a peer with only 10% left."""
     write_config(env, SECOND_CODEX + RATE_ON_CODEX)
     payload = pick(
-        ["pick", "--only", "codex,codex_b", "--dry-run"], env, snapshots=[codex(), codex_b()]
+        ["pick", "--only", "codex,codex_b", "--dry-run"], env, snapshots=[codex(), codex_b(used=0.9)]
     )
     assert payload["decision"]["account"] == "codex", payload["decision"]
 

@@ -46,7 +46,7 @@ def codex(used: float = 0.28, days: float = 6.6) -> AccountSnapshot:
     return AccountSnapshot(id="codex", windows=(weekly(used, days),), tier="pro", source=SOURCE_LIVE)
 
 
-def codex_b(used: float = 0.0, days: float = 7.0) -> AccountSnapshot:
+def codex_b(used: float = 0.28, days: float = 7.0) -> AccountSnapshot:
     return AccountSnapshot(id="codex_b", windows=(weekly(used, days),), tier="pro", source=SOURCE_LIVE)
 
 
@@ -114,7 +114,7 @@ def test_deprioritize_on_an_account_the_router_cannot_read_is_refused(env, tmp_p
 
 
 def test_without_the_key_the_first_account_wins(env) -> None:
-    """The control: with these inputs codex wins on its own numbers (it resets first)."""
+    """Equal stocks share demand equally; the earlier reset makes codex lead."""
     write_config(env, SECOND_CODEX)
     payload = pick(PICK, env, snapshots=[codex(), codex_b()])
     assert payload["decision"]["account"] == "codex", payload["decision"]

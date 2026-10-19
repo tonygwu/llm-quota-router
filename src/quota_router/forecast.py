@@ -1,4 +1,4 @@
-"""Demand forecast: how much work each provider group runs, in PSE per hour.
+"""Demand forecast: how much work each model-pool group runs, in PSE per hour.
 
 The joint objective (``[engine] objective = "joint"``) projects
 the fleet's stocks forward and spreads forecast demand over them. This module measures
@@ -23,7 +23,8 @@ served by a credit pool never touched a subscription window. A configured manual
 already removes its quota from the stock, so it is subtracted from ``other`` too, or the
 projection would count the operator's own use twice.
 
-Groups never mix: a Codex window's rise is Codex demand, never Claude demand.
+Groups never mix: a Codex window's rise is Codex demand, never Claude demand, and the
+configured Gemini and Claude-model pools behind Antigravity have separate demand.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from typing import Any, Final
 
 from . import waste
 from .history import history_path
-from .joint import GROUP_FOR_PROVIDER
+from .demand import group_for
 from .pse import Plan
 from .types import MODEL_CLASS_FABLE, WINDOW_KEY_7D
 
@@ -68,7 +69,7 @@ class StreamRate:
 
 @dataclass(frozen=True, slots=True)
 class GroupForecast:
-    """Demand of one provider group.
+    """Demand of one model-pool group.
 
     Args:
         other: Work that reaches subscriptions only (``pick``, ``cl``, ``cdx``, library).
@@ -279,6 +280,7 @@ def measure(
     now_s: float,
     window_s: float = DEFAULT_WINDOW_S,
     manual_rates: Mapping[str, float],
+    demand_groups: Mapping[str, str] | None = None,
 ) -> Forecast:
     """Measure demand per group over ``[now_s - window_s, now_s]``.
 
@@ -290,6 +292,8 @@ def measure(
         now_s: End of the window. The caller's clock, never read here.
         window_s: Look-back.
         manual_rates: ``manual_rate_per_day`` per account, a fraction of the weekly pool.
+        demand_groups: Configured account-to-group assignments, including disabled
+            accounts whose readings still contribute to demand.
     """
     if window_s <= 0:
         raise ValueError(f"window_s must be positive, got {window_s}")
@@ -302,7 +306,7 @@ def measure(
     for account_id, readings in sorted(waste.readings_by_account(materialized).items()):
         deduped = dedupe_readings(readings)
         provider = next((r.provider for r in reversed(deduped) if r.provider), None)
-        group = GROUP_FOR_PROVIDER.get(provider or "")
+        group = group_for(account_id, provider or "", demand_groups)
         # No weekly window, no demand to measure: Cursor, and API credit pools, whose
         # spend arrives through `run` lines instead.
         if group is None or not any(WINDOW_KEY_7D in r.windows for r in deduped):
@@ -438,6 +442,21 @@ class Refresh:
     warnings: tuple[str, ...] = ()
 
 
+def grouping_problem(cached: Forecast, groups: Mapping[str, str] | None) -> str | None:
+    """Reject rates measured under a different configured account-to-group assignment."""
+    if groups is None:
+        return None
+    for group, measured in cached.groups.items():
+        for account_id in measured.accounts:
+            expected = groups.get(account_id)
+            if expected is not None and expected != group:
+                return (
+                    f"demand forecast grouping changed: {account_id} was in {group}, "
+                    f"now in {expected}; refresh with `quotapick forecast --refresh`"
+                )
+    return None
+
+
 def refresh_if_due(
     load_records: Callable[[], Iterable[Mapping[str, Any]]],
     *,
@@ -447,6 +466,7 @@ def refresh_if_due(
     window_s: float,
     refresh_s: float,
     env: Mapping[str, str] | None = None,
+    demand_groups: Mapping[str, str] | None = None,
 ) -> Refresh:
     """Recompute and rewrite the cache when it is missing, stale, or from the future.
 
@@ -456,10 +476,11 @@ def refresh_if_due(
     cached, _problem = read_cache(env=env)
     if cached is not None:
         age = now_s - cached.computed_at_s
-        if 0 <= age < refresh_s:
+        if 0 <= age < refresh_s and grouping_problem(cached, demand_groups) is None:
             return Refresh(refreshed=False, forecast=cached)
     result = measure(
-        load_records(), plans=plans, now_s=now_s, window_s=window_s, manual_rates=manual_rates
+        load_records(), plans=plans, now_s=now_s, window_s=window_s,
+        manual_rates=manual_rates, demand_groups=demand_groups,
     )
     try:
         write_cache(result, env=env)

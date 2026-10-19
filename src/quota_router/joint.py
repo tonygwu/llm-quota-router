@@ -1,10 +1,9 @@
 """The joint projection: how much fleet waste one job avoids.
 
-Today's objective (:func:`quota_router.scoring.pse_objective`) values each account alone,
-as if the whole working rate flowed into it. A small pool -- a $200 API credit pool is
-about 0.66 PSE -- therefore projects no waste and loses every pick until it expires, and
-two pools that share one stream of work both claim it. This module projects the **fleet**
-instead:
+The own-waste objective (:func:`quota_router.scoring.pse_objective`) splits each group's
+working rate in proportion to its eligible accounts' remaining weekly quota. That static
+allocation does not model how future work moves after a deadline, and API credit pools
+have no weekly window for it to score. This module projects the **fleet** through time:
 
 ``V(S)``
     Spread forecast demand over every stock, hour by hour, earliest deadline first, under
@@ -26,7 +25,7 @@ Stocks and streams:
   pile: Fable leftover is part of weekly leftover.
 * The five-hour window is a flow cap, not a stock. A new window opens at first use.
 * An API credit pool is a stock with no five-hour cap that retires at its expiry.
-* Demand comes in two streams per provider group. ``other`` work (``pick``, ``cl``,
+* Demand comes in two streams per model-pool group. ``other`` work (``pick``, ``cl``,
   ``cdx``, the library) reaches subscriptions only; ``run`` work (``quotapick run``) may
   reach credit pools too. Groups never trade demand.
 
@@ -43,6 +42,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
+from .demand import GROUP_FOR_PROVIDER, group_for
 from .pse import SESSION_LENGTH_S, Plan
 from .scoring import ranking_sort_key, stocks_from_snapshot
 from .types import AccountSnapshot, ScoreBreakdown, WINDOW_KEY_5H
@@ -57,14 +57,6 @@ STREAM_RUN: Final[str] = "run"
 SERVES: Final[Mapping[str, frozenset[str]]] = {
     STREAM_OTHER: frozenset({KIND_SUBSCRIPTION}),
     STREAM_RUN: frozenset({KIND_SUBSCRIPTION, KIND_CREDIT}),
-}
-
-#: Provider -> demand group. A provider not listed carries no measurable demand.
-GROUP_FOR_PROVIDER: Final[Mapping[str, str]] = {
-    "claude": "claude",
-    "codex": "codex",
-    "antigravity": "antigravity",
-    "anthropic_api": "claude",
 }
 
 #: A non-refilling deadline past the default horizon (a credit pool expiring in three
@@ -163,6 +155,7 @@ def subscription_stock(
     plan: Plan | None,
     refills: bool,
     available_from_s: float | None = None,
+    group: str | None = None,
 ) -> Stock | None:
     """A subscription's stock from one snapshot, or None without a weekly window.
 
@@ -194,7 +187,7 @@ def subscription_stock(
         weekly_rem, fable_rem = weekly_cap, fable_cap
     return Stock(
         id=snap.id,
-        group=GROUP_FOR_PROVIDER.get(snap.provider, snap.provider),
+        group=group or group_for(snap.id, snap.provider) or snap.provider,
         kind=KIND_SUBSCRIPTION,
         weekly_rem=weekly_rem,
         weekly_cap=weekly_cap,

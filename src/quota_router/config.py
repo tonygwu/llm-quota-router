@@ -37,6 +37,7 @@ from typing import Any, Final
 
 from . import capability as capability_mod
 from . import model_classes as mc
+from .demand import group_for
 from .pse import MIN_WEEKLY_TO_SESSION
 from .types import (
     PROVIDER_ANTIGRAVITY,
@@ -1076,6 +1077,17 @@ class Config:
             return float(account.calls_per_window)
         return float(self.pileup.calls_per_window)
 
+    def demand_groups(self) -> dict[str, str]:
+        """Account groups, including disabled accounts whose history still measures use."""
+        groups: dict[str, str] = {}
+        for account in self.accounts.values():
+            group = group_for(account.id, account.provider)
+            if account.provider == PROVIDER_ANTIGRAVITY:
+                group = f"antigravity_{capability_mod.antigravity_flavour(account)}"
+            if group is not None:
+                groups[account.id] = group
+        return groups
+
     def engine_cfg(self, *, sticky: bool = True) -> dict[str, Any]:
         """The policy view the pure decision layer reads.
 
@@ -1090,6 +1102,7 @@ class Config:
         """
         return {
             "provider_weights": dict(self.providers),
+            "demand_group_by_account": self.demand_groups(),
             "tier_capacities": dict(self.tiers),
             "min_remaining_floor": self.eligibility.min_remaining,
             "min_dwell_calls": self.hysteresis.min_dwell_calls if sticky else 0,

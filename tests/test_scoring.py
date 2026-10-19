@@ -493,7 +493,7 @@ def test_per_window_rows_explain_the_binding_choice() -> None:
 
 
 def test_scoring_module_is_pure() -> None:
-    """scoring.py imports the stdlib and ``types`` -- nothing else, and no clock."""
+    """scoring.py imports only stdlib and pure helpers, and no clock."""
     import quota_router.scoring as module
 
     source = Path(module.__file__).read_text(encoding="utf-8")
@@ -505,9 +505,9 @@ def test_scoring_module_is_pure() -> None:
         elif isinstance(node, ast.ImportFrom):
             roots.add(("." * node.level) + (node.module or "").split(".")[0])
 
-    # ``.pse`` is itself a pure module (stdlib + .types only, enforced by
-    # tests/test_portability.py), so depending on it does not compromise purity.
-    assert roots <= {"__future__", "math", "collections", "typing", "dataclasses", ".types", ".pse"}, roots
+    # The .pse and .demand dependencies are pure too, enforced recursively by
+    # tests/test_portability.py.
+    assert roots <= {"__future__", "math", "collections", "typing", "dataclasses", ".types", ".pse", ".demand"}, roots
     forbidden_roots = ("os", "sys", "subprocess", "pathlib", "time", "datetime", "socket")
     for forbidden in forbidden_roots:
         assert forbidden not in roots

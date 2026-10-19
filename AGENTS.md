@@ -143,6 +143,10 @@ channel between them.
 
 ## Test-suite notes
 
+The offline #25 demand-allocation experiment is reproducible with
+`PYTHONPATH=src ./.venv/bin/python ops/replay-demand-allocation.py`; it reads no operator
+config or state and emits JSON. See `docs/measurements/2026-10-19-demand-allocation.md`.
+
 `pytest` runs straight from a checkout (`pythonpath = ["src"]`), so no editable
 install is needed. Tests marked `live` touch the real machine — real Keychain
 entries, real `~/.claude*` config dirs, the real usage endpoint — and are
