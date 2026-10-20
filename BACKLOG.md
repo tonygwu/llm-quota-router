@@ -1335,7 +1335,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 26. Live waste adoption awaits the operator's install approval, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[BLOCKED: operator approval of reconstruction and deployment]`
+### 26. Live waste adoption is approved and not yet done, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #24 implemented raw v3 reset readings, an append-only assumption
 ledger and reports derived from current historical beliefs. Its reconstruction is
@@ -1353,6 +1353,10 @@ Gemini interpretation without an operator decision would turn an unresolved
 assumption into a published figure.
 
 **Fix:** this item carries every operator-gated remainder of deleted #24.
+
+**Operator decision 2026-10-20:** approved: back up live state, write the reconstructed
+ledger and its marker, then install from repo-prod (steps 1 and 2), and append the
+decided Gemini belief (step 3) after its scratch check. Live pings stay off until #29.
 
 1. Have the operator review the full private proposal and its evidence coverage,
    authorize a backup, then authorize writing the reconstructed ledger and its
