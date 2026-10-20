@@ -1409,6 +1409,14 @@ waiting stretches before the preserved historical proposal is adopted. Publishin
 the old proposal would also omit the decided Gemini capacity. #1's total and #29's
 installation need this ordered adoption.
 
+**Operator decision 2026-10-20 (UTC, about 07:55):** the operator chose "Approve after ship
+review" for the live write. The coordinating session relayed it. Steps 1 to 3 are done.
+The deployment plan got a ship verdict, live state was backed up, and the 19 approved
+closed records were appended at 08:22:33Z. Verification found the current,
+before-second-pool and before-Gemini totals equal to the proposal, with the raw reset
+log, ledger and marker unchanged. The private record holds the backup identity and the
+full validation.
+
 **Fix:** carries all remaining live waiting-stretch adoption from deleted #30,
 temporarily carried by deleted #26. Keep raw evidence and backup details private;
 record sanitized results in the waiting-capacity measurement document.
@@ -1439,8 +1447,10 @@ record sanitized results in the waiting-capacity measurement document.
 recover earlier missing stretches. Do not treat its report-only ledger as the
 complete reconstruction or replace later live records with that snapshot. Keep
 uncertain conversions and bounded intervals visible. Existing belief approval
-does not replace review of this additional raw-state write. The writer that step 4
-installs refuses every append on some days from 2026-11-01 UTC unless #33 ships first.
+does not replace review of this additional raw-state write. Install a revision at or
+after `e979c1a`; earlier writers refuse every append on some days from 2026-11-01 UTC
+after history pruning. Before the install, the installed writer's first run over live
+history must raise nothing and change no durable record.
 
 *Why high not medium:* this adopts persistent historical data and changes a
 scheduled writer while preserving current and historical interpretations.
@@ -1454,69 +1464,44 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 33. History pruning makes the waiting-stretch writer refuse every append for days  `[difficulty: high]`  `[priority: P1]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
+### 34. A stopped waiting-stretch writer looks like a harmless history note in status  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** a durable waiting record's identity hashes only account, pool, start
-and end: `src/quota_router/forgone.py:80` "identity = json.dumps([row['account'],row['pool'],row['start_s'],row['end_s']]".
-Its evidence also stores every window's waiting start, which the classifier takes
-from the first retained read of a window that was already waiting:
-`src/quota_router/window_state.py:122` "result[j] = dict(state='waiting', reason=reason, waiting_since_s=since)".
-After the 30-day retention deletes that read, re-detection keeps the identity but
-gives a later waiting start for a non-binding or model-scoped window. `append_records`
-compares identity before it applies the containment rule
-(`src/quota_router/forgone.py:188` "A prefix reconstructed after retention starts later"),
-so it raises `src/quota_router/forgone.py:186` "raise ValueError('conflicting forgone record identity')"
-before writing anything. The status path catches that as
-`src/quota_router/cli.py:2591` "forgone recording stopped" and appends nothing that poll,
-including stretches that closed since. The report reader `forgone.merge` skips
-contained rows, so `quotapick waste` keeps working.
+**Background:** `_record_waste` turns a refused waiting-stretch append into
+`src/quota_router/cli.py:2592` "forgone recording stopped: {exc}",
+and `status` classifies everything that function returns as a history note:
+`src/quota_router/cli.py:2679` "history_notes = tuple(dict.fromkeys(notes))".
+The default view prints only a count of history notes:
+`src/quota_router/cli.py:2742` "note(s) about past window transitions in retained".
+The stop note has been a history note since the writer arrived in `e2cd00c`, among
+many reset-scan notes (#11 is about their number). Commit `e979c1a` adds one routine
+note to the same count when pruning shifts a waiting start. A stopped waiting-stretch
+writer therefore looks the same as routine notes in the default view. A stopped reset
+writer, by contrast, already prints as a live warning ("waste recording stopped").
 
-#32's scratch replay ran the current writer over a copy of live history at each daily
-pruning cutoff, against the 19 records proposed for adoption. Cutoffs from 2026-10-02
-to 10-07 conflict on one or two second-Codex-account records, whose model-scoped
-companion window waited from 2026-10-01. Cutoffs from 10-14 to 10-16 conflict on two or
-three Antigravity records, whose five-hour windows waited from 10-13. Every other cutoff
-appends zero and raises nothing. The writer's own first run over today's complete
-live history appends the same 19 records, so this does not depend on #32's adoption.
-
-**Impact:** once the writer is installed, the adopted records alone make every poll
-from 2026-11-01 UTC for six days, and from 2026-11-13 for three days, warn and record
-no waiting stretch. Any later stretch whose companion window started waiting on an
-earlier UTC day than the stretch does the same, roughly from 31 days after the
-companion's first waiting day through 30 days after the stretch began, until the fix
-ships; 5 of the 19 adopted records have that shape. A stretch that closes during a
-conflict is recorded only after it clears, and is lost if a conflict outlasts its
-retention. `docs/measurements/2026-10-20-forgone-capacity.md:15` "Closed records survive history pruning."
-holds for the durable rows but not for the writer that adds new ones.
+**Impact:** while the writer is stopped, no waiting stretch is recorded on any poll.
+Recording resumes only when the cause clears; a stretch is lost if the stop lasts
+longer than the 30-day history retention. Nothing in the default view tells the
+operator to look. One possible cause is a later read that reclassifies an earlier
+stale read and moves a stretch's end, which the writer refuses as an overlap; the
+2026-10-20 pruning replay found no such case.
 
 **Fix:**
-1. In `src/quota_router/forgone.py`, when a proposed row has a durable row's identity,
-   keep the durable row and append nothing if the only differences are evidence
-   `window_states` waiting starts that are later than the durable values, wherever
-   that evidence appears: start, last-waiting and end evidence, `stale_reads` and gap
-   evidence. That is the retention signature, and it matches the existing containment
-   rule. Any other difference still raises. Return or warn the count of such rows
-   rather than dropping them silently. Do not change `detect` output: #32 adopts records from the
-   current `detect`, and a change in evidence content would make every adopted record
-   conflict on the first run, unless #32's proposal is regenerated first.
-2. Tests in `tests/test_forgone.py`: a companion window that waits before the stretch,
-   append, delete the earliest reads, re-detect: zero appended, no error, durable bytes
-   unchanged, and a new closed stretch in the same call is appended. A same-identity
-   row with a different end evidence or status still raises.
-3. Re-run #32's private pruning replay against the adopted records with the fixed
-   code: zero errors at every cutoff. Ship before 2026-11-01 UTC.
+1. Return "forgone recording stopped" from `_record_waste` in a form that `status`
+   prints as a live warning, while the retention note stays a history note.
+2. Test in `tests/test_cli.py` next to
+   `tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):":
+   a stopped writer prints its warning in the default view; the retention note does not.
+3. Keep `waste --backfill` unchanged: it already prints every warning in full. Do
+   not add a doctor check: the stop does not change which account gets spent.
 
-*Risks and edge cases:* a later anchor can also reclassify a read once marked stale,
-which could move an end and turn a contained row into an overlap error; the replay
-found none in this data. Accepting arbitrary same-identity differences would hide a
-code-version change in evidence, which is why the rule is limited to later waiting starts.
+*Why medium:* a display classification change with one focused test; no stored data
+changes.
 
-*Why high not medium:* it changes the duplicate rule of an append-only writer whose
-records are being adopted into live state.
-
-**Touch points:** `src/quota_router/forgone.py:185` "if known[row['id']]!=row:";
-`tests/test_forgone.py:116` "def test_finished_raw_survives_pruning_and_duplicate_append(tmp_path):";
-`docs/measurements/2026-10-20-forgone-capacity.md:15` "Closed records survive history pruning.".
+**Touch points:** `src/quota_router/cli.py:2592` "forgone recording stopped";
+`src/quota_router/cli.py:2679` "history_notes = tuple(dict.fromkeys(notes))";
+`src/quota_router/cli.py:2742` "note(s) about past window transitions in retained";
+`src/quota_router/cli.py:3157` "warnings.extend(_record_waste(config, env))";
+`tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):".
 
 ---
 
