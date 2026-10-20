@@ -112,7 +112,7 @@ nobody published. See the README section "An early reset is not waste".
    removed `totals_at_capacity` output is no longer the publication source.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
-and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
+and the absolute wasted-PSE figure is stated, including forgone capacity (#30). If the number is unimpressive, that is the
 finding — publish it or shelve the project, but do not keep shipping scoring changes
 justified by argument alone. The counterfactual comparison becomes its own item at that
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
@@ -1297,8 +1297,9 @@ side:
 
 1. Count real Antigravity completions per account, each with the account identity, the
    served model from the call's own telemetry, and whether the output was used.
-2. Compare the Gemini pools' weekly use and their scheduled-reset rows in `waste.jsonl`
-   with the weeks before 2026-10-19.
+2. Compare the Gemini pools' weekly use, their scheduled-reset rows in `waste.jsonl`
+   and their forgone capacity with the weeks before 2026-10-19. If #30 has not landed,
+   compute the forgone capacity with #30's rule from the retained history.
 3. Report what Gemini Flash failed on, by failure kind, so a quality problem on standard
    work shows up as data.
 4. Write the result into `docs/measurements/2026-10-18-gemini-size.md`. If the pools
@@ -1540,10 +1541,19 @@ total, and count the waiting stretches before window pings go live (#29) as well
 operator's words: the historical Gemini pools being idle is serious waste.
 
 *Size:* both windows of each Gemini pool waited from its early reset on 2026-10-16
-(22:15:24Z on `antigravity_gemini`, 22:06:28Z on `_b`) to 10-18T03:03:19Z, about 28.8
-and 29.0 hours. At the current beliefs (k 4.0, capacity 2.43 and 2.45) that is
-28.8 / 168 × 9.72 = 1.67 PSE and 29.0 / 168 × 9.80 = 1.69 PSE. A Gemini pool idle for a
-whole week forgoes about 9.7 PSE. The
+(22:15:24Z on `antigravity_gemini`, 22:06:28Z on `_b`) to the first use at about
+10-18T03:03:35Z, about 28.8 and 29.0 hours. That stretch lies before the measured
+Gemini beliefs start (`GEMINI_MEASURED_FROM`, `ops/reconstruct-calibrations.py:24`), so
+its size is the unresolved Gemini belief that #26 step 3 leaves to the operator:
+
+| Belief about the change | `antigravity_gemini` | `antigravity_gemini_b` |
+|---|---|---|
+| the weekly pool stayed the same (9.72 and 9.80 PSE a week) | 28.8 / 168 × 9.72 = 1.67 PSE | 29.0 / 168 × 9.80 = 1.69 PSE |
+| the five-hour window stayed the same (36.45 and 36.75 PSE a week) | 28.8 / 168 × 36.45 = 6.25 PSE | 29.0 / 168 × 36.75 = 6.34 PSE |
+
+Until the operator decides, the report shows this stretch with both candidates and keeps
+it out of the current totals, as it does the 2026-10-16 early rows. A Gemini pool idle
+for a whole week under the measured beliefs forgoes about 9.7 PSE. The
 history store keeps 30 days (`DEFAULT_KEEP_DAYS`, `src/quota_router/history.py:68`), so
 older stretches are being lost now.
 
@@ -1554,7 +1564,14 @@ reset rows alone would rise exactly when routing improves (#23).
 **Fix:**
 
 1. **Forgone rule.** A pool forgoes capacity only while every account-wide window of the
-   pool is waiting. If a window on a clock still runs, its reset row already records the
+   pool is waiting. "Waiting" here is the stronger waiting-versus-running
+   classification #28 step 1 builds, not the ping test `waiting_reason`, which also
+   admits a fresh scheduled Claude weekly window and a use too small to show as 1%;
+   whichever of #28 and #30 lands first builds it, and the other reuses it. Claude's
+   weekly window runs on a clock and never counts as waiting, so a Claude account never
+   forgoes capacity: in history each Claude account has 2 to 9 reads where its weekly
+   window passed the ping test right after its scheduled reset, and those must count
+   as zero. If a window on a clock still runs, its reset row already records the
    unused remainder: Claude's 5h waiting beside its fixed weekly window, or an
    Antigravity 5h waiting beside a running weekly window (from 2026-10-13 to the
    2026-10-16 early reset), forgoes nothing extra. Model-scoped windows are out. For a
@@ -1593,9 +1610,21 @@ reset rows alone would rise exactly when routing improves (#23).
   extends a stretch.
 - A window with a use too small to show as 1% still runs; the fixed reset after it, not
   the 0%, decides that the stretch has ended.
+- Right after an early reset the provider can answer with the old window for a while:
+  `_b` alternated between the new sliding window and the old fixed one (used 0.0055,
+  reset 10-19T03:46Z) from 22:06:28Z to 22:29:07Z on 2026-10-16, and
+  `antigravity_gemini` from 22:15:24Z to 22:24:40Z. A read of the old window must not
+  end the stretch; only a fixed reset later than the stretch's start, at about first
+  use + window length, does.
+- History is pruned after 30 days and now starts at 2026-09-20, so September Codex
+  stretches are aging out while step 5 waits for approval. A read-only private copy of
+  the retained history, outside git, keeps them; it writes nothing to live state.
 - Tests: both windows waiting gives D × the weekly rate; only the 5h waiting beside a
   running weekly gives zero; Claude 5h waiting beside its fixed weekly gives zero; a
-  Codex 7d stretch gives D × weekly size / 7 days; the stretch ends at the first use; an
+  Codex 7d stretch gives D × weekly size / 7 days; a fresh Claude weekly window with no
+  use beside a not-running 5h gives zero; a stretch under an unresolved belief stays out
+  of the current totals and shows its candidates; a read of the old window after an
+  early reset does not end the stretch; the stretch ends at the first use; an
   early reset inside a stretch adds no forfeit; a gap with waiting on both sides counts
   and one with usage after it is bounded; a model-scoped window never counts; an open
   stretch is reported as accruing; a finished stretch survives history pruning.
