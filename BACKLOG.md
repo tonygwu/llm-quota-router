@@ -1391,7 +1391,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
-**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:151` "Before any live write, the operator must approve this raw-stretch proposal"
+**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:187` "Before any live write, the operator must approve this raw-stretch proposal"
 gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
 `forgone.jsonl` writer and retained-history reconstruction, then assigned its live
 adoption to #26 while that calibration deployment was already running. The approved
@@ -1439,12 +1439,13 @@ record sanitized results in the waiting-capacity measurement document.
 recover earlier missing stretches. Do not treat its report-only ledger as the
 complete reconstruction or replace later live records with that snapshot. Keep
 uncertain conversions and bounded intervals visible. Existing belief approval
-does not replace review of this additional raw-state write.
+does not replace review of this additional raw-state write. The writer that step 4
+installs refuses every append on some days from 2026-11-01 UTC unless #33 ships first.
 
 *Why high not medium:* this adopts persistent historical data and changes a
 scheduled writer while preserving current and historical interpretations.
 
-**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:151` "Before any live write, the operator must approve this raw-stretch proposal";
+**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:187` "Before any live write, the operator must approve this raw-stretch proposal";
 `ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
 `AGENTS.md:149` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
 `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
@@ -1473,24 +1474,29 @@ contained rows, so `quotapick waste` keeps working.
 #32's scratch replay ran the current writer over a copy of live history at each daily
 pruning cutoff, against the 19 records proposed for adoption. Cutoffs from 2026-10-02
 to 10-07 conflict on one or two second-Codex-account records, whose model-scoped
-companion window waited from 2026-10-01. Cutoffs from 10-14 to 10-16 conflict on three
-Antigravity records, whose five-hour windows waited from 10-13. Every other cutoff
+companion window waited from 2026-10-01. Cutoffs from 10-14 to 10-16 conflict on two or
+three Antigravity records, whose five-hour windows waited from 10-13. Every other cutoff
 appends zero and raises nothing. The writer's own first run over today's complete
 live history appends the same 19 records, so this does not depend on #32's adoption.
 
-**Impact:** once the writer is installed, every poll from 2026-11-01 UTC for six days,
-and from 2026-11-13 for three days, warns and records no waiting stretch. A stretch
-that closes then is recorded only after the conflict clears, and is lost if a
-conflict outlasts its retention. `docs/measurements/2026-10-20-forgone-capacity.md:15` "Closed records survive history pruning."
+**Impact:** once the writer is installed, the adopted records alone make every poll
+from 2026-11-01 UTC for six days, and from 2026-11-13 for three days, warn and record
+no waiting stretch. Any later stretch whose companion window started waiting on an
+earlier UTC day than the stretch does the same, roughly from 31 days after the
+companion's first waiting day through 30 days after the stretch began, until the fix
+ships; 5 of the 19 adopted records have that shape. A stretch that closes during a
+conflict is recorded only after it clears, and is lost if a conflict outlasts its
+retention. `docs/measurements/2026-10-20-forgone-capacity.md:15` "Closed records survive history pruning."
 holds for the durable rows but not for the writer that adds new ones.
 
 **Fix:**
 1. In `src/quota_router/forgone.py`, when a proposed row has a durable row's identity,
    keep the durable row and append nothing if the only differences are evidence
-   `window_states` waiting starts that are later than the durable values. That is the
-   retention signature, and it matches the existing containment rule. Any other
-   difference still raises. Return or warn the count of such rows rather than
-   dropping them silently. Do not change `detect` output: #32 adopts records from the
+   `window_states` waiting starts that are later than the durable values, wherever
+   that evidence appears: start, last-waiting and end evidence, `stale_reads` and gap
+   evidence. That is the retention signature, and it matches the existing containment
+   rule. Any other difference still raises. Return or warn the count of such rows
+   rather than dropping them silently. Do not change `detect` output: #32 adopts records from the
    current `detect`, and a change in evidence content would make every adopted record
    conflict on the first run, unless #32's proposal is regenerated first.
 2. Tests in `tests/test_forgone.py`: a companion window that waits before the stretch,
