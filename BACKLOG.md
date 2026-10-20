@@ -1353,7 +1353,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
+### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal"
 gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
