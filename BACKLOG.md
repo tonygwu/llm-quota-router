@@ -57,20 +57,21 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #24 and one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
 units") rather than empirical.
 
-**What now exists.** `quota_router/waste.py` writes one durable, never-pruned row per
-window reset per account to `waste.jsonl` — remaining fraction, the same remainder in
-PSE, the `k` and tier scale it was computed with, and how long before the reset the last
-reading was taken. `quotapick status` is the writer, so the launchd poller produces it
-with no new scheduling; `quotapick waste [--json]` reports it, and `--backfill` re-scans
-retained history for rows the series is missing. Resets that happened while nothing was
-watching are written as `observed: false` with no remainder, so any total reads as a
-lower bound rather than as an average over a hole.
+**What now exists.** `quota_router/waste.py` defines an append-only v3 reset log
+with unrounded before/after readings, the weekly companion needed for Fable, and the
+original writer's immutable calibration basis. `calibrations.jsonl` keeps measurements,
+encodings and historical beliefs separately; `quotapick waste [--json]` derives current
+and logged figures with supporting ledger ids. Live adoption remains operator-gated
+in #26. `quotapick status` is the writer, so the existing launchd poller needs no
+new schedule; `--backfill` re-scans retained history for missing rows. Resets that
+happened while nothing was watching have `observed: false` and no remainder, so totals
+remain lower bounds.
 
 Rows carry `kind` since version 2: a provider's one-off early reset is reported as
 *forfeited*, apart from the waste total, because routing cannot plan for a boundary
@@ -98,19 +99,17 @@ nobody published. See the README section "An early reset is not waste".
    what would have burned elsewhere. Without that third piece a replay compares one real
    trajectory against an imagined one and the difference is unfalsifiable. Worth
    designing before building.
-4. **Antigravity rows were logged at a placeholder size.** The first four rows, from
-   2026-10-13 to 2026-10-16, use capacity 1.0. For the Claude/GPT pools that is about 11
-   times the measured size: their two scheduled rows log 2.99 PSE, and the measurement
-   gives 0.26. Since 2026-10-18 those pools carry `capacity = 0.088` (#9), and `quotapick
-   waste` rescales their old rows to that size in `totals_at_capacity` without rewriting
-   the file. The two Gemini rows are early resets, so they stay out of the waste total.
-   Since 2026-10-19 the Gemini pools carry a measured `capacity` too (2.43 and 2.45,
-   `docs/measurements/2026-10-18-gemini-size.md`), so `totals_at_capacity` rescales their
-   rows by it. The rescale keeps the k each row was logged with, and the Gemini rows were
-   logged at k = 6.25 where the measured k is 4.0, so their forfeited figure reads about
-   1.56 times too high (`waste.py:1286-1309`). Publish the total from the report that #24
-   builds, with its basis split and ledger ids, not `totals_at_capacity`, which #24
-   replaces.
+4. **Published totals must expose their assumptions.** Original Antigravity rows
+   retain their placeholder-size basis. The derived report applies historical beliefs
+   where evidence supports them and shows both logged and current figures. The primary
+   Claude/GPT pool has a measured size of 0.088; the second pool's identical configured
+   size is an encoding, without a measured size belief. The two October 16 Gemini rows
+   are early forfeits and remain unresolved, with both candidate figures shown and
+   excluded from current totals. Old Fable rows lacking coupled readings stay logged
+   with an explicit reason. Publish this report's basis and ledger ids, plus its
+   unresolved, unrecomputable and unmeasured-default counts. #26 carries the
+   operator's reconstruction/deployment approval and Gemini belief decision; the
+   removed `totals_at_capacity` output is no longer the publication source.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated. If the number is unimpressive, that is the
@@ -1367,225 +1366,85 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 24. Waste figures mix raw readings with assumptions that no record explains  `[difficulty: high]`  `[filed: 2026-10-19]`  `[claimed by: #11]`
+### 26. Live waste adoption and the October 16 Gemini belief await operator decisions  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[BLOCKED: operator approval of reconstruction and deployment; operator Gemini belief decision]`
 
-**Background:**
+**Background:** #24 implemented raw v3 reset readings, an append-only assumption
+ledger and reports derived from current historical beliefs. Its reconstruction is
+still a private scratch proposal. `docs/measurements/2026-10-19-calibration-reconstruction.md:123` "Before live adoption, the operator must approve the concrete proposal and a backup"
+keeps the live write and installation gated. The October 16 Gemini rows remain
+unresolved, with candidate forfeits of 9.681723 / 9.745963 PSE if the weekly pools
+stayed unchanged, or 36.306460 / 36.547361 if the five-hour windows stayed unchanged.
+The read-only October 12 fine estimates are 16.216900 / 18.309661 weekly PSE versus
+October 18's 19.423512 / 19.562576; incomplete other-usage evidence and delayed meter
+settlement remain caveats, so the re-analysis does not choose a belief.
 
-- **A row mixes three kinds of field.** Each `waste.jsonl` row (`ResetRecord`,
-  `src/quota_router/waste.py:239`) holds readings (`remaining_fraction`, `reset_at`,
-  `scheduled_reset_at`, `last_observed_at`, `first_observed_after_at`,
-  `observation_gap_s`, `signals`, `source`), assumptions (`k`, `tier`, `tier_scale`) and
-  a result (`wasted_pse`, `_wasted_for`, `waste.py:610`). A weekly row's result is
-  remaining × k × `tier_scale`. A Fable row's result also uses `fable_fraction`, and in
-  9 of 61 Fable rows it is the smaller weekly remainder read at the same moment
-  (`waste.py:632-645`). `tier_scale` is the configured `capacity` when one is set and
-  the tier's scale otherwise (`waste.py:539-543`); no row says which. No row says
-  whether its `k` was measured for that account or inherited from the code default.
-- **The raw readings do not last.** The history store keeps 30 days
-  (`DEFAULT_KEEP_DAYS`, `src/quota_router/history.py:67`). After that, the waste row is
-  the only record of a reset. History holds `used_fraction` as the adapter converted it
-  and clamped it to 0 to 1 (`src/quota_router/types.py:168-181`); the waste row then
-  rounds it to 6 places (`waste.py:675`).
-- **A new schema version re-writes recent resets with today's values.** `append_records`
-  (`waste.py:998`) treats only a row of the current version as already on file, so an
-  occurrence an older writer logged is appended again, and `current_records`
-  (`waste.py:983`) reads the newer row. The status hook builds that row from the
-  current config's k and the window size in the history record (`_record_waste`,
-  `src/quota_router/cli.py:2572`; `waste.py:539`). This happened at the
-  v1 to v2 change: on 2026-10-19 `waste.jsonl` held 86 v1 and 86 v2 rows, mostly the same
-  resets.
-- **No record of calibration changes exists.** The values that turn a percentage into
-  PSE live in three places, and none records why a value changed:
-  - the code defaults: `DEFAULT_WEEKLY_TO_SESSION = 6.25` (`src/quota_router/pse.py:94`;
-    git shows the 12 (a measured 11.9) replaced by 6.25 on 2026-08-16, f3564ab, measured on
-    two Claude Max-20x accounts, neither named) and the tier scales (`TIER_CAPACITY`,
-    `src/quota_router/types.py:313`; the config's `[tiers]` table reaches no waste
-    figure);
-  - the operator config: per-account `weekly_to_session`, `capacity` and `tier`
-    (`config.py:395`, `:411`), edited by hand, with timestamped backups and no reasons;
-  - the measurement docs in `docs/measurements/`.
+**Impact:** installing a v3 writer before the approved reconstruction would begin a
+new durable recording format without its historical assumption ledger. Choosing a
+Gemini interpretation without an operator decision would turn an unresolved
+assumption into a published figure.
 
-  The 6.25 evidence names no account: it measured two Claude Max-20x accounts, and
-  `claude_e` came later. Every Codex row uses that 6.25. A measurement
-  that nobody encodes leaves no trace in the config: the 2026-10-12 run read Gemini
-  k = 15.0, and the router kept the default 6.25. Rebuilt from the operator's config
-  backups on 2026-10-19 (a backup holds the config before an edit, so a change falls
-  between two backup stamps):
+**Fix:** this item carries every operator-gated remainder of deleted #24.
 
-  | Account | Key | Change | When (UTC) |
-  |---|---|---|---|
-  | `claude_c` | `weekly_to_session` | default to 9.8 | before 2026-08-24 |
-  | `antigravity_claude` | `weekly_to_session` | default to 2.0 | between 2026-10-12 20:50 and 23:51 |
-  | `antigravity_claude_b` | `weekly_to_session` | default to 2.0 | between 2026-10-12 23:51 and 2026-10-14 17:35 |
-  | both `antigravity_claude*` | `capacity` | none to 0.088 | between 2026-10-18 21:57 and 23:00 |
-  | both `antigravity_gemini*` | `weekly_to_session` | default to 4.0 | 2026-10-19 13:42, from the measurement doc |
-  | `antigravity_gemini`, `_b` | `capacity` | none to 1.96 and 2.24 (end-of-run values), then 2.43 and 2.45 (settled values, same experiment) | 2026-10-19 13:42, then 20:33, from the measurement doc |
+1. Have the operator review the full private proposal and its evidence coverage,
+   authorize a backup, then authorize writing the reconstructed ledger and its
+   completion marker into live state. Preserve `waste.jsonl` byte for byte. Record
+   backup identity, ledger counts and validation output in the private adoption
+   record; summarize non-private evidence in the reconstruction document.
+2. Only after that reconstruction, and with the operator's deployment approval,
+   pull `repo-prod` and install from it as AGENTS.md specifies. Verify the installed
+   receipt and new symbols, then actual poller records from before and after the
+   install, including v3 basis/raw fields and calibration detection. Do not change
+   the schedule. This step can retain unresolved Gemini beliefs.
+3. Obtain the operator's separate belief decision for the Gemini window ending
+   October 16. Append the new belief with its evidence, reasons and validity
+   interval; retain the unresolved predecessor and all measurement records.
+   Record the chosen basis in the measurement document and verify current versus
+   logged figures plus `--beliefs-as-of` in a scratch copy before appending that belief to live state.
 
-- **The report rescales with today's values.** `summarize` (`waste.py:1225`, rescale at
-  `waste.py:1286-1309`) rescales every account-wide row whose `tier_scale` differs from
-  the configured `capacity` by `capacity / tier_scale`, and keeps the logged k. It
-  leaves scoped rows as logged. Both Gemini rows are early resets on 2026-10-16, logged
-  at the default k = 6.25. On 2026-10-19 the report gave 15.13 and 15.23 PSE, more than a
-  whole Gemini week (4.0 × 2.43 = 9.72 PSE). The `k` field's docstring (`waste.py:264`)
-  says it exists "so a later recalibration cannot silently reinterpret an older row".
+*Risks and edge cases:* no live reconstruction or install is authorized by claiming
+this item. Never rewrite the reset log, promote the secondary Claude/GPT pool's
+unmeasured capacity to a measured belief, or invent missing historical Fable
+coupling readings. The ledger belongs in private state, not git.
 
-**Operator decision 2026-10-19:** a reset's waste uses the value we *currently believe*
-held at that reset. If we believe a later measurement shows what the value was all along,
-use it. If we believe the provider changed its quota in between, use the earlier value.
-Record every belief with its reasons and evidence, and keep the old beliefs, so a later
-reader can judge whether the assumptions, decisions and figures were right. Keep three
-things apart: the raw readings with no inference; the assumptions, meaning the
-experiments, the values the router used, and the beliefs; and the report that turns
-them into PSE.
+*Why high not medium:* this changes the live poller's durable output and requires
+an auditable historical belief decision and ordered deployment.
 
-**Impact:** #1 publishes the waste and forfeit totals. With the current rescale, the two
-Gemini rows add 30.36 PSE, and nobody can say whether about 19.4 or about 72.9 is right
-(see the Gemini case below). A report months from now cannot say which basis produced a
-figure, and once history is gone after 30 days, a weekly-coupled Fable row cannot be
-recomputed at all (9 rows, 6 resets).
+**Closes when:** the approved reconstruction precedes the observed v3 poller run,
+and the separately approved Gemini belief is appended with reproducible reports.
 
-**Fix:** three layers. They may share files where that is simpler, but each must be
-readable on its own.
+**Touch points:** `docs/measurements/2026-10-19-calibration-reconstruction.md:123` "Before live adoption, the operator must approve the concrete proposal and a backup";
+`docs/measurements/2026-10-19-gemini-reanalysis.md:149` "Neither candidate is selected by this script.";
+operator-private ledger and adoption evidence; `repo-prod` installation procedure
+in AGENTS.md.
 
-1. **Raw reset log: `waste.jsonl`, schema v3.** Keep the file, its identity (account,
-   window, scheduled reset) and its idempotent append.
-   - A new row adds the readings as history recorded them, from the last reading before
-     the reset and the first after: `used_fraction` unrounded, the published
-     `resets_at`, and the observation times. A Fable row also carries the weekly
-     window's reading from the same moment, so the coupled minimum can be recomputed.
-     Keep `kind` and `observed` with the `signals` that produced them; those are
-     classifications.
-   - Move the assumptions into a `basis` block: `k`, the window size in PSE with its
-     source (`capacity` or `tier`), `fable_fraction` on a Fable row, `wasted_pse`, and
-     the ledger ids in force. This block records what the writer believed **when it
-     first logged the occurrence**. A v3 row that re-appends an occurrence already on
-     file copies the basis from the earliest row of that occurrence and says so. It
-     never takes today's config. Fields the old row lacks (`fable_fraction`, the window
-     size source, ledger ids) stay null, with the reason.
-   - Read v1 and v2 rows as they are. Never rewrite the file.
-   - `replay.recorded_waste` (`src/quota_router/replay.py:680`) sums `wasted_pse`. Keep
-     it reading the logged figure from a v3 row; a v3 row must never read as 0.
-2. **Assumption ledger: a new append-only `calibrations.jsonl` in the state directory.**
-   It covers every value that turns a percentage into PSE (`weekly_to_session`,
-   `capacity`, `tier`, a tier scale, `fable_fraction`), per account or for a code default.
-   Every record carries `recorded_at` (when it was written), apart from the time it is
-   about, and a `reconstructed` flag on records written after the fact from older
-   evidence; such a record also carries the evidence's own date. Three record kinds:
-   - **measurement:** one experiment's result: account, key, value and spread, when it
-     ran, method, evidence (a repo doc and section, a commit, the measurement folder
-     name) and caveats. It is never edited. A later record can `correct` it (a better
-     value from the same experiment, such as the settled 2.43 for the end-of-run 1.96)
-     or `dispute` it (a different experiment that disagrees). A correction is not a
-     provider change.
-   - **encoding:** a change in what the router and the waste writer used: the live
-     config or a code default, with the time or the two bounds. Detected on each
-     `status` run by comparing the loaded values with the latest encoding per account
-     and key, and appended as `unexplained` with a warning until someone records its
-     evidence through a CLI subcommand. Detection stays off until the reconstruction
-     below is in the ledger; an absent ledger gives one warning, not one entry per
-     value.
-   - **belief:** what we now believe held for an account and key over a time interval:
-     the value, or for a weekly row both k and the window size, the reasons, the
-     measurement ids that support or dispute it, who decided, and when it was recorded.
-     The newest belief covering an instant wins; older beliefs stay. A belief can be
-     `unresolved`, with candidate values. A value an account inherits from a code
-     default, or an unset `capacity` that falls back to the tier scale, has no
-     measured belief unless the evidence covers that account. The 6.25 evidence
-     covers Claude Max-20x accounts as a tier: record it as a tier-level measurement,
-     and a belief that applies it to each Claude Max-20x account with that reason.
-     Codex, Antigravity and other tiers inherit it as a default.
-3. **Report: `quotapick waste`, derived each time and never stored.** For each row:
-   - compute PSE from the raw remainder with the current belief for the reset time;
-     where no belief covers it, use the row's logged basis and flag it as `logged`;
-   - show both figures, what we believed when the row was written and what we believe
-     now, with the ledger ids behind each;
-   - leave `unresolved` rows out of the totals and list them with each candidate figure;
-   - recompute Fable rows the same way, with the coupled minimum;
-   - give totals under current beliefs and under logged values, and the number of rows
-     resting on a default nobody measured for that account;
-   - `--beliefs-as-of <UTC time>` rebuilds the report from only the ledger records
-     with `recorded_at` before then, so a past report can be reproduced and audited.
-     Before the first ledger record it returns every row on its logged basis, and the
-     output says so.
+---
 
-   `--json` carries all of it. Replace the current `rescaled` block and
-   `totals_at_capacity` (README.md:1427-1430) with this.
+### 27. Fresh Fable rows lose default-source provenance without a ledger  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**The Gemini case, for the reconstruction.** k changed from 15.0 (measured 2026-10-12) to 4.0
-(measured 2026-10-18). Both pools reset early on 2026-10-16 at 22:06Z and 22:15Z, a
-plausible marker of a provider change that nothing proves. The two rows record the
-window that ended at those resets. A change in k alone does not say which window
-changed, because a weekly row needs the weekly pool size, k × window size, and the
-2026-10-12 run never measured the window size:
+**Background:** `src/quota_router/waste.py:793` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None"
+writes the fraction but no `fable_fraction_source`. The writer adds `k_source`
+separately. A fresh Fable row written without ledger records, with explicit k=4,
+capacity=2 and the built-in fraction 0.5, reports the correct 3.6 PSE but classifies
+its fraction source as unknown: `unmeasured_default_rows=0` and
+`unknown_basis_source_rows=1`. The complete reconstruction supplies the missing
+encoding on the approved live adoption path; the gap affects a writer without that
+ledger evidence.
 
-| Belief about the change | Weekly pool before 2026-10-16 | `antigravity_gemini` | `antigravity_gemini_b` |
-|---|---|---|---|
-| the weekly pool stayed the same | 9.72 and 9.80 PSE (4.0 × 2.43, 4.0 × 2.45) | 0.996062 × 4.0 × 2.43 = 9.68 | 0.994486 × 4.0 × 2.45 = 9.75 |
-| the five-hour window stayed the same | 36.45 and 36.75 PSE (15.0 × 2.43, 15.0 × 2.45) | 0.996062 × 15.0 × 2.43 = 36.31 | 0.994486 × 15.0 × 2.45 = 36.55 |
+**Impact:** the reported count of rows using unmeasured defaults misses a known
+Fable default. The figure itself is correct and the unknown source is visible.
+This carries the bounded default-provenance counting edge found while closing #24;
+record the failing-then-passing writer/report regression in the tests below.
 
-The 2026-10-12 run's raw Gemini reps survive in its measurement folder, outside git.
-That run took place inside the window that ended at the 2026-10-16 resets, so it
-measures that window directly. Four reps are usable: `k-g3` and `k-g4` on
-`antigravity_gemini`, `k-gb2` and `k-gb3` on `antigravity_gemini_b`, 160 Gemini 3.8
-Flash calls in all, each with its token counts. The other three reps ran Gemini 3.1 Pro,
-which left the model lists between 21:30Z and 22:30Z that day. 358 raw usage reads
-cover the seven reps. Price the Flash calls at the Gemini 3.8 Flash list price, and
-compute the weekly pool size they imply, in PSE a week, with the fine-movement method of
-`analyze5.py` from
-the 2026-10-18 folder; its `POOLS` setting names the 2026-10-18 reps, so adapt it.
-Exclude every interval that contains a 3.1 Pro call, not only the Pro calls' dollars,
-since the meter movement those calls caused would otherwise count against Flash
-dollars. Check that nothing else used the Gemini pools during the run. Compare the result
-with the 2026-10-18 fine-movement figures, 19.42 and 19.56 PSE a week, which are pooled
-over both chains (total fine dollars over total fine weekly movement). Neither run is
-settled, so compare fine with fine. About equal supports the first row of the table;
-a pool about 3.75 times larger supports the second; a result between the two supports neither,
-so report it as it is. The meter settles for hours after use, so charges from the Pro
-calls that ended at 21:39:30Z may land in early `k-gb2` intervals; check for that. The
-two pools ran agy 1.3.2 and 1.3.3. Record the result as a
-measurement.
+**Fix:** record the actual Fable fraction source in a new row's original basis when
+the writer knows it. Distinguish the built-in default from a caller-supplied plan;
+do not infer origin merely because values are equal. Test a no-ledger default row
+through the writer and report: the default count becomes one, the unknown-source
+count becomes zero and PSE remains 3.6. Keep original missing provenance null when
+re-appending an old occurrence; do not rewrite the raw log or invent its old source.
 
-- *Operator decision pending:* the belief for the Gemini window that ended on
-  2026-10-16. Until it is made, record it as `unresolved` with both candidates.
-
-Other reconstruction (named so, not "backfill", which `quotapick waste --backfill`
-already means): encodings and measurements from the code's git history, the config
-backups (the table above) and the measurement docs. The 6.25 replaced a measured 11.9
-(rounded to 12) that the 2026-08-16 commit showed was wrong; record both. A k or capacity with no evidence
-of a change gets one belief covering all time; say so in its reasons. Develop
-against a scratch `XDG_STATE_HOME`. Write the live ledger only with the operator's
-approval, after a backup, and before a v3 writer is installed. Detection stays off
-until this reconstruction is in the live ledger.
-
-*Risks and edge cases:*
-
-- **Where the ledger lives.** It records the operator's config and beliefs, so it lives
-  in the state directory beside `waste.jsonl`, not in git. The evidence it cites lives
-  in the repo. Keep entries free of identities other than account ids.
-- **Tests:**
-  - a row with no belief uses its logged basis and is flagged `logged`;
-  - a belief recorded later changes the current figure and leaves the logged figure;
-  - a newer belief over the same interval wins, and `--beliefs-as-of` before it
-    reproduces the older figure;
-  - a measurement followed by a provider-change belief leaves rows before the change on
-    the old value;
-  - a correction record replaces a value from the same experiment;
-  - an `unresolved` row stays out of the totals and lists both candidates;
-  - a v3 re-append of an occurrence logged at v2 keeps the v2 basis;
-  - a config change with no encoding adds one `unexplained` entry and a warning, and an
-    absent ledger adds none;
-  - a Fable row recomputes to the coupled minimum;
-  - `replay.recorded_waste` reads a v3 row's logged figure, not 0;
-  - v1 and v2 rows read unchanged.
-
-**Touch points:** `src/quota_router/waste.py:239` (`ResetRecord`), `:539-543` (window
-size source), `:610` (`_wasted_for`), `:653` (`_observed_record`), `:983`
-(`current_records`), `:998` (`append_records`), `:1225` (`summarize`, rescale at
-`:1286-1309`); `src/quota_router/cli.py:2572` (`_record_waste`), `:3111` (`_cmd_waste`),
-and a new subcommand for evidence and beliefs; `src/quota_router/replay.py:680`;
-`src/quota_router/pse.py:94`, `src/quota_router/types.py:313` and
-`src/quota_router/config.py:395`, `:411` (where the values come from); README.md:1400 and :1427-1430 (the waste section); `tests/test_waste.py`,
-`tests/test_account_capacity.py`, `tests/test_replay.py`.
+**Touch points:** `src/quota_router/waste.py:793` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None";
+`src/quota_router/waste_report.py:179` "def source_for(key, expected, explicit):";
+`tests/test_waste_v3.py:23` "def test_v3_preserves_unrounded_readings_and_explicit_basis():".
 
 ---
 
