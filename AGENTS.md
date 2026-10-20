@@ -130,13 +130,15 @@ picked up the new code and exited cleanly, from the data rather than from an
 mtime. `launchctl list | grep llm-quota-router` gives the last exit status, and
 the run before yours is the one it may still be reporting.
 
-While the installed revision is `7f87887`, run that check within about 10
-minutes of the install. Each record is about 3 MB, almost all of it repeated
-reset-scan notes, and the log rotates at 20 MB and keeps one old copy. The two
-files then hold only about 14 to 28 minutes: at 18:15Z on 2026-10-20 they held
-10 records, 17:54:14Z to 18:15:08Z. Commit `411f54d` folds those notes, and one
-scratch run of origin/main, which contains it, wrote a 69 KB record, so the
-window grows to many hours once repo-prod installs it.
+The log rotates at 20 MB and keeps one old copy, so how far back it reaches
+depends on the record size. Until the reinstall at `94b0cf6` on 2026-10-20,
+each record was about 3.1 MB, almost all of it repeated reset-scan notes, and
+the two files held only 14 to 28 minutes. Commit `411f54d` folds those notes.
+The first records after that reinstall, from 18:26:39Z, are about 69 KB, so one
+file holds about 290 records. Polls then came about 168 s apart, longer than the
+configured 120 s because each run now takes longer, so one file covered about
+13 hours and the two files together up to about a day. Measure the current
+record size and spacing before you rely on those figures.
 
 For an older run, start from the status records in
 `~/.local/state/quota-router/history*.jsonl`, which keep each run's `at` time and
