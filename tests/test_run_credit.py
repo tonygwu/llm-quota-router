@@ -126,6 +126,7 @@ def test_a_pool_that_would_expire_unused_wins_over_drained_subscriptions(env) ->
     runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
     code, payload, err = _run(env, _request(), runner, secrets_read=reads)
     assert code == cli.EXIT_OK, err
+    assert payload["warnings"] and err == ""  # only a router failure is echoed to stderr
     assert payload["served"]["account"] == "anthropic_api_d"
     assert payload["served"]["pool_kind"] == "credit"
     assert payload["served"]["provider"] == "anthropic_api"
@@ -296,6 +297,26 @@ def test_a_ledger_failure_after_a_billed_call_still_returns_the_answer(env, monk
     assert any(w.startswith("router failed after a child was attempted")
                and "No space left on device" in w for w in payload["warnings"])
     assert "router failed after a child was attempted" in err  # said on stderr too
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError(32, "Broken pipe"), OSError(5, "I/O error")])
+def test_a_broken_stderr_never_costs_the_paid_answer(env, monkeypatch, error):
+    import io
+
+    class BrokenPipe(io.StringIO):
+        def write(self, text):
+            raise error
+    monkeypatch.setattr(credits, "append",
+                        _failing_append("spend", OSError(28, "No space left on device")))
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(_drained_subscriptions()), []),
+                    run=runner, read_secret=_secret_reader([]))
+    stdout = io.StringIO()
+    code = cli.main(["run"], env=env, now_s=NOW, deps=deps, cwd=_NO_CONFIG_FILES,
+                    stdin=io.StringIO(json.dumps(_request())), stdout=stdout,
+                    stderr=BrokenPipe())
+    assert code == cli.EXIT_OK
+    assert json.loads(stdout.getvalue())["text"] == "ok"
     history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
     assert json.loads(history.read_text().splitlines()[-1])["run"]["outcome"] == "ok"
 

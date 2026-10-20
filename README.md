@@ -1187,20 +1187,22 @@ null when it was given none; each attempt carries its own. Exit 0 whenever the r
 parsed, whatever the outcome; exit 2 for a request or config refused before anything was
 spent. A router failure after a child was attempted still returns a response, exit 0,
 with the attempts recorded so far, the running one as `cli_error` if it was not recorded
-yet, and a warning that names the failure (also on stderr). The top-level outcome is then
-`cli_error`, unless the last attempt's answer passed every check: that billed answer is
-returned as `ok`, with the warning. Outcomes: `ok`, `exhausted`, `wrong_model`, `auth`, `transient`, `timeout`,
-`schema_invalid`, `cli_error`, `no_candidate`, `bad_request`.
+yet, and a warning that names the failure (also on stderr). The top-level outcome is
+then `cli_error`, unless the last attempt's answer passed every check: that billed answer
+is returned as `ok`, with the warning. Outcomes: `ok`, `exhausted`, `wrong_model`,
+`auth`, `transient`, `timeout`, `schema_invalid`, `cli_error`, `no_candidate`,
+`bad_request`.
 
 Each attempt's `spent` says whether it was billed, as far as the router saw. It is
-`true` when the child reported a positive `total_cost_usd` or a credit pool's ledger
-booked a spend (a timed-out credit call is booked at its hold). It is `false` when the
-child reported zero cost, zero tokens and no per-model usage, or could not be started.
-A zero cost alone is not enough, because it is Claude Code's own price estimate and a
-pricing override can zero it for a call that ran. It is `null` when nothing says, for
-example a subscription call that timed out or a child that ended without a result
-event. An `auth` outcome can be either: a refused login costs nothing, while a call
-that ran on the wrong credential was billed.
+`true` when the child reported a positive `total_cost_usd`, or when a credit-pool call's
+cost is unknown because it timed out or the router failed before recording it: the
+router books such a call at its hold, and the attempt says `true` even if that booking
+fails. It is `false` when the child reported zero cost, zero tokens and no per-model
+usage, or could not be started. A zero cost alone is not enough, because it is Claude
+Code's own price estimate and a pricing override can zero it for a call that ran. It is
+`null` when nothing says, for example a subscription call that timed out or a child that
+ended without a result event. An `auth` outcome can be either: a refused login costs
+nothing, while a call that ran on the wrong credential was billed.
 
 What it guarantees, each checked from the CLI's own stream-json rather than assumed:
 
