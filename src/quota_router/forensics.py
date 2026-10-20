@@ -149,7 +149,7 @@ def forensics_log_path(
     env = os.environ if environ is None else environ
     override = (env.get("QUOTA_ROUTER_FORENSICS_LOG") or "").strip()
     if override:
-        return Path(os.path.expanduser(override))
+        return expand_user(override, home)
     root = Path(os.path.expanduser(str(home) if home else "~")) / "Library" / "Logs" / "llm-quota-router"
     return root / "credential-forensics.jsonl"
 

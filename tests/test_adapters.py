@@ -37,10 +37,12 @@ from quota_router.providers import (
     AntigravityAdapter,
     ClaudeOAuthAdapter,
     ClaudeStatuslineAdapter,
+    CodexAppServerAdapter,
     CodexSessionsAdapter,
     CursorAdapter,
     ProviderAdapter,
     account_ids_for_provider,
+    build_default_adapters,
     claude_configs_from_policy,
     codex_accounts_from_policy,
     collect_snapshots,
@@ -49,6 +51,7 @@ from quota_router.providers import (
 from quota_router.providers.base import (
     coerce_epoch_seconds,
     decay_confidence,
+    expand_user,
     parse_iso8601,
     pct_to_fraction,
     read_tail_lines,
@@ -69,7 +72,7 @@ from quota_router.providers.claude_oauth import (
     read_access_token,
     usage_cache_path,
 )
-from quota_router.providers.claude_statusline import STATUSLINE_DIR_ENV
+from quota_router.providers.claude_statusline import STATUSLINE_DIR_ENV, STATUSLINE_PATHS_ENV
 from quota_router.providers.codex_sessions import window_key_for_minutes
 from quota_router.types import (
     ACCOUNT_ANTIGRAVITY_CLAUDE,
@@ -1669,14 +1672,46 @@ def test_an_injected_home_expands_every_tilde(tmp_path: Path, monkeypatch) -> No
     statusline = ClaudeStatuslineAdapter(
         paths={ACCOUNT_CLAUDE_C: "~/cache/c.json"}, home=home, env={}).paths()
     assert statusline == {ACCOUNT_CLAUDE_C: home / "cache" / "c.json"}
-    from_dir_env = ClaudeStatuslineAdapter(
-        home=home, env={STATUSLINE_DIR_ENV: "~/cache"}, configs=()).paths()
-    assert from_dir_env and {path.parent for path in from_dir_env.values()} == {home / "cache"}
+    from_paths_env = ClaudeStatuslineAdapter(
+        home=home, env={STATUSLINE_PATHS_ENV: json.dumps({ACCOUNT_CLAUDE_C: "~/cache/c.json"})},
+        configs=()).paths()
+    assert from_paths_env == {ACCOUNT_CLAUDE_C: home / "cache" / "c.json"}
+    for statusline_adapter in (
+        ClaudeStatuslineAdapter(home=home, env={STATUSLINE_DIR_ENV: "~/cache"}, configs=()),
+        ClaudeStatuslineAdapter(directory="~/cache", home=home, env={}, configs=()),
+    ):
+        from_dir = statusline_adapter.paths()
+        assert from_dir and {path.parent for path in from_dir.values()} == {home / "cache"}
+
+    assert usage_cache_path(ACCOUNT_CLAUDE_C, {"QUOTA_ROUTER_USAGE_CACHE": "~/usage"},
+                            home=home) == home / "usage" / f"{ACCOUNT_CLAUDE_C}.json"
+
+    # With no Codex account in the policy, the Codex adapters use their default home,
+    # and that default must move with the injected home too.
+    for codex_env, expected in (({}, home / ".codex"),
+                                ({"CODEX_HOME": "~/.codex-q"}, home / ".codex-q")):
+        adapters = build_default_adapters(config=FakePolicy(), env=codex_env, home=home)
+        codex_adapters = [a for a in adapters
+                          if isinstance(a, (CodexAppServerAdapter, CodexSessionsAdapter))]
+        assert len(codex_adapters) == 2
+        assert all([c.codex_home for c in a.accounts()] == [expected] for a in codex_adapters)
 
     # The default directory keeps its unsuffixed Keychain name when written with ``~``.
     assert keychain_service_for("~/.claude", home=home) == keychain_service_for(
         home / ".claude", home=home)
     assert keychain_service_for("~/.claude", home=home)[0] == KEYCHAIN_SERVICE_BASE
+
+
+def test_expand_user_reads_the_injected_home_only_for_the_current_user(tmp_path: Path) -> None:
+    home = tmp_path / "injected"
+    assert expand_user("~", home) == home
+    assert expand_user("~/", home) == home
+    assert expand_user("~//x", home) == home / "x"
+    assert expand_user(Path("~/x"), home) == home / "x"
+    assert expand_user("/abs/~/x", home) == Path("/abs/~/x")
+    assert expand_user("rel/x", home) == Path("rel/x")
+    # ``~user`` names another account; the injected home is not that user's home.
+    assert expand_user("~root/x", home) == Path(os.path.expanduser("~root/x"))
 
 
 def test_without_an_injected_home_a_tilde_still_means_the_process_home(

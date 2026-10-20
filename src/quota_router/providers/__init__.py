@@ -294,6 +294,13 @@ def build_default_adapters(
     """
     claude_configs = claude_configs_from_policy(config, env=env, home=home) or None
     codex_accounts = codex_accounts_from_policy(config, env=env, home=home) or None
+    # With no Codex account in the policy, each Codex adapter falls back to its own
+    # default home, which it expands against the process HOME. An injected home must
+    # move that default too, or a test that injects one reads the real ~/.codex.
+    codex_home = None
+    if codex_accounts is None and home is not None:
+        environment = env if env is not None else os.environ
+        codex_home = expand_user(environment.get(CODEX_HOME_ENV) or DEFAULT_CODEX_HOME, home)
     cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
     # Antigravity is opt-in, unlike every other adapter here. Until 2026-10-12 it
     # published nothing at all, so an unconditional adapter only manufactured rows that
@@ -308,8 +315,8 @@ def build_default_adapters(
         ClaudeStatuslineAdapter(env=env, home=home, configs=claude_configs),
         # Live first, transcripts as the fallback. The merge would prefer the live
         # snapshot in either order; the order states the intent.
-        CodexAppServerAdapter(env=env, codex_accounts=codex_accounts),
-        CodexSessionsAdapter(env=env, codex_accounts=codex_accounts),
+        CodexAppServerAdapter(env=env, codex_accounts=codex_accounts, codex_home=codex_home),
+        CodexSessionsAdapter(env=env, codex_accounts=codex_accounts, codex_home=codex_home),
         CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
     ]
     if antigravity_accounts:
@@ -457,7 +464,8 @@ def load_snapshots(
         timeout_s: Oracle timeout.
         accounts: Restrict the result to these accounts -- either ids or objects with an
             ``id``. Defaults to whatever the adapters found.
-        home: ``$HOME`` override for the default config/cache locations.
+        home: ``$HOME`` override for the default config/cache locations, and the base
+            a leading ``~`` expands against in configured or environment paths.
         allow_slow_reads: Let a source that takes seconds read live (``agy -p /usage``).
             Off by default, so a library caller with a deadline never waits on one.
     """

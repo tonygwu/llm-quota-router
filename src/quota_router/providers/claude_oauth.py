@@ -212,7 +212,7 @@ def usage_cache_path(
     environ = os.environ if env is None else env
     override = (environ.get("QUOTA_ROUTER_USAGE_CACHE") or "").strip()
     if override:
-        base = Path(os.path.expanduser(override))
+        base = expand_user(override, home)
     else:
         xdg = (environ.get("XDG_STATE_HOME") or "").strip()
         if home is not None:
