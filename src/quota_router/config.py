@@ -1371,6 +1371,33 @@ def _read_toml(path: Path, *, required: bool) -> Mapping[str, Any] | None:
         raise ConfigError(f"invalid TOML in {path}: {exc}") from None
 
 
+#: Every key an ``[accounts.<id>]`` table may carry. Like ``[engine]`` and
+#: ``[credit_pools]``, anything else is warned about by name: a typo in ``capacity`` or
+#: ``plan_ends`` would otherwise leave the router on its default and say nothing.
+_ACCOUNT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "provider",
+        "config_dir",
+        "tier",
+        "capacity",
+        "enabled",
+        "env",
+        "identity_email",
+        "weekly_to_session",
+        "calls_per_window",
+        "macos_user",
+        "launch_wrapper",
+        "env_var",
+        "command",
+        "weekly_reset",
+        "manual_rate_per_day",
+        "deprioritize",
+        "unmetered",
+        "plan_ends",
+    }
+)
+
+
 def _build_accounts(
     raw: Any, env: Mapping[str, str] | None, warnings: list[str]
 ) -> dict[str, AccountConfig]:
@@ -1379,6 +1406,11 @@ def _build_accounts(
     for account_id, body in table.items():
         section = f"accounts.{account_id}"
         body = _as_table(body, section)
+        for key in sorted(set(body) - _ACCOUNT_KEYS):
+            warnings.append(
+                f"unknown key [{section}] {key} ignored "
+                f"(known: {', '.join(sorted(_ACCOUNT_KEYS))})"
+            )
 
         config_dir = body.get("config_dir")
         if config_dir is not None:
