@@ -371,7 +371,7 @@ landed on 2026-10-19.
 
 ---
 
-### 41. A `run` that fails after its child started prints no response, so the client loses what was billed  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 41. A `run` that fails after its child started prints no response, so the client loses what was billed  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** `_cmd_run` prints the response only when `run_mod.execute` returns,
 `src/quota_router/cli.py:4784` "payload = run_mod.execute(".
