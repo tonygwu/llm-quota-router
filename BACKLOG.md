@@ -57,7 +57,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: #32 live adoption and one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -76,7 +76,7 @@ happened while nothing was watching have `observed: false` and no remainder, so 
 remain lower bounds. `forgone.jsonl` now retains closed waiting stretches without
 PSE, and the report adds derived forgone capacity to the published total. Its shared
 temporal classifier suppresses false resets from waiting windows. The retained-history
-proposal and remaining live adoption are carried by #32.
+stretches were adopted on 2026-10-20, and the writer was installed the same day.
 
 Rows carry `kind` since version 2: a provider's one-off early reset is reported as
 *forfeited*, apart from the waste total, because routing cannot plan for a boundary
@@ -1324,7 +1324,7 @@ side:
    served model from the call's own telemetry, and whether the output was used.
 2. Compare the Gemini pools' weekly use, their scheduled-reset rows in `waste.jsonl`
    and their forgone capacity with the weeks before 2026-10-19. Use the derived
-   `quotapick waste` report and #32's reconstructed raw stretches.
+   `quotapick waste` report and the adopted raw stretches in `forgone.jsonl`.
 3. Report what Gemini Flash failed on, by failure kind, so a quality problem on standard
    work shows up as data.
 4. Write the result into `docs/measurements/2026-10-18-gemini-size.md`. If the pools
@@ -1350,81 +1350,6 @@ side:
 
 **Touch points:** `waste.jsonl` and the history store (read only), consumer logs outside
 this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
-
----
-
-### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
-
-**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal"
-gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
-`forgone.jsonl` writer and retained-history reconstruction, then assigned its live
-adoption to #26 while that calibration deployment was already running. The approved
-calibration adoption finished at revision `7f87887`, before the waiting-capacity
-writer. The complete live ledger now contains 140 records, the decided Gemini
-beliefs and the second Claude/GPT pool's approved size belief. The original saved
-waiting-history proposal used an earlier report-only ledger:
-19 closed stretches, two bounded ends, 1.825242 PSE included, and both historical
-Gemini candidates excluded. A scratch recalculation with all approved beliefs
-includes 4.265024 PSE, with zero unresolved segments. Validate the complete proposal
-and its history coverage with the adopted ledger before approval.
-
-**Impact:** installing current main without this adoption would begin recording
-waiting stretches before the preserved historical proposal is adopted. Publishing
-the old proposal would also omit the decided Gemini capacity. #1's total and #29's
-installation need this ordered adoption.
-
-**Operator decision 2026-10-20 (UTC, about 07:55):** the operator chose "Approve after ship
-review" for the live write. The coordinating session relayed it. Steps 1 to 3 are done.
-The deployment plan got a ship verdict, live state was backed up, and the 19 approved
-closed records were appended at 08:22:33Z. Verification found the current,
-before-second-pool and before-Gemini totals equal to the proposal, with the raw reset
-log, ledger and marker unchanged. The private record holds the backup identity and the
-full validation.
-
-**Fix:** carries all remaining live waiting-stretch adoption from deleted #30,
-temporarily carried by deleted #26. Keep raw evidence and backup details private;
-record sanitized results in the waiting-capacity measurement document.
-
-1. Reconstruct from the operator-preserved history with a copy of the complete
-   adopted calibration ledger. Use scratch XDG homes, retain every closed stretch,
-   and report attempted/succeeded/failed, bounded ends, unknown gaps, raw counts
-   and derived per-pool figures. Check the chosen Gemini beliefs and a cutoff
-   before their append; preserve both candidates in historical reports.
-   Update the reconstruction tool's help and `operator_gates` text to reference
-   this adoption and validation of the existing beliefs.
-2. Present the concrete private proposal and deployment plan for operator approval,
-   including the backup location, exact append commands and rollback. Obtain a
-   fresh adversarial review's ship verdict before any live write.
-3. Back up live state, then append the approved closed records without rewriting
-   `waste.jsonl`, `calibrations.jsonl` or existing waiting records. Validate duplicate
-   and overlap handling, unchanged original bytes and current/as-of report results.
-   Record backup identity, counts and full validation privately.
-4. Coordinate the approved deployment with #29: pull and install only from repo-prod
-   after adoption, verify receipt and installed symbols, then compare actual
-   scheduled poller records. This item does not authorize ping execution or a
-   schedule change. Preserve a rollback that retains new durable records.
-5. Run the full scratch test gate, review and push sanitized evidence. Delete this
-   item only after the adopted history and installed writer are verified; remove
-   its blocking references in the same separate backlog commit.
-
-*Risks and edge cases:* the saved history stops at 2026-10-20T05:19:28Z and cannot
-recover earlier missing stretches. Do not treat its report-only ledger as the
-complete reconstruction or replace later live records with that snapshot. Keep
-uncertain conversions and bounded intervals visible. Existing belief approval
-does not replace review of this additional raw-state write. Install a revision at or
-after `e979c1a`; earlier writers refuse every append on some days from 2026-11-01 UTC
-after history pruning. Before the install, the installed writer's first run over live
-history must raise nothing and change no durable record.
-
-*Why high not medium:* this adopts persistent historical data and changes a
-scheduled writer while preserving current and historical interpretations.
-
-**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal";
-`ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
-`AGENTS.md:170` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
-`docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
-operator-private retained history, ledger, waiting records and adoption evidence;
-repo-prod installation and actual poller records.
 
 ---
 
@@ -1502,6 +1427,36 @@ fail on today's code.
 
 **Touch points:** `src/quota_router/calibrations.py`, `src/quota_router/cli.py`
 (`_cmd_status`), and the status dry-run tests.
+
+---
+
+### 48. The agy ping asks for plan mode, and agy ignores it  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+
+**Background:** the Antigravity ping passes both `--mode plan` and
+`--disable-slash-commands` in the argv that follows this comment:
+`src/quota_router/ping_cli.py:69` "Use the exact account-switch recipe used by /usage, including the wrapper.".
+On agy 1.4.3, a ping-shaped run printed this on stderr on 2026-10-20:
+"warning: --mode plan has no effect while slash command expansion is disabled."
+So every live agy ping runs in agy's default mode with the terminal sandbox on. The
+code and the activation plan both assumed plan mode limited the ping.
+
+**Impact:** a ping has more of agy's built-in tools than the code intends. Tool use
+does not show in ping results, so this cannot be seen from the journal. The operator
+accepted tool availability for activation, so pings stay live meanwhile.
+
+**Fix:**
+1. Decide which flag the ping needs. If plan mode is wanted, find an agy invocation
+   that keeps it, for example by dropping `--disable-slash-commands` if the prompt
+   cannot expand. Prove the choice with one ping-shaped run per agy version whose
+   stderr shows the mode in effect and no warning.
+2. Make the ping fail loud when agy prints that warning, or record it in the result,
+   so a future agy change cannot silently drop the mode again.
+3. Add a test in `tests/test_ping_cli.py` for the chosen argv and the warning path.
+
+*Why medium:* one argv choice plus a stderr check, but it needs a live agy run to prove.
+
+**Touch points:** `src/quota_router/ping_cli.py:69` "Use the exact account-switch recipe used by /usage, including the wrapper.";
+`docs/window-pings.md:229` "The first execute run, at 18:29 UTC, attempted 2 pings, with 2 succeeded and 0 failed.".
 
 ---
 
@@ -1609,7 +1564,7 @@ re-appending an old occurrence; do not rewrite the raw log or invent its old sou
 
 **Background:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks."
 uses published reset times as deadlines. The state-free recipe in
-`docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
+`docs/window-pings.md:288` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
 reproduces 3.000 PSE at risk with both account-wide windows waiting, capacity 2.43,
 weekly/session ratio 4 and demand 0.04 PSE/h. Before the waiting-capacity change,
 its two waiting readings 310000 seconds apart also fabricated an early forfeit of
@@ -1658,17 +1613,17 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 `src/quota_router/window_ping.py:28` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
 `tests/test_waste.py:646` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
-`docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
+`docs/window-pings.md:288` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
 
-### 29. Window pings await waiting-capacity adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 29. Live window pings still need a verified ping in every pool kind  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #22 shipped default-dry-run pings. The operator's model and evidence
 changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
 calls without a served-model stamp record selection-only evidence and count toward
 the full success cooldown. Wrong stamps, wrong arithmetic answers, missing tokens
-and account mismatches remain failures. `docs/window-pings.md:112` "Model-name probes, 2026-10-20"
+and account mismatches remain failures. `docs/window-pings.md:106` "Model-name probes, 2026-10-20"
 records nine one-shot probes with nine successes, zero failures and no retries;
 `claude_b` was skipped for exhausted quota. Three Claude responses carry matching
 served stamps; two Codex and four Antigravity responses carry selection evidence
@@ -1677,7 +1632,7 @@ only. All model self-reports remain weak evidence. Full raw responses are privat
 The next ordinary poller reading showed nonzero five-hour usage in all four
 Antigravity pools, with resets within four seconds of each probe start plus five
 hours. This did not exercise the production journal or the ambiguous fixed stretch
-after a scheduled reset. No installation or recurring activation was performed.
+after a scheduled reset. That diagnostic step installed nothing; live activation followed later the same day.
 
 The activation review's two code blockers are fixed. Codex pings prepend the CLI's
 directory to PATH so its Node shim works under launchd. Claude five-hour verification
@@ -1687,10 +1642,13 @@ until 840 seconds after completion; other windows retain 240 seconds. Regression
 tests cover launchd-shaped PATH execution, both reset-band endpoints and outside
 values, unchanged provider/window limits, and journal persistence.
 
-**Impact:** the approved pings are still off. The code no longer retries successful
-selection-only calls as model-unverified failures, and GPT-OSS retirement no longer
-affects the chosen Claude/GPT model. Live adoption and actual poller/journal evidence
-are still required before this item closes.
+**Impact:** pings are live since 2026-10-20, but only two of four pool kinds have a
+verified ping: Claude five-hour and Antigravity Claude/GPT. Antigravity Gemini and
+Codex weekly are open.
+Until each kind has a verified ping, a launch-path or verification fault in the other
+kinds stays unseen. The code no longer retries successful selection-only calls as
+model-unverified failures, and GPT-OSS retirement no longer affects the chosen
+Claude/GPT model.
 
 **Operator decision 2026-10-20:** turn the pings on.
 - Use Claude Sonnet 5.5 (Low) for the Antigravity Claude/GPT pool instead of GPT-OSS,
@@ -1705,15 +1663,15 @@ are still required before this item closes.
 - The exact previous-reset-plus-length waiting test and literal five-hour/seven-day
   cooldown stay as built unless the operator changes them.
 - The calibration ledger and v3 writer were adopted on October 20 at `7f87887`.
-  Pulling newer code also installs the waiting-capacity writer, so #32's raw-history
-  adoption must precede that installation. Pings remain off.
+  Pulling newer code also installed the waiting-capacity writer, so the raw-history
+  adoption had to come first. It did, on the same day.
 
 **Fix:** carries #22's remaining deployment and post-ping qualification. The
-calibration adoption from deleted #26 is complete. The coordinating session owns
-installation and activation, after #32's separate waiting-history adoption. Keep
-this item open until those operations and their evidence are complete.
+calibration adoption from deleted #26 and the waiting-history adoption from deleted
+#32 are complete. The coordinating session owns installation and activation. Keep
+this item open until steps 2 and 3 have evidence for every pool kind.
 
-1. After #32's approved backup and raw-history adoption, pull and install only from repo-prod.
+1. Done 2026-10-20; see the activation progress note below. Pull and install only from repo-prod.
    Re-run the launchd installer there in dry-run first, then enable
    `WINDOW_PING_MODE=execute` under the recorded operator decision. Verify the receipt,
    new installed symbols, actual poller records and ping journal. Preserve the default
@@ -1730,7 +1688,7 @@ this item open until those operations and their evidence are complete.
    responses privately, with attempted/succeeded/failed and failure kinds. Coordinate
    any native agy telemetry work with #2 without duplicating capability-map work.
 
-*Progress 2026-10-20 (overnight):* #32's adoption is live (19 records) and the
+*Progress 2026-10-20 (overnight):* the waiting-history adoption is live (19 records) and the
 pruning fix is on main at `e979c1a`. The concrete install-and-activate plan went
 fix-first in two fresh review rounds, so activation stopped for the operator; nothing
 was installed (the live tool is still `7f87887`) and pings stay off. Round 2 found that
@@ -1765,6 +1723,26 @@ still off.
   replay of that revision's writer against the adopted records, and get a fresh ship
   verdict on the plan.
 
+*Progress 2026-10-20 (activation):* all of the steps above were done. A fresh review
+of the plan returned fix-first, and its second round returned ship-with-notes. Revision
+`94b0cf6` was installed from repo-prod at 18:26Z, pinned to Python 3.12. The first poll
+appended only the two predicted waiting stretches. The installer ran in dry-run at
+18:27Z and with `WINDOW_PING_MODE=execute` at 18:28:46Z. The first execute run pinged
+both Antigravity Claude/GPT pools: 2 attempted, 2 succeeded, 0 failed, selected model
+only. Both five-hour windows were verified at the next poll, within 7 seconds of the
+expected reset. `docs/window-pings.md` has the sanitized record.
+- Operator decision, same day: "Decision: yes keep going and stay live overnight even
+  if no session is watching." Pings stay live overnight when no session watches. With
+  no watcher, a failing pool is limited only by the 30-minute backoff, and no code
+  checks agy's MCP list.
+- At 18:40Z a Claude account's five-hour ping succeeded with a matching served-model
+  stamp and was verified at 18:43Z.
+- Open: the first Antigravity Gemini and Codex weekly pings, each with a result and,
+  if it succeeds, a verification. The exhausted Claude account cannot ping before its
+  weekly reset on 2026-10-21 at 09:00Z. The Codex pings are the first
+  launchd test of its PATH fix. The Antigravity fixed stretch after a scheduled reset
+  is also still open. The agy ping's `--mode plan` has no effect; see #48.
+
 *Risks and edge cases:* the nine model-name probes ran once each; do not retry them.
 The exhausted Claude pool was not called. Missing served stamps are accepted under
 the operator's decision, but a conflicting or malformed stamp is not. Native CLI
@@ -1774,11 +1752,11 @@ that an installed recurring job ran or that the model's self-description is corr
 *Why high not medium:* activation crosses vendor telemetry, multiple account/pool
 launch paths, durable journal state and consequential recurring quota spend.
 
-**Touch points:** `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
+**Touch points:** `docs/window-pings.md:229` "The first execute run, at 18:29 UTC, attempted 2 pings, with 2 succeeded and 0 failed.";
 `src/quota_router/ping_cli.py:87` "def parse_response(account, completed):";
 `src/quota_router/window_ping.py:133` "def _verification(records, events, now_s):";
 `tests/test_window_ping.py:121` "def test_failed_verification_blocks_only_one_window_and_survives_restart(tmp_path):";
-`docs/window-pings.md:211` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
+`docs/window-pings.md:206` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
 private native-response and poller evidence.
 
 ---
@@ -1824,10 +1802,11 @@ does.
 
 - Work the router cannot see, such as interactive use of the same account, moves the
   bars without dollars and biases the sizes down. Say for each pool whether the router
-  sees all its calls. Today it sees no Antigravity call at all: `quotapick run` routes
-  only Claude accounts and credit pools (`src/quota_router/run.py:443-446`, #20), pings
-  are still dry-run (#29), and work routed through `pick` runs inside the consumer.
-  Step 1 needs #20, live pings, or a way for consumers to report their usage.
+  sees all its calls. Today it sees almost no Antigravity call: `quotapick run` routes
+  only Claude accounts and credit pools (`src/quota_router/run.py:443-446`, #20), and
+  work routed through `pick` runs inside the consumer. Window pings are live since
+  2026-10-20 (#29), but they add only a few small calls a day. Step 1 needs #20 or a
+  way for consumers to report their usage.
 - Claude and Codex report whole percents, so their estimates need many more calls than
   Antigravity's fine-grained bars.
 - A "1 + 1" ping is too small to move a Claude, Codex or Antigravity Claude/GPT bar. On
