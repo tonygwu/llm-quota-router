@@ -1464,7 +1464,7 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 38. A stopped reset writer, or an invalid ledger, stops recording without a live status warning  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 38. A stopped reset writer, or an invalid ledger, stops recording without a live status warning  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
 
 **Background:** #34 made a stopped waiting-stretch writer a live `status` warning, with
 the prefix constant `src/quota_router/cli.py:2578` "_FORGONE_STOPPED: Final[str]".
