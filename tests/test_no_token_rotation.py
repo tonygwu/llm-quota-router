@@ -212,8 +212,9 @@ def test_the_default_account_exec_plan_must_not_set_claude_config_dir() -> None:
     plan that names it is worse than one that omits it.
     """
     from quota_router.config import load_config
+    from tests.test_cli import _NO_CONFIG_FILES
 
-    cfg = load_config(env={})
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES})
     account = cfg.accounts.get("claude")
     assert account is not None
     env = dict(account.exec_env())

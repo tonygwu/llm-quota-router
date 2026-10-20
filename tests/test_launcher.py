@@ -626,7 +626,11 @@ def test_a_config_declared_fifth_account_joins_the_interactive_fleet(env, tmp_pa
         '[accounts.claude_e]\nconfig_dir = "~/.claude-e"\nprovider = "claude"\n',
         encoding="utf-8",
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
 
     seen: dict = {}
 
@@ -654,7 +658,11 @@ def test_an_explicit_cl_only_still_beats_the_config(env, tmp_path) -> None:
         '[accounts.claude_e]\nconfig_dir = "~/.claude-e"\nprovider = "claude"\n',
         encoding="utf-8",
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
 
     seen: dict = {}
 
@@ -877,7 +885,11 @@ def test_fallback_model_is_not_reported_as_an_unknown_section(tmp_path) -> None:
 
     path = tmp_path / "config.toml"
     path.write_text('fallback_model = "opus[1m]"\n', encoding="utf-8")
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
 
     assert cfg.fallback_model == "opus[1m]"
     assert not [w for w in cfg.warnings if "fallback_model" in w], cfg.warnings
@@ -889,7 +901,11 @@ def test_a_genuinely_unknown_top_level_key_still_warns(tmp_path) -> None:
 
     path = tmp_path / "config.toml"
     path.write_text('falback_model = "opus[1m]"\n', encoding="utf-8")  # typo, on purpose
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
 
     assert any("falback_model" in w for w in cfg.warnings), cfg.warnings
 
@@ -1394,7 +1410,11 @@ def test_a_weekly_reset_schedule_survives_the_config_layer(tmp_path) -> None:
         'weekly_reset = "Mon 15:59 America/Los_Angeles"\n',
         encoding="utf-8",
     )
-    config = load_config(env={}, explicit_path=path)
+    config = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
 
     assert config.account("claude").weekly_reset == WeeklyReset(
         weekday=0, hour=15, minute=59, zone="America/Los_Angeles"
@@ -1417,7 +1437,11 @@ def test_a_malformed_schedule_is_a_config_error_naming_the_account(tmp_path) -> 
     )
 
     with pytest.raises(ConfigError) as caught:
-        load_config(env={}, explicit_path=path)
+        load_config(
+            cwd=_NO_CONFIG_FILES,
+            env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+            explicit_path=path,
+        )
 
     assert "accounts.claude" in str(caught.value)
     assert "weekly_reset" in str(caught.value)

@@ -161,7 +161,7 @@ def env(tmp_path) -> dict[str, str]:
     }
 
 
-def run(argv, env, *, snapshots=None, deps=None, now_s=NOW, cwd=None, stdin=""):
+def run(argv, env, *, snapshots=None, deps=None, now_s=NOW, cwd=_NO_CONFIG_FILES, stdin=""):
     """Call ``main()`` and return ``(exit_code, stdout, stderr)``."""
     if deps is None:
         deps = cli.Deps(load_snapshots=lambda **kw: (list(snapshots or ()), []))
@@ -1907,7 +1907,9 @@ def test_live_pick_against_the_real_oracle(tmp_path):
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
     }
     out, err = io.StringIO(), io.StringIO()
-    code = cli.main(["pick", "--dry-run"], env=live_env, stdout=out, stderr=err)
+    code = cli.main(
+        ["pick", "--dry-run"], env=live_env, stdout=out, stderr=err, cwd=_NO_CONFIG_FILES
+    )
     payload = json.loads(out.getvalue())
 
     assert code == cli.EXIT_OK
@@ -2234,7 +2236,7 @@ def test_an_opt_in_adapter_is_built_when_the_operator_declares_it(env, tmp_path)
         '[accounts.antigravity_gemini]\nprovider = "antigravity"\n', encoding="utf-8"
     )
     env = {**env, "QUOTA_ROUTER_CONFIG": str(path)}
-    config = load_config(env=env)
+    config = load_config(cwd=_NO_CONFIG_FILES, env=env)
 
     loader, error = cli._load_oracle()
     assert error is None, error

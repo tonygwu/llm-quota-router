@@ -25,7 +25,7 @@ import pytest
 
 from quota_router.config import ConfigError, load_config
 from quota_router.types import SOURCE_LIVE, AccountSnapshot, Window
-from tests.test_cli import NOW, pick, run
+from tests.test_cli import NOW, _NO_CONFIG_FILES, pick, run
 
 DAY = 86400.0
 HOUR = 3600.0
@@ -130,13 +130,13 @@ def test_only_the_weekly_window_of_an_account_that_sets_a_rate_is_held_back() ->
 def test_manual_rate_per_day_is_read_per_account(env, tmp_path) -> None:
     path = tmp_path / "rate.toml"
     path.write_text("[accounts.codex]\nmanual_rate_per_day = 0.05\n", encoding="utf-8")
-    cfg = load_config(env=env, explicit_path=path)
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
     assert cfg.account("codex").manual_rate_per_day == 0.05
     assert cfg.account("claude").manual_rate_per_day is None
 
 
 def test_no_account_holds_a_reserve_unless_the_operator_sets_one(env) -> None:
-    cfg = load_config(env=env)
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env=env)
     assert {a.id: a.manual_rate_per_day for a in cfg.accounts.values()} == {
         a.id: None for a in cfg.accounts.values()
     }
@@ -147,7 +147,7 @@ def test_an_impossible_rate_is_refused(env, tmp_path, value: str) -> None:
     path = tmp_path / "bad.toml"
     path.write_text(f"[accounts.codex]\nmanual_rate_per_day = {value}\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="manual_rate_per_day"):
-        load_config(env=env, explicit_path=path)
+        load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
 
 
 def test_a_rate_on_an_account_the_router_cannot_read_is_refused(env, tmp_path) -> None:
@@ -155,7 +155,7 @@ def test_a_rate_on_an_account_the_router_cannot_read_is_refused(env, tmp_path) -
     path = tmp_path / "typo.toml"
     path.write_text("[accounts.codx]\nmanual_rate_per_day = 0.05\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="codx"):
-        load_config(env=env, explicit_path=path)
+        load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
 
 
 # ======================================================================================

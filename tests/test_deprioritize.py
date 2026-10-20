@@ -23,7 +23,7 @@ import pytest
 from quota_router import cli, select_account
 from quota_router.config import ConfigError, load_config
 from quota_router.types import SOURCE_LIVE, AccountSnapshot, Window
-from tests.test_cli import NOW, pick, run
+from tests.test_cli import NOW, _NO_CONFIG_FILES, pick, run
 
 DAY = 86400.0
 
@@ -78,14 +78,14 @@ PICK = ["pick", "--only", "codex,codex_b", "--dry-run"]
 def test_deprioritize_is_read_per_account(env, tmp_path) -> None:
     path = tmp_path / "dep.toml"
     path.write_text("[accounts.codex]\ndeprioritize = true\n", encoding="utf-8")
-    cfg = load_config(env=env, explicit_path=path)
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
     assert cfg.account("codex").deprioritize is True
     assert cfg.account("claude").deprioritize is False
     assert cfg.account("codex").to_dict()["deprioritize"] is True
 
 
 def test_no_account_is_deprioritized_unless_the_operator_says_so(env) -> None:
-    cfg = load_config(env=env)
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env=env)
     assert {a.id: a.deprioritize for a in cfg.accounts.values()} == {
         a.id: False for a in cfg.accounts.values()
     }
@@ -96,7 +96,7 @@ def test_a_non_boolean_deprioritize_is_refused(env, tmp_path, value: str) -> Non
     path = tmp_path / "bad.toml"
     path.write_text(f"[accounts.codex]\ndeprioritize = {value}\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="deprioritize"):
-        load_config(env=env, explicit_path=path)
+        load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
 
 
 def test_deprioritize_on_an_account_the_router_cannot_read_is_refused(env, tmp_path) -> None:
@@ -104,7 +104,7 @@ def test_deprioritize_on_an_account_the_router_cannot_read_is_refused(env, tmp_p
     path = tmp_path / "typo.toml"
     path.write_text("[accounts.codx]\ndeprioritize = true\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="codx") as caught:
-        load_config(env=env, explicit_path=path)
+        load_config(cwd=_NO_CONFIG_FILES, env=env, explicit_path=path)
     assert "codx" in str(caught.value) and "deprioritize" in str(caught.value)
 
 

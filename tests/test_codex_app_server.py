@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from quota_router.types import SOURCE_CACHE, SOURCE_LIVE, TIER_PRO
+from tests.test_cli import _NO_CONFIG_FILES
 
 #: 2026-09-15T00:00:00Z. The reset instants below sit a few days after it.
 NOW = 1789430400.0
@@ -638,6 +639,7 @@ def test_status_json_reports_source_live_for_the_codex_account(tmp_path: Path) -
         stderr=err,
         now_s=NOW,
         deps=cli.Deps(load_snapshots=load_snapshots),
+        cwd=_NO_CONFIG_FILES,
     )
     assert code == cli.EXIT_OK, err.getvalue()
     payload = json.loads(out.getvalue())

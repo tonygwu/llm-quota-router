@@ -246,12 +246,14 @@ def test_cli_dry_run_from_history_and_launchd_default(tmp_path):
     import subprocess
     from quota_router.cli import main
     from quota_router.history import history_path
+    from tests.test_cli import _NO_CONFIG_FILES
     env = {"HOME": str(tmp_path), "XDG_STATE_HOME": str(tmp_path / "state")}
     path = history_path(env)
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(rec(snap()))+"\n")
     out = io.StringIO()
-    assert main(["window-ping", "--dry-run", "--json"], env=env, now_s=NOW, stdout=out) == 0
+    argv = ["window-ping", "--dry-run", "--json"]
+    assert main(argv, env=env, now_s=NOW, stdout=out, cwd=_NO_CONFIG_FILES) == 0
     assert json.loads(out.getvalue())["would_ping"] == 1
     assert sorted(p.name for p in path.parent.iterdir()) == ["history.jsonl"]
     result = subprocess.run(["bash", "ops/install-launchd.sh", "--print"], env={**env, "PATH": "/usr/bin:/bin", "QUOTAPICK_BIN": "/usr/bin/true"}, capture_output=True, text=True)

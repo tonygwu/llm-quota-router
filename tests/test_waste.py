@@ -31,6 +31,7 @@ from quota_router import cli, waste
 from quota_router.history import history_path
 from quota_router.pse import Plan
 from quota_router.state import state_path
+from tests.test_cli import _NO_CONFIG_FILES
 
 FIVE_HOURS = 18_000.0
 SEVEN_DAYS = 604_800.0
@@ -1121,7 +1122,9 @@ def _snapshot(used, resets_at_s, observed_at_s):
 def _run(argv, env, snapshots, now_s):
     deps = cli.Deps(load_snapshots=lambda **kw: (list(snapshots), []))
     out, err = io.StringIO(), io.StringIO()
-    code = cli.main(argv, env=env, stdout=out, stderr=err, now_s=now_s, deps=deps)
+    code = cli.main(
+        argv, env=env, stdout=out, stderr=err, now_s=now_s, deps=deps, cwd=_NO_CONFIG_FILES
+    )
     return code, out.getvalue(), err.getvalue()
 
 

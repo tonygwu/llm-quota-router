@@ -22,7 +22,7 @@ import pytest
 from quota_router import Selection, select_account
 from quota_router import cli
 
-from tests.test_cli import NOW, real_capture, run
+from tests.test_cli import NOW, _NO_CONFIG_FILES, real_capture, run
 
 
 def _deps(snapshots):
@@ -251,7 +251,7 @@ def test_a_degraded_input_does_not_by_itself_fail_the_policy_check() -> None:
     def prepared(*, chosen, eligible, degraded, from_fallback):
         rows = (ScoreBreakdown(account_id="claude_d", score=8.6, eligible=eligible),)
         return Prepared(
-            config=load_config(env={}),
+            config=load_config(cwd=_NO_CONFIG_FILES, env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES}),
             model=__import__("quota_router.model_classes", fromlist=["resolve"]).resolve("opus"),
             now_s=NOW,
             decision=Decision(chosen=chosen, ranked=rows, degraded=degraded),

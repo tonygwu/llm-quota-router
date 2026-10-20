@@ -32,6 +32,7 @@ import json
 import pytest
 
 from quota_router.history import estimate_weekly_to_session
+from tests.test_cli import _NO_CONFIG_FILES
 
 HOUR = 3600.0
 FIVE_HOUR = 5 * HOUR
@@ -308,7 +309,7 @@ def test_a_fourth_claude_account_is_canonical_not_a_fallback() -> None:
     assert provider_for_account_id("claude_d") == "claude"
     assert DEFAULT_CLAUDE_CONFIG_DIR_NAMES["claude_d"] == ".claude-d"
 
-    cfg = load_config(env={})
+    cfg = load_config(cwd=_NO_CONFIG_FILES, env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES})
     account = cfg.accounts.get("claude_d")
     assert account is not None, "claude_d must be a builtin account"
     assert account.config_dir and account.config_dir.endswith(".claude-d")
@@ -562,7 +563,11 @@ def test_a_configured_k_round_trips_from_toml(tmp_path) -> None:
     path.write_text(
         "[accounts.claude_c]\nweekly_to_session = 9.8\n", encoding="utf-8"
     )
-    cfg = load_config(env={}, explicit_path=path)
+    cfg = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+        explicit_path=path,
+    )
     assert cfg.accounts["claude_c"].weekly_to_session == pytest.approx(9.8)
 
 
@@ -579,7 +584,7 @@ def test_a_configured_k_reaches_a_real_pick(tmp_path) -> None:
     to the two weekly stocks, so both the stock and its demand share depend on k.
     """
     from quota_router import cli
-    from tests.test_cli import FIVE_HOURS, _NO_CONFIG_FILES, account, run, window
+    from tests.test_cli import FIVE_HOURS, account, run, window
 
     path = tmp_path / "config.toml"
     path.write_text("[accounts.claude_c]\nweekly_to_session = 9.8\n", encoding="utf-8")
@@ -628,7 +633,11 @@ def test_a_k_below_one_is_rejected_rather_than_quietly_scoring(tmp_path) -> None
         "[accounts.claude_c]\nweekly_to_session = 0.5\n", encoding="utf-8"
     )
     with pytest.raises(ConfigError, match="weekly_to_session"):
-        load_config(env={}, explicit_path=path)
+        load_config(
+            cwd=_NO_CONFIG_FILES,
+            env={"XDG_CONFIG_HOME": _NO_CONFIG_FILES},
+            explicit_path=path,
+        )
 
 
 # ======================================================================================

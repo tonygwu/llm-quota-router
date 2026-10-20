@@ -92,6 +92,8 @@ from quota_router.types import (
     Identity,
 )
 
+from tests.test_cli import _NO_CONFIG_FILES
+
 #: Evaluation instant: 2026-08-16T02:00:00Z, three hours before the captured payload's
 #: 5-hour reset and ~3.3 days before its weekly reset.
 NOW = 1786845600.0
@@ -1815,7 +1817,11 @@ def test_an_operator_declared_fifth_account_reaches_the_live_adapter(tmp_path: P
         'provider = "claude"\n',
         encoding="utf-8",
     )
-    config = load_config(env={"HOME": str(tmp_path)}, explicit_path=config_toml)
+    config = load_config(
+        cwd=_NO_CONFIG_FILES,
+        env={"HOME": str(tmp_path)},
+        explicit_path=config_toml,
+    )
     assert "claude_e" in config.accounts, "the config layer already accepts the account"
 
     keychain = FakeKeychain({})

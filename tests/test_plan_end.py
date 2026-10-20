@@ -21,7 +21,7 @@ from quota_router import launcher
 from quota_router.config import ConfigError, load_config
 from quota_router.plan_end import apply_plan_ends
 from quota_router.types import SOURCE_LIVE, AccountSnapshot, Window, unreadable_reason
-from tests.test_cli import NOW, pick, run
+from tests.test_cli import NOW, _NO_CONFIG_FILES, pick, run
 
 DAY = 86400.0
 HOUR = 3600.0
@@ -146,7 +146,7 @@ def test_from_the_end_on_the_account_is_unavailable_and_says_why() -> None:
 
 def test_plan_ends_is_read_per_account(env, tmp_path) -> None:
     write_config(env, ENDS_ON_D)
-    config = load_config(env=env)
+    config = load_config(cwd=_NO_CONFIG_FILES, env=env)
     assert config.plan_ends() == {"claude_d": pytest.approx(ENDS_S)}
     assert config.account("claude").plan_ends_s is None
 
@@ -164,25 +164,26 @@ def test_plan_ends_must_be_an_instant_with_a_zone(env, value) -> None:
     """A wall time with no zone is a different instant on every machine that reads it."""
     write_config(env, f"[accounts.claude_d]\nplan_ends = {value}\n")
     with pytest.raises(ConfigError, match="plan_ends"):
-        load_config(env=env)
+        load_config(cwd=_NO_CONFIG_FILES, env=env)
 
 
 def test_an_offset_is_accepted_and_means_the_same_instant(env) -> None:
     write_config(env, '[accounts.claude_d]\nplan_ends = "2026-10-15T17:00:00-07:00"\n')
     expected = datetime(2026, 10, 16, tzinfo=timezone.utc).timestamp()
-    assert load_config(env=env).plan_ends() == {"claude_d": pytest.approx(expected)}
+    config = load_config(cwd=_NO_CONFIG_FILES, env=env)
+    assert config.plan_ends() == {"claude_d": pytest.approx(expected)}
 
 
 def test_plan_ends_on_an_account_nothing_reads_is_refused(env) -> None:
     """A mistyped id would leave the real account routed to after its plan ended."""
     write_config(env, f'[accounts.clade_d]\nplan_ends = "{ENDS_TEXT}"\n')
     with pytest.raises(ConfigError, match="plan_ends, but no adapter reads"):
-        load_config(env=env)
+        load_config(cwd=_NO_CONFIG_FILES, env=env)
 
 
 def test_a_disabled_account_contributes_no_plan_end(env) -> None:
     write_config(env, ENDS_ON_D + "enabled = false\n")
-    assert load_config(env=env).plan_ends() == {}
+    assert load_config(cwd=_NO_CONFIG_FILES, env=env).plan_ends() == {}
 
 
 # ======================================================================================
@@ -272,6 +273,6 @@ def test_the_schedule_fallback_skips_an_account_whose_plan_has_ended(env) -> Non
         '[accounts.claude_d]\nweekly_reset = "Tue 11:00 America/Los_Angeles"\n'
         f'plan_ends = "{ENDS_TEXT}"\n',
     )
-    config = load_config(env=env)
+    config = load_config(cwd=_NO_CONFIG_FILES, env=env)
     assert set(launcher._schedules(config, ["claude", "claude_d"], NOW)) == {"claude", "claude_d"}
     assert set(launcher._schedules(config, ["claude", "claude_d"], ENDS_S)) == {"claude"}
