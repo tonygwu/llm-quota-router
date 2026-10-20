@@ -426,6 +426,9 @@ def test_status_dry_run_records_nothing(env) -> None:
         assert code == cli.EXIT_OK, err
         assert "claude_c" in out
     assert _state_bytes(env) == before
+    # It reports what the recording run would: the lapsed period's unused credit.
+    pool, = json.loads(out)["credit_pools"]
+    assert pool["expired_unused_usd"] == pytest.approx(150.0)
     # Without the flag the same call writes, so the assertion above can fail.
     code, _out, err = run(["status", "--json"], env, snapshots=real_capture(),
                           now_s=expires + HOUR, cwd=_NO_CONFIG_FILES)
@@ -434,6 +437,20 @@ def test_status_dry_run_records_nothing(env) -> None:
     assert {"history.jsonl", "forecast.json"} <= {Path(k).name for k in after}
     assert after["quota-router/credits.jsonl"] != before["quota-router/credits.jsonl"]
     assert after["quota-router/calibrations.jsonl"] != before["quota-router/calibrations.jsonl"]
+
+
+def test_status_dry_run_still_reports_an_invalid_ledger(env) -> None:
+    from quota_router import calibrations
+
+    path = calibrations.ledger_path(env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"{not json\n")
+    before = _state_bytes(env)
+    code, out, err = run(["status", "--dry-run", "--json"], env, snapshots=real_capture(),
+                         cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert any("calibration ledger invalid" in w for w in json.loads(out)["warnings"])
+    assert _state_bytes(env) == before
 
 
 def test_waste_backfill_refuses_dry_run(env) -> None:
@@ -449,9 +466,10 @@ def test_waste_backfill_refuses_dry_run(env) -> None:
 def test_dry_run_help_no_longer_promises_no_state(capsys) -> None:
     with pytest.raises(SystemExit):
         cli._build_parser().parse_args(["status", "--help"])
-    text = " ".join(capsys.readouterr().out.split())
+    text = " ".join(capsys.readouterr().out.split()).lower()
     assert "write no state" not in text
-    assert "history" in text
+    assert "still append one history record" in text
+    assert "provider reads may spawn vendor clis" in text
 
 
 def test_doctor_flags_a_pool_with_no_checkpoint_and_a_missing_key(env) -> None:

@@ -2651,8 +2651,9 @@ def _cmd_status(
     cwd: str | None,
 ) -> int:
     # The poller's `status` is the machine's recorder. A dry run reads and reports the
-    # same accounts but writes nothing: agents add --dry-run to keep a checkout off live
-    # state, and every recorder below appends to a file that only grows.
+    # same accounts but records nothing: agents add --dry-run to keep a checkout off live
+    # state, and every recorder below appends to a file that only grows. Provider reads
+    # still refresh their usage caches.
     dry_run = bool(getattr(args, "dry_run", False))
     prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False,
                         record_history=not dry_run)
@@ -2660,6 +2661,11 @@ def _cmd_status(
     if dry_run:
         calibration_notes = ["dry run: recorded no history, resets, waiting stretches, "
                              "calibration encodings, credit expiries or forecast"]
+        try:
+            # Read-only: encoding detection would append, but a broken ledger is still news.
+            calibrations_mod.read_records(env=env)
+        except (calibrations_mod.LedgerError, OSError) as exc:
+            calibration_notes.append(f"calibration ledger invalid: {exc}")
         ledger_valid = False  # not checked: checking appends any new encoding
     else:
         try:
@@ -2719,7 +2725,7 @@ def _cmd_status(
             "warnings": list(dict.fromkeys(prepared.warnings)),
         }
         pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s,
-                                              record_expiries=not dry_run)
+                                              record_expiries=True, persist=not dry_run)
         if pools:
             # Additive, and only when [credit_pools] is configured.
             payload["credit_pools"] = pools
@@ -2735,7 +2741,8 @@ def _cmd_status(
         _write_status_verbose(prepared, now_s, model_class, stdout)
     else:
         _write_status_compact(prepared, now_s, model_class, stdout)
-    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=not dry_run)
+    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True,
+                                          persist=not dry_run)
     if pools:
         zone, zone_note = _display_zone(env)
         stdout.write("\n" + _credit_pool_table(pools, now_s, zone))
@@ -3445,9 +3452,10 @@ def _common_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--dry-run",
         action="store_true",
-        help="pick, exec, explain: decide without routing-state writes or spawning, but "
-        "still append one history record; status: record nothing; waste --backfill "
-        "refuses it; other commands ignore it. Provider reads still refresh usage caches",
+        help="pick, exec, explain: decide without routing-state writes or spawning the chosen "
+        "CLI, but still append one history record; status: record nothing; waste --backfill "
+        "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and "
+        "still refresh usage caches",
     )
     common.add_argument(
         "--explain",
@@ -4502,12 +4510,14 @@ def _cmd_replay(
 
 
 def _credit_pool_rows(
-    config: Config, env: Mapping[str, str], now_s: float, *, record_expiries: bool = False
+    config: Config, env: Mapping[str, str], now_s: float, *, record_expiries: bool = False,
+    persist: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Each configured credit pool's balance, from the ledger; empty without pools.
 
     ``record_expiries`` (``status`` only, the poller's command) writes one ``expired``
-    line for each period that ended since the last run.
+    line for each period that ended since the last run. With ``persist`` false (a dry
+    run) the lines are only applied in memory, so the balances match a recording run.
     """
     if not config.credit_pools:
         return [], []
@@ -4524,11 +4534,12 @@ def _credit_pool_rows(
             ):
                 if usd_per_pse:
                     line["remaining_pse"] = line["remaining_usd"] / usd_per_pse
-                try:
-                    credits_mod.append(env, line)
-                except OSError as exc:
-                    notes.append(f"cannot record {pool.id}'s expiry: {exc}")
-                    continue
+                if persist:
+                    try:
+                        credits_mod.append(env, line)
+                    except OSError as exc:
+                        notes.append(f"cannot record {pool.id}'s expiry: {exc}")
+                        continue
                 lines.append({"v": credits_mod.LEDGER_VERSION, **line})
     rows = []
     for pool in config.credit_pools.values():
