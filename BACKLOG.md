@@ -132,7 +132,7 @@ covers one full weekly cycle.
 
 ---
 
-### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`  `[claimed by: #0]`
+### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`
 
 Workable bullets come first. The last one waits on an operator decision and is marked
 so; do not start it. One bullet was closed by the operator on 2026-10-18:
@@ -150,15 +150,6 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   Keep the soonest-deadline regression and #3's scarcity gate when changing reporting.
   Closes when a reported fleet estimate spends one shared demand stream across
   deadlines and five-hour constraints, with tests reconciling the figure.
-
-- **The capability refresher does not check which Google account answered.** Every
-  Antigravity `/usage` read now compares agy's sign-in log with `identity_email`, and a
-  mismatch benches the pool. `capability_refresh` still runs `agy models` through the
-  same launch recipe with no such check, so after a silent login switch it would record
-  the other account's model list under this pool. The stakes are lower than for quota
-  numbers, because a model list rarely differs between two accounts of one tier.
-  Closes when the refresher passes `--log-file /dev/stderr`, refuses a listing whose
-  log names another address, and a test pins it.
 
 - **A Claude plan that lapses without `plan_ends` keeps getting routed to.** Nothing the
   router reads names the plan: the usage endpoint carries percentages and deadlines, and
@@ -188,25 +179,38 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   that the latest read failed. Closes when the note carries the failure's cause, so an
   attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
   why the poller's log is that short.
+  Since 2026-10-20 the capability refresher's `agy models` read has the same gap, and
+  slightly worse: it now passes `--log-file /dev/stderr` too, so agy writes no per-run log
+  file for it either. A timeout drops the captured stderr,
+  `src/quota_router/capability_refresh.py:341` "timed out after {AGY_TIMEOUT_S:g}s",
+  and on a non-zero exit the filter that keeps agy's own message drops every log line,
+  `src/quota_router/capability_refresh.py:347` "if not _AGY_LOG_LINE.match(line)",
+  including the E and F lines that carry the cause, then falls back to the log's last
+  300 characters, which are shutdown noise. That half closes when the failure detail in
+  `capability-refresh.log` names agy's cause, with a test.
 
-- **Three paths still ignore an injected `home=`, and one docstring overstates the rule.**
-  Since 2026-10-20 a leading `~` in a configured or environment data path expands against
-  an injected `home=` (`expand_user` in `providers/base.py`). Three places sit outside that:
-  `build_default_adapters` hands the user home to Cursor,
-  `src/quota_router/providers/__init__.py:320` "CursorAdapter(env=env, home=home, account_ids=cursor_accounts)",
-  whose `home` means the Cursor directory itself,
-  `src/quota_router/providers/cursor.py:96` "home: Cursor home directory, overriding",
-  so under an injected home it reads `<home>/cli-config.json` and ignores
-  `QUOTA_ROUTER_CURSOR_HOME`. `forensics._state_root` lets `XDG_STATE_HOME` win over an
-  injected home and never expands `~` in it,
-  `src/quota_router/forensics.py:134` "base = Path(xdg) if xdg else",
-  the reverse of both provider caches. Binary-path overrides (`QUOTA_ROUTER_CODEX_BIN`,
-  `CL_CLAUDE_BIN`) stay on the process `HOME` on purpose, but the `load_snapshots`
-  docstring says every configured or environment path follows `home`,
-  `src/quota_router/providers/__init__.py:470` "a leading ``~`` expands against in configured or environment paths".
-  None of these reads the real home under an injected one; production never injects
-  `home`. Fix: pass Cursor `<home>/.cursor` (or let it take a user home), decide the XDG
-  precedence in `_state_root` to match the caches, and narrow the docstring to data paths.
+- **A lasting wrong-account agy login re-reads the model list on every poll.** A failed
+  capability read keeps the old fetch time, so the 15-minute spacing,
+  `src/quota_router/capability_refresh.py:56` "NETWORK_INTERVAL_S: Final[float] = 900.0",
+  does not apply to it. Every failure kind already behaved this way, but
+  `agy_wrong_account` (2026-10-20) is the first that lasts until someone fixes the login:
+  about 2 s of agy and one model-list call against the wrong account, per pool, every
+  120 s, and `capabilities --refresh` exits 1 each time, which the poller ignores.
+  Closes when a refused read is retried no more often than a successful one, with a test.
+
+- **History and the forensics paths read `HOME` from different places.** History, state
+  and waste take `HOME` from the environment mapping they are given,
+  `src/quota_router/history.py:96` "base = Path(home) / ".
+  Forensics takes the process `HOME`, for its default and for a `~` in
+  `XDG_STATE_HOME`, `src/quota_router/forensics.py:140` "base = Path(os.path.expanduser(",
+  and the usage cache mixes the two (mapping for the default, process for `~` in
+  `XDG_STATE_HOME`). A test that passes `{"HOME": tmp}` therefore reads history in `tmp`
+  and forensics state in the real home. Production builds the mapping from `os.environ`,
+  so the two agree there. Forensics also treats an injected `home=""` differently for
+  the state path (relative) and the log path (process home),
+  `src/quota_router/forensics.py:159` "root = Path(os.path.expanduser(str(home) if home else".
+  Closes when every resolver takes `HOME` from one place, with a test that passes a
+  mapping `HOME` and no injected home.
 
 - **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
   Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
@@ -1253,10 +1257,10 @@ more kinds of leak that #18 does not name. Four tests read `~/.claude*.json` and
 Three read the statusline caches under `~/Library/Caches/twin-networking`:
 `tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
 `tests/test_antigravity_usage.py:653` "def test_pick_never_spawns_agy_and_status_does" and
-`tests/test_adapters.py:1785` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
+`tests/test_adapters.py:1793` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
 Three start the real `codex app-server` binary, now only against empty temp homes:
 that last test, `tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
-and `tests/test_adapters.py:1739` "def test_load_snapshots_is_the_one_call_the_cli_needs".
+and `tests/test_adapters.py:1747` "def test_load_snapshots_is_the_one_call_the_cli_needs".
 
 **Impact:** each passes today because what it asserts does not depend on what the real
 files hold. A statusline cache or a Claude config that changes the asserted field turns
