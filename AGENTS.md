@@ -53,7 +53,8 @@ XDG_STATE_HOME=$(mktemp -d) ./.venv/bin/quotapick status   # your code, scratch 
 ```
 
 Set `XDG_STATE_HOME` to a scratch folder for every `quotapick` command you run from
-a checkout. Without it, the checkout writes to `~/.local/state/quota-router`:
+a checkout. Without it, the checkout writes to `~/.local/state/quota-router`. Among
+other writes:
 
 - `pick`, `explain`, `exec` and `run` append history.
 - `status` also appends reset rows and new encodings to the calibration ledger.

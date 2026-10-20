@@ -179,9 +179,9 @@ The operator approved the live write at about 07:55 UTC on October 20, on condit
 that a fresh review of the plan returned ship. Three fresh adversarial reviews of the
 deployment plan and its helper ran in all: the first returned fix-first, the second
 ship-with-notes, and the third, after one more helper change, ship before the write.
-The operator confirmed the approval again after the write. The helper ran from a frozen copy of revision
-`6ce043f`, and it refused to run if its own bytes, that source or the approved
-records differed from the reviewed hashes.
+The operator confirmed the approval again after the write. The helper ran from a
+frozen copy of revision `6ce043f`, and it refused to run if its own bytes, that
+source or the approved records differed from the reviewed hashes.
 
 At 08:22 UTC the helper first copied the whole live state directory and checked that
 before, copy and after agreed. It then appended the 19 records once,
@@ -236,8 +236,8 @@ ordinary `quotapick waste` is read-only and combines durable and retained eviden
 Before any live write, the operator must approve this raw-stretch proposal and
 a backup under #32. Both were approved and done on October 20, as described above.
 Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`, under #29's
-deployment approval. Never point a working checkout's `quotapick status` or
-`waste --backfill` at live state: from `e2cd00c` both append waiting records there.
+deployment approval. Never run a working checkout's `quotapick` against live state;
+AGENTS.md gives the rule and the writes it prevents.
 This document does not authorize further live writes, installation, a schedule
 change, or ping execution.
 

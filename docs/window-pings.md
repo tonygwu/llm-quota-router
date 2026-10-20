@@ -103,8 +103,9 @@ The calibration ledger and v3 reset writer were adopted on October 20 at `7f8788
 That installation preserved the plist, which still has no ping invocation, and
 does not include the later ping changes or waiting-capacity writer. The separate
 raw-history adoption under #32 completed on October 20. Installing those changes
-still needs a revision at or after `e979c1a`, and a replay of that revision's writer
-against the adopted records whose first run passes, as #32 records.
+still needs a revision at or after `e979c1a`. It also needs a replay of that
+revision's writer against the adopted records, with a first run that passes, as #32
+records.
 The coordinating session owns activation. Post-ping boundary verification remains
 necessary, including the Antigravity fixed stretch.
 
