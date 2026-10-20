@@ -211,6 +211,7 @@ def test_the_library_api_agrees_with_pick(env) -> None:
     write_config(env, SECOND_CODEX + DEPRIORITIZE_CODEX)
     snaps = [codex(), codex_b()]
     selection = select_account(
+        cwd=_NO_CONFIG_FILES,
         only=["codex", "codex_b"],
         env=env,
         now_s=NOW,

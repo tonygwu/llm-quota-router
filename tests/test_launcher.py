@@ -123,6 +123,17 @@ def env(home) -> dict[str, str]:
     return {"HOME": str(home), "PATH": "/usr/bin:/bin"}
 
 
+def _load_config_here(**kwargs):
+    """The launcher's ``load_config``, kept off a project file in the checkout.
+
+    The launcher reads ``.quota-router.toml`` from the directory it runs in, which in a
+    test is the checkout (BACKLOG #44).
+    """
+    from quota_router.config import load_config
+
+    return load_config(cwd=_NO_CONFIG_FILES, **kwargs)
+
+
 def launch(argv, env, *, answer=None, error=None, select=None, stderr=None, config=None):
     """Run ``main()`` against a canned router answer and return ``(code, Exec, stderr)``."""
     import io
@@ -136,7 +147,7 @@ def launch(argv, env, *, answer=None, error=None, select=None, stderr=None, conf
                 raise error
             return answer if answer is not None else selection(_row("claude", fits=True))
 
-    deps_kwargs = {"select": select, "exec_": executor}
+    deps_kwargs = {"select": select, "exec_": executor, "load_config": _load_config_here}
     if config is not None:
         deps_kwargs["load_config"] = lambda **_kw: config
 
@@ -241,7 +252,11 @@ def test_the_launcher_consumes_a_real_router_answer(tmp_path) -> None:
 
     def select(**kwargs):
         return select_account(
-            **{**kwargs, "deps": cli.Deps(load_snapshots=lambda **kw: (list(snaps), []))},
+            **{
+                **kwargs,
+                "deps": cli.Deps(load_snapshots=lambda **kw: (list(snaps), [])),
+                "cwd": _NO_CONFIG_FILES,
+            },
         )
 
     answer = select(env=env, now_s=NOW, record=False)
@@ -1019,7 +1034,12 @@ def launch_at(argv, env, *, now, **kwargs):
                 raise error
             return answer
 
-    deps_kwargs = {"select": select, "exec_": executor, "now": lambda: now}
+    deps_kwargs = {
+        "select": select,
+        "exec_": executor,
+        "now": lambda: now,
+        "load_config": _load_config_here,
+    }
     if config is not None:
         deps_kwargs["load_config"] = lambda **_kw: config
 
@@ -1856,6 +1876,7 @@ def test_the_offline_switch_reaches_the_real_adapter_through_select_account(
         record=False,
         env=env,
         now_s=MONDAY_0953,
+        cwd=_NO_CONFIG_FILES,
     )
 
     assert answer.account == "claude_b", json.dumps(answer.to_dict(), indent=1)

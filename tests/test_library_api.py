@@ -51,6 +51,7 @@ def test_select_account_returns_the_same_decision_as_the_cli(tmp_path) -> None:
         run(["pick", "--json", "--dry-run"], env, snapshots=snaps, now_s=NOW)[1]
     )
     from_lib = select_account(
+        cwd=_NO_CONFIG_FILES,
         env=env, now_s=NOW, deps=_deps(snaps), record=False
     )
 
@@ -70,7 +71,9 @@ def test_to_dict_is_the_cli_payload(tmp_path) -> None:
     from_cli = json.loads(
         run(["pick", "--json", "--dry-run"], env, snapshots=snaps, now_s=NOW)[1]
     )
-    from_lib = select_account(env=env, now_s=NOW, deps=_deps(snaps), record=False)
+    from_lib = select_account(
+        env=env, now_s=NOW, deps=_deps(snaps), record=False, cwd=_NO_CONFIG_FILES
+    )
 
     assert from_lib.to_dict() == from_cli
 
@@ -78,6 +81,7 @@ def test_to_dict_is_the_cli_payload(tmp_path) -> None:
 def test_the_contract_version_is_exposed(tmp_path) -> None:
     """Consumers pin on this; it has to be reachable without parsing JSON."""
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=False
     )
     assert sel.contract_version >= 1
@@ -90,6 +94,7 @@ def test_the_contract_version_is_exposed(tmp_path) -> None:
 
 def test_only_restricts_the_candidate_set(tmp_path) -> None:
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         only=["claude_c"],
         env=_env(tmp_path),
         now_s=NOW,
@@ -102,9 +107,11 @@ def test_only_restricts_the_candidate_set(tmp_path) -> None:
 def test_exclude_removes_a_candidate(tmp_path) -> None:
     snaps = real_capture()
     unconstrained = select_account(
+        cwd=_NO_CONFIG_FILES,
         env=_env(tmp_path), now_s=NOW, deps=_deps(snaps), record=False
     )
     narrowed = select_account(
+        cwd=_NO_CONFIG_FILES,
         exclude=[unconstrained.account],
         env=_env(tmp_path),
         now_s=NOW,
@@ -123,6 +130,7 @@ def test_the_default_account_exec_env_omits_claude_config_dir(tmp_path) -> None:
     break the very account it was told to use.
     """
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         only=["claude"],
         env=_env(tmp_path),
         now_s=NOW,
@@ -137,6 +145,7 @@ def test_record_false_writes_no_state(tmp_path) -> None:
     """A caller that decides and then abandons must not book quota against anyone."""
     state = tmp_path / "state.json"
     select_account(
+        cwd=_NO_CONFIG_FILES,
         env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=False
     )
     assert not state.exists(), "record=False must not persist a reservation"
@@ -145,6 +154,7 @@ def test_record_false_writes_no_state(tmp_path) -> None:
 def test_record_true_persists_a_reservation(tmp_path) -> None:
     state = tmp_path / "state.json"
     select_account(
+        cwd=_NO_CONFIG_FILES,
         env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=True
     )
     assert state.exists(), "record=True must book the pick so concurrent callers see it"
@@ -153,6 +163,7 @@ def test_record_true_persists_a_reservation(tmp_path) -> None:
 def test_it_degrades_instead_of_raising_when_no_account_is_usable(tmp_path) -> None:
     """A router that cannot answer must never stop the caller from working."""
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         env=_env(tmp_path), now_s=NOW, deps=_deps([]), record=False
     )
     assert isinstance(sel, Selection)
@@ -169,6 +180,7 @@ def test_the_documented_readme_snippet_actually_runs(tmp_path) -> None:
     import os
 
     decision = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable", env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=False
     )
     child_env = {**os.environ, **decision.exec_env}
@@ -190,6 +202,7 @@ def test_fits_is_false_when_no_account_meets_the_caller_s_bar(tmp_path) -> None:
     a real answer from a fallback.
     """
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable",
         min_remaining=0.50,
         env=_env(tmp_path),
@@ -211,6 +224,7 @@ def test_available_at_says_when_the_bar_could_next_be_met(tmp_path) -> None:
     exclusions, because that is the first moment any account refills.
     """
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable",
         min_remaining=0.50,
         env=_env(tmp_path),
@@ -225,6 +239,7 @@ def test_available_at_says_when_the_bar_could_next_be_met(tmp_path) -> None:
 
 def test_available_at_is_none_when_something_does_fit(tmp_path) -> None:
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable", env=_env(tmp_path), now_s=NOW, deps=_deps(real_capture()), record=False
     )
     assert sel.meets_policy is True
@@ -292,9 +307,13 @@ def test_pinning_to_one_account_does_not_apply_pileup_reservations(tmp_path) -> 
     # at the 0.5% default is 40% -- more than the account has, so an applied pileup
     # drives it below zero and the router calls it exhausted.
     for _ in range(80):
-        select_account(only=["claude_b"], env=env, now_s=NOW, deps=deps, record=True)
+        select_account(
+            only=["claude_b"], env=env, now_s=NOW, deps=deps, record=True, cwd=_NO_CONFIG_FILES
+        )
 
-    pinned = select_account(only=["claude_b"], env=env, now_s=NOW, deps=deps, record=False)
+    pinned = select_account(
+        only=["claude_b"], env=env, now_s=NOW, deps=deps, record=False, cwd=_NO_CONFIG_FILES
+    )
     assert pinned.account == "claude_b", (
         f"pinned to one account, reservations must not make it unservable; got "
         f"{pinned.account} reason={pinned.reason}"
@@ -322,6 +341,7 @@ def test_meets_policy_is_false_when_the_selection_layer_chose_nobody(tmp_path) -
         for s in real_capture()
     ]
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable", env=_env(tmp_path), now_s=NOW, deps=_deps(exhausted), record=False
     )
     assert sel.meets_policy is False, (
@@ -351,6 +371,7 @@ def test_the_library_entry_point_reports_an_account_it_could_not_read(tmp_path) 
         confidence=0.0, available=False, note="acct4@example.com: access token expired",
     )
     sel = select_account(
+        cwd=_NO_CONFIG_FILES,
         model="fable",
         env=_env(tmp_path),
         now_s=NOW,
