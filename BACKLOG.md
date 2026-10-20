@@ -367,7 +367,7 @@ landed on 2026-10-19.
 
 ---
 
-### 5. A `run` client cannot tell from an attempt whether it was billed  `[difficulty: high]`  `[filed: 2026-10-15]`
+### 5. A `run` client cannot tell from an attempt whether it was billed  `[difficulty: high]`  `[filed: 2026-10-15]`  `[claimed by: #0]`
 
 A client may route a failed `quotapick run` call some other way only if nothing was
 spent. Today it has to infer that from each attempt's `outcome` and `cost_usd`. Two cases
