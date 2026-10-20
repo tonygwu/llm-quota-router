@@ -655,10 +655,11 @@ def execute(
                                 hold_usd=expected,
                             )
 
-        if prepared.record is not None:
-            runs = target is not None and bool(target.model)
-            ran = target.account if runs and target.kind == "subscription" else None
-            warnings.extend(w for w in prepared.record(ran) if w not in warnings)
+        if prepared.record is None:
+            raise RuntimeError("_prepare(record_later=True) left no recorder")
+        runs = target is not None and bool(target.model)
+        ran = target.account if runs and target.kind == "subscription" else None
+        warnings.extend(w for w in prepared.record(ran) if w not in warnings)
         if target is None:
             outcome = "no_candidate"
             break

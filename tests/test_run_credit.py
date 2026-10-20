@@ -26,7 +26,7 @@ import pytest
 
 from quota_router import cli, credits, forecast
 from quota_router.state import StateStore
-from quota_router.secrets import Secret
+from quota_router.secrets import Secret, SecretError
 from tests.test_cli import FIVE_HOURS, NOW, _NO_CONFIG_FILES, account, run, window
 from tests.test_run import NOTHING_RAN, MODEL, FakeRunner, _stream
 
@@ -99,11 +99,13 @@ def _secret_reader(calls):
     return read
 
 
-def _run(env, request, runner, *, secrets_read=None, flags=(), snapshots=None):
+def _run(env, request, runner, *, secrets_read=None, flags=(), snapshots=None,
+         read_secret=None):
     deps = cli.Deps(
         load_snapshots=lambda **kw: (list(snapshots or _drained_subscriptions()), []),
         run=runner,
-        read_secret=_secret_reader(secrets_read if secrets_read is not None else []),
+        read_secret=read_secret or _secret_reader(
+            secrets_read if secrets_read is not None else []),
     )
     code, out, err = run(["run", *flags], env, deps=deps, cwd=_NO_CONFIG_FILES,
                          stdin=json.dumps(request))
@@ -174,6 +176,8 @@ def test_exhaustion_empties_the_pool_and_the_job_moves_on(env) -> None:
     assert [a["outcome"] for a in payload["attempts"]] == ["exhausted", "ok"]
     assert [a["spent"] for a in payload["attempts"]] == [False, True]
     assert payload["served"]["pool_kind"] == "subscription"
+    # The pool's attempt records no subscription pick; the retry records its own.
+    assert _history_chosen(env) == [None, payload["served"]["account"]]
     lines = _ledger(env)
     assert [line["type"] for line in lines] == ["hold", "release", "exhausted"]
     config = cli.load_config(env=env, cwd=_NO_CONFIG_FILES)
@@ -250,6 +254,20 @@ def test_a_subscription_served_run_still_records_its_pick(env) -> None:
     assert [r.account for r in state.reservations] == [served]
     assert {entry.account for entry in state.sticky.values()} == {served}
     assert state.selection
+
+
+def test_a_pool_whose_key_cannot_be_read_falls_back_and_records_the_subscription(env):
+    def unreadable(service):
+        raise SecretError(f"cannot read Keychain item {service!r}: CalledProcessError")
+
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(), runner, read_secret=unreadable)
+    served = payload["served"]["account"]
+    assert payload["served"]["pool_kind"] == "subscription", err
+    assert any(w.startswith("anthropic_api_d: cannot read Keychain item")
+               for w in payload["warnings"])
+    assert _history_chosen(env) == [served]
+    assert [r.account for r in _routing_state(env).reservations] == [served]
 
 
 def test_a_deferred_record_writes_once_and_only_on_the_chosen_account(env) -> None:
