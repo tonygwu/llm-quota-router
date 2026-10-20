@@ -1335,7 +1335,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 26. Live waste adoption is approved and not yet done, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 26. Live waste adoption is approved and not yet done, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #11]`
 
 **Background:** #24 implemented raw v3 reset readings, an append-only assumption
 ledger and reports derived from current historical beliefs. Its reconstruction is
