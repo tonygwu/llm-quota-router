@@ -1176,7 +1176,7 @@ and say so in the README.
 
 ---
 
-### 47. The config-search guard can stop firing without a test noticing, and skips `QUOTA_ROUTER_CONFIG`  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 47. The config-search guard can stop firing without a test noticing, and skips `QUOTA_ROUTER_CONFIG`  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** #44 (2026-10-20) added a run-time guard,
 `tests/conftest.py:41` "def _no_config_search_reaches_the_real_machine(", that fails a test
