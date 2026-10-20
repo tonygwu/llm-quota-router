@@ -1472,7 +1472,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 ---
 
-### 29. Window pings lack full native telemetry qualification and remain disabled  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 29. Window pings lack full native telemetry qualification and remain disabled  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #8]`
 
 **Background:** #22 shipped a default-dry-run command and installer integration.
 `docs/window-pings.md:90` "Keep recurring pings dry-run until provider telemetry and post-ping window behavior"
