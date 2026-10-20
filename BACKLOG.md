@@ -1205,16 +1205,16 @@ any checkout today.
 **Background:** #18 covers the `load_config(env={})` calls that read the live config. A
 traced suite run on 2026-10-20 (scratch `HOME`, every vendor binary blocked) found three
 more kinds of leak that #18 does not name. Four tests read `~/.claude*.json` and
-`~/.claude*/.claude.json`: `tests/test_cli.py:1966` "def test_the_cli_hands_cursor_its_configured_accounts",
-`tests/test_cli.py:2008` "def test_antigravity_pools_come_from_the_operator_config",
-`tests/test_cli.py:2039` "def test_a_second_antigravity_account_reaches_the_adapter" and
+`~/.claude*/.claude.json`: `tests/test_cli.py:2063` "def test_the_cli_hands_cursor_its_configured_accounts",
+`tests/test_cli.py:2105` "def test_antigravity_pools_come_from_the_operator_config",
+`tests/test_cli.py:2136` "def test_a_second_antigravity_account_reaches_the_adapter" and
 `tests/test_adapters.py:448` "def test_every_adapter_satisfies_the_protocol".
 Three read the statusline caches under `~/Library/Caches/twin-networking`:
-`tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
+`tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
 `tests/test_antigravity_usage.py:653` "def test_pick_never_spawns_agy_and_status_does" and
 `tests/test_adapters.py:1793` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
 Three start the real `codex app-server` binary, now only against empty temp homes:
-that last test, `tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
+that last test, `tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
 and `tests/test_adapters.py:1747` "def test_load_snapshots_is_the_one_call_the_cli_needs".
 
 **Impact:** each passes today because what it asserts does not depend on what the real
@@ -1450,72 +1450,54 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 40. Corrupt history or waste bytes break routing and status, or name no file  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
+### 42. A non-UTF-8 byte in five more state files crashes instead of being reported  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** reviews of #38 found these gaps beside the writers' live warnings.
-- A JSON decode error in strict history reading re-raises bare, so the live warning
-  shows only the parser message ("line 1 column 9", always line 1 of one record) and no
-  file: `src/quota_router/history.py:466` "except json.JSONDecodeError:". The other
-  strict errors already name the file, for example
-  `src/quota_router/history.py:472` "non-object history record in".
-- A non-UTF-8 byte crashes with `UnicodeDecodeError` (exit 127 for `status`). In the
-  first decoded block of `history.jsonl` it fails at
-  `src/quota_router/history.py:123` "first = handle.readline()", which catches only
-  `OSError`, during the history append that every recording command makes (`status`,
-  `pick`, `exec`, `explain`, `run`, `doctor`). Later in the file, or in a rotated file, it fails at
-  `src/quota_router/history.py:460` "for line in handle:" in the non-strict reader that
-  the forecast refresh uses. In `waste.jsonl` it fails at
-  `src/quota_router/waste.py:1093` "yield from handle" instead of producing the
-  unreadable-row refusal. A review reproduced each case in test folders; a `pick` with
-  a bad first line returned no account ("router failure: UnicodeDecodeError"), and `exec`
-  exited 127 without launching anything.
-- A failed demand-forecast write, `src/quota_router/forecast.py:491` "cannot write the demand forecast",
-  is silent under the default objective: `status` discards forecast notes at
-  `src/quota_router/cli.py:2735` "if engine.objective",
-  and under the joint objective it is only a counted history note.
+**Background:** #40 (`8c40f6f`) made history, waste and the forecast cache skip or report
+a non-UTF-8 byte. A review found five more readers that decode a whole file and catch
+only `OSError` or `JSONDecodeError`; each raised `UnicodeDecodeError` on a `\xff` byte
+in a scratch file:
+- `src/quota_router/credits.py:87` "text = path.read_text(encoding=" in `credits.read`,
+  whose contract is "a note for each one that is not" readable; reached from `status`
+  (credit pool rows) and from `run`.
+- `src/quota_router/window_ping.py:98` "text = path.read_text()" in `_journal`, which uses
+  the locale encoding; `waste` reports the error without a file name, and
+  `window-ping` crashes.
+- `src/quota_router/capability.py:762` "raw = path.read_text(encoding=" in `read_table`,
+  on the `pick --capability` path.
+- `src/quota_router/providers/claude_oauth.py:247` "blob = json.loads(path.read_text(encoding=" in
+  `_read_usage_cache`, on the usage-read path.
+- `src/quota_router/state.py:442` "raw = self.path.read_text(encoding=" in the routing
+  state reader.
+Whether each caller catches the error was not traced for the last three.
 
-**Impact:** one bad byte in history's first block makes `pick` choose no account, so
-`cl` falls back to its own default (the soonest weekly reset when configured), makes
-`exec` exit without launching, and stops `status`. Anywhere else in history it stops
-`status` after that run's history append once the forecast refresh is due (a rotated
-file only within the forecast window), and breaks `pick`'s cached-snapshot replay when
-a live usage read fails. A crash mid-append that leaves a partial line makes every
-poll print a warning that points nowhere. Placed early because it can stop routing,
-not only recording.
+**Impact:** one bad byte in the credits ledger stops `status` and `run` for an operator
+with credit pools; in the routing-side files it may stop `pick` the way #40's history
+case did. Placed early for that reason.
 
 **Fix:**
-1. Strict history reading re-raises JSON and UTF-8 decode errors as `ValueError` naming
-   the file, like its other errors.
-2. Treat `UnicodeDecodeError` like any unreadable line in `_first_record_day`, in the
-   non-strict history reader, and in waste reading: no crash; the existing refusal or
-   live warning names the file.
-3. Return the forecast-write failure as a live warning that bypasses the objective
-   check, through `_WasteNotes`-style live notes in `cli.py`.
-4. Tests in `tests/test_cli.py` next to
-   `tests/test_cli.py:1320` "def test_unreadable_history_is_a_live_warning_not_a_crash":
-   a partial JSON line in a rotated file names that file; a non-UTF-8 byte in the first
-   line of history, later in history, in a rotated file, and in waste each give exit 0
-   and a live warning that names the file; `pick` with a bad first history line still
-   chooses an account and `exec` still launches; a forecast-write failure prints live
-   under the default objective.
+1. Sweep `src` for whole-file text reads of state files and give each the treatment its
+   contract needs: `credits.read` decodes per line and reports a non-UTF-8 line with its
+   file and line; `_journal` reads UTF-8 explicitly and raises `ValueError` naming the
+   file (and names the file for its other errors); the capability table, usage cache
+   and routing state treat a decode error like the unreadable file each already handles.
+2. Tests next to `tests/test_credits.py:210` "def test_an_unreadable_ledger_line_is_reported"
+   and `tests/test_window_ping.py:222` "def test_bad_journal_and_concurrent_writer_fail_closed",
+   plus one per routing-side reader.
 
-*Risks and edge cases:* the strict and non-strict readers share the line loop at
-history.py:460, so opening with `errors="replace"` would let a corrupted record through
-strict reading as valid JSON, and strict callers decide spending; strict readers must
-keep refusing bad bytes. `_first_record_day` must stay a one-line read. Switching to
-binary reads changes line-ending handling. `credits.py` and `window_ping.py` read their
-files the same unguarded way; check them, and file separately if they differ.
+*Risks and edge cases:* skipping an undecodable credits line, like an unparseable one
+today, can make a pool balance read too high on a path that spends paid credit;
+`run.py` only warns about ledger problems. Decide whether `run` should refuse a ledger
+with unreadable lines, and record the choice. The ping journal must stay strict.
 
-*Why high not medium:* it changes error handling in the history reader that routing
-uses, across several commands.
+*Why high not medium:* it touches readers on the routing and paid-credit paths.
 
-**Touch points:** `src/quota_router/history.py:466` "except json.JSONDecodeError:";
-`src/quota_router/history.py:123` "first = handle.readline()";
-`src/quota_router/history.py:460` "for line in handle:";
-`src/quota_router/waste.py:1093` "yield from handle";
-`src/quota_router/forecast.py:491` "cannot write the demand forecast";
-`src/quota_router/cli.py:2735` "if engine.objective";
-`tests/test_cli.py:1320` "def test_unreadable_history_is_a_live_warning_not_a_crash".
+**Touch points:** `src/quota_router/credits.py:87` "text = path.read_text(encoding=";
+`src/quota_router/window_ping.py:98` "text = path.read_text()";
+`src/quota_router/capability.py:762` "raw = path.read_text(encoding=";
+`src/quota_router/providers/claude_oauth.py:247` "blob = json.loads(path.read_text(encoding=";
+`src/quota_router/state.py:442` "raw = self.path.read_text(encoding=";
+`tests/test_credits.py:210` "def test_an_unreadable_ledger_line_is_reported";
+`tests/test_window_ping.py:222` "def test_bad_journal_and_concurrent_writer_fail_closed".
 
 ---
 
@@ -1523,19 +1505,19 @@ uses, across several commands.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3552` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3556` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3485` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4148` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4697` "def _cmd_credits("),
+(`src/quota_router/cli.py:3489` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4152` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4701` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3492` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4450` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:4087` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3902` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3496` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4454` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:4091` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3906` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3808` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3812` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1559,8 +1541,8 @@ exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split 
 pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
 and keep that text in one constant.
 
-**Touch points:** `src/quota_router/cli.py:3552` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3808` "# --dry-run was accepted, ignored, and a real call ran.";
+**Touch points:** `src/quota_router/cli.py:3556` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3812` "# --dry-run was accepted, ignored, and a real call ran.";
 `tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
@@ -1568,7 +1550,7 @@ and keep that text in one constant.
 ### 37. A status run that cannot read an account's tier writes tier encodings that blind the waiting report  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `status` passes every snapshot that has windows as an observed tier:
-`src/quota_router/cli.py:2762` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
+`src/quota_router/cli.py:2763` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
 A Claude snapshot takes its tier from the local Claude config, so it is unknown when
 that config cannot be read:
 `src/quota_router/providers/claude_statusline.py:234` "tier = config.tier if config is not None else TIER_UNKNOWN".
@@ -1629,7 +1611,7 @@ change seen only through a cache snapshot must still be recorded.
 
 *Why high not medium:* it changes what the calibration ledger records as evidence.
 
-**Touch points:** `src/quota_router/cli.py:2762` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
+**Touch points:** `src/quota_router/cli.py:2763` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
 `src/quota_router/calibrations.py:485` "for item in loaded_values(config, observed_tiers=observed_tiers):";
 `src/quota_router/waste.py:625` "else capacity_for_tier(tier)";
 `tests/test_calibrations.py:207` "def test_observed_tier_tracks_actual_writer_and_missing_observation_does_not_revert".
