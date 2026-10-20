@@ -48,7 +48,7 @@ To test your own changes, use your checkout's venv, which is isolated from the
 installed binaries but not from live state:
 
 ```sh
-./.venv/bin/python -m pytest -q          # ~1670 tests, ~30s
+./.venv/bin/python -m pytest -q          # ~1800 tests, ~20s
 XDG_STATE_HOME=$(mktemp -d) ./.venv/bin/quotapick status   # your code, scratch state
 ```
 
@@ -189,6 +189,9 @@ install is needed. Tests marked `live` touch the real machine — real Keychain
 entries, real `~/.claude*` config dirs, the real usage endpoint — and are
 deselected by default. Run them with `-m live`, and only when you accept the
 side effects.
+Every other test fails if its config search reaches the real home, the working
+directory, or the process `XDG_CONFIG_HOME` or `QUOTA_ROUTER_CONFIG` (`tests/conftest.py`).
+Pass `load_config` an env rooted in a scratch folder and `cwd=_NO_CONFIG_FILES`.
 
 **Never let anything in this repo redeem a Claude refresh token.** Anthropic
 rotates refresh tokens, so redeeming one revokes the copy Claude Code holds and
