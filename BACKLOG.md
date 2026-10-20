@@ -1283,7 +1283,7 @@ and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact f
 | Claude 7d and Fable | no: a fixed weekly time per account | – | none |
 | Codex 7d | yes | used 0, reset = read time + 7 days, moving with each read ("sliding") | 8 to 16 per account |
 | Codex 5h | – | these Pro accounts report no five-hour window | – |
-| Antigravity 5h and 7d, both pools | yes | sliding, reset = read time + window + 3 to 14 s (mostly 5 s) | 4 to 102 per pool and window |
+| Antigravity 5h and 7d, both pools | yes | sliding, reset = read time + window + 3 to 14 s in about 98% of reads (mostly 5 s), up to about 40 s | 4 to 102 per pool and window |
 | Codex `base_model_inference` (model-scoped) | – | slid at used 0 in every read from 2026-09-20 to 2026-10-10; a call to the fast model does not use it | – |
 
 - **What ends a waiting stretch is the first call.** `claude`'s 5h window reset at
@@ -1303,8 +1303,8 @@ and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact f
   nothing official covers the weekly window.
 - **Why Antigravity shows it most.** Something uses the Claude and Codex accounts almost
   all the time, so their waits are short: Codex usually waits minutes after a reset, and
-  up to about 5 hours after an early reset (`codex_b`, 2026-10-02T21:13Z to
-  10-03T02:05Z).
+  up to about 5 hours after an early reset (`codex_b`, 2026-10-02T21:13Z to about
+  10-03T02:01Z).
   Nothing calls the Antigravity pools on a schedule, so they wait for days.
 - **Prior art.** `cwarm` (github.com/wonderbyte/cwarm) sends Claude a "Hi" on Haiku at
   cron times of day, so the 5h window starts before work begins. Its only check is
@@ -1331,8 +1331,10 @@ and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact f
   running weekly window (fixed reset 2026-10-25T03:03Z, used 0.013 and 0.016) and a
   waiting 5h window. `pick` gave `antigravity_gemini_b` 9.4 PSE at risk, and that is real:
   the weekly quota expires on 2026-10-25 if nobody uses it. But when both windows wait,
-  as from 2026-10-13 to 10-18 when the Gemini pools sat at used 0 for 113 to 134 hours,
-  nothing can expire, and nobody has checked what `pick` and the waste report do then.
+  as from 2026-10-16T22:31Z to 10-18T03:03Z (about 28 hours, after the early weekly
+  reset), nothing can expire, and nobody has checked what `pick` and the waste report do
+  then. (The 5h windows alone sat at used 0 for about 113 hours from 2026-10-13, while
+  the weekly window ran.)
 - Each sliding read adds a "reset time moved forward" note to the poller output (#11).
 
 **Fix:**
@@ -1355,9 +1357,10 @@ and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact f
      + the window's length: a fresh window nobody has used. Without this, the fixed
      stretch after a scheduled Antigravity reset hides a waiting window for up to 50
      minutes (5h) or about 17 hours (7d) whenever the first read after the reset misses
-     the tolerance.
-   - Choose the tolerance from the poll interval and the 3 to 14 s Antigravity offset,
-     and say what it is.
+     the tolerance. This widens the operator's condition (2), "reset close to now +
+     window length"; report it with the step 2 choice so the operator can confirm.
+   - Choose the tolerance from the poll interval and the Antigravity offset (3 to 14 s
+     in about 98% of reads, up to about 40 s, rarely 97 s), and say what it is.
 2. **Ping rule.** Send one ping to a pool when one of its windows is waiting and the pool
    has had no successful ping within the last window length of that window: 5 hours for
    a 5h window, 7 days for a 7d window. A ping starts every window of its pool, so it
@@ -1369,7 +1372,7 @@ and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact f
    a schedule and not a per-window flag; a check for recent `quotapick run` usage was
    dropped as an optimisation not worth its complexity.
    - The rule also fires once right after a scheduled reset of a window that runs on a
-     clock (Claude 7d, Fable), and once after a use too small to show as 1%. Both are
+     clock (Claude 7d), and once after a use too small to show as 1%. Both are
      single cheap calls, so accept them.
    - Each Antigravity account has two pools with separate bars, Gemini and Claude/GPT,
      and a call to one does not start the other. Each needs its own ping.
