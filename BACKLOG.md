@@ -1543,7 +1543,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 ---
 
-### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #8]`
 
 **Background:** #22 shipped default-dry-run pings. The operator's model and evidence
 changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
