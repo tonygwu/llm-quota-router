@@ -187,10 +187,11 @@ def _load(env, tmp_path, extra=""):
 class FakeIO:
     """Injected ``model/list`` and process runner, recording every call."""
 
-    def __init__(self, codex=None, agy=AGY_OUTPUT, agy_rc=0, codex_error=None):
+    def __init__(self, codex=None, agy=AGY_OUTPUT, agy_rc=0, codex_error=None, agy_log="boom"):
         self.codex = codex if codex is not None else {"codex": CODEX_LIST, "codex_b": CODEX_LIST}
         self.agy = agy
         self.agy_rc = agy_rc
+        self.agy_log = agy_log
         self.codex_error = codex_error
         self.codex_calls: list[str] = []
         self.runs: list[tuple[list[str], dict]] = []
@@ -216,7 +217,7 @@ class FakeIO:
 
     def run(self, argv, env, timeout_s):
         self.runs.append((list(argv), dict(env)))
-        return refresh_mod.Completed(self.agy_rc, self.agy if self.agy_rc == 0 else "", "boom")
+        return refresh_mod.Completed(self.agy_rc, self.agy if self.agy_rc == 0 else "", self.agy_log)
 
     def deps(self):
         return refresh_mod.RefreshDeps(codex_model_list=self.codex_model_list, run=self.run)
@@ -439,10 +440,11 @@ def test_a_macos_user_account_lists_models_through_its_launch_wrapper(
     assert len(wrapped) == 1
     argv, child = wrapped[0]
     assert argv == ["sudo", "-n", "/usr/local/libexec/agy-as-user", "tonyagents",
-                    "/usr/local/bin/agy", "models"]
+                    "/usr/local/bin/agy", "--log-file", "/dev/stderr", "models"]
     assert "HOME" not in child
     plain = [argv for argv, _child in io.runs if argv[0] != "sudo"]
-    assert plain == [[str(agy_on_path), "models"]] * 2  # antigravity_gemini, antigravity_claude
+    # antigravity_gemini, antigravity_claude
+    assert plain == [[str(agy_on_path), "--log-file", "/dev/stderr", "models"]] * 2
 
 
 def test_network_sources_are_read_at_most_every_15_minutes(env, tmp_path, agy_on_path):
@@ -515,6 +517,66 @@ def test_agy_failure_is_reported_with_its_kind(env, tmp_path, agy_on_path):
         "antigravity_gemini_b": "agy_failed",
         "antigravity_claude": "agy_failed",
     }
+
+
+#: The two sign-in lines agy logs on every run, as captured on 2026-10-20 from
+#: ``agy --log-file /dev/stderr models`` (1.4.3 and 1.3.5), with the address replaced.
+def _agy_log(email):
+    return (
+        "I1020 05:53:43.623024      67 server.go:1722] Starting language server process\n"
+        f"I1020 05:53:44.101010      67 auth.go:210] applyAuthResult: email={email}, "
+        "authMethod=oauth\n"
+        f"I1020 05:53:44.101200      67 auth.go:233] OAuth: authenticated successfully as "
+        f"{email}\n"
+    )
+
+
+def _refresh_with_identity(env, tmp_path, io, identity, now_s=NOW):
+    path = Path(_config_file(tmp_path))
+    path.write_text(path.read_text().replace(
+        '[accounts.antigravity_gemini]\nprovider = "antigravity"\n',
+        f'[accounts.antigravity_gemini]\nprovider = "antigravity"\nidentity_email = "{identity}"\n',
+    ))
+    config = load_config(env=env, cwd=_NO_CONFIG_FILES, explicit_path=str(path))
+    assert config.account("antigravity_gemini").identity_email == identity
+    return refresh_mod.refresh(config, env=env, now_s=now_s, deps=io.deps())
+
+
+def test_a_model_list_from_another_google_account_is_refused(env, tmp_path, agy_on_path):
+    """The refresher checks agy's own sign-in log, as the /usage read does (BACKLOG #2):
+    after a silent login switch it would otherwise file the other account's models
+    under this pool."""
+    _refresh_with_identity(env, tmp_path, FakeIO(agy_log=_agy_log("me@example.com")),
+                           "me@example.com")
+    before = _committed(env, "antigravity_gemini", "premium")
+    io = FakeIO(agy=AGY_OUTPUT.replace("Gemini 3.1 Pro (High)", "Other Pro (High)"),
+                agy_log=_agy_log("someone.else@example.com"))
+    report = _refresh_with_identity(env, tmp_path, io, "me@example.com", now_s=NOW + 16 * MIN)
+    failed = {o["account"]: o for o in report.failed}
+    assert failed["antigravity_gemini"]["kind"] == "agy_wrong_account"
+    assert "someone.else@example.com" in failed["antigravity_gemini"]["detail"]
+    assert "me@example.com" in failed["antigravity_gemini"]["detail"]
+    # The listing that matched is kept, not replaced by the other account's.
+    assert _committed(env, "antigravity_gemini", "premium") == before
+    # A pool with no identity_email declared cannot be checked, so it records as before.
+    assert "antigravity_claude" not in failed
+
+
+def test_a_model_list_whose_log_names_the_declared_account_is_recorded(
+    env, tmp_path, agy_on_path
+):
+    report = _refresh_with_identity(env, tmp_path, FakeIO(agy_log=_agy_log("Me@Example.com")),
+                                    "me@example.com")
+    assert "antigravity_gemini" not in {o["account"] for o in report.failed}
+    assert _committed(env, "antigravity_gemini", "premium")["id"] == "Gemini 3.1 Pro (High)"
+
+
+def test_an_agy_failure_names_agy_s_error_not_its_log(env, tmp_path, agy_on_path):
+    log = _agy_log("me@example.com") * 20 + "Error: language server failed to start\n"
+    report = _refresh(env, tmp_path, FakeIO(agy_rc=1, agy_log=log))
+    detail = {o["account"]: o["detail"] for o in report.failed}["antigravity_gemini"]
+    assert "Error: language server failed to start" in detail
+    assert "server.go" not in detail and "me@example.com" not in detail
 
 
 def test_a_refresh_holding_the_lock_makes_a_second_one_skip(env, tmp_path, agy_on_path):

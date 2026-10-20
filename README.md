@@ -909,6 +909,9 @@ table names a version, so Opus 5 → 5.5 or gpt-6-sol → gpt-6.1-sol needs no e
   each through an Anthropic-on-Vertex response id (`req_vrtx_...` in the agy log). The
   router still cannot see what agy serves; a client checks the served model in its own
   telemetry.
+  The read passes `--log-file /dev/stderr` before `models` (agy refuses it after), and a
+  list whose log names a Google account other than the pool's `identity_email` is refused
+  as `agy_wrong_account`, keeping the last good list, as the `/usage` read does.
 
 **`pick` never reads a model list.** digital-twin kills `pick` after 3000 ms, and a timeout
 silently drops its routing. The lists are read by `quotapick capabilities --refresh`, which

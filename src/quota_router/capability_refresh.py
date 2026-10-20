@@ -20,7 +20,10 @@ Sources, per provider:
   Both flavours: a Gemini-flavour account resolves the ``antigravity`` column, a
   Claude-flavour one the ``claude`` column. The pool that once served Gemini under a
   Claude label was sent a retired label; agy 1.2.0 and 1.3.1 now refuse one (exit 1),
-  and on 2026-10-08 both served Claude Opus and Sonnet 5.5 under their own labels.
+  and on 2026-10-08 both served Claude Opus and Sonnet 5.5 under their own labels. agy's
+  log goes to stderr, and a list whose sign-in lines name an account other than the
+  pool's ``identity_email`` is refused (``agy_wrong_account``); with no address logged or
+  none declared, the list is recorded as before.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -35,7 +39,12 @@ from pathlib import Path
 from typing import Any, Callable, Final, Mapping, Sequence
 
 from . import capability as cap
-from .providers.antigravity import MACOS_USER_AGY_BINARY, AgyMissing, agy_argv_env  # noqa: F401
+from .providers.antigravity import (  # noqa: F401
+    MACOS_USER_AGY_BINARY,
+    AgyMissing,
+    agy_argv_env,
+    signed_in_as,
+)
 from .providers.claude_cli_config import _config_file_candidates, _identity_and_tier
 from .providers.codex_app_server import CodexAppServerAdapter, ModelListFailed
 from .providers.codex_sessions import CodexAccountConfig
@@ -54,6 +63,16 @@ AGY_TIMEOUT_S: Final[float] = 20.0
 STALE_SOURCE_S: Final[float] = 72 * 3600.0
 #: ``MACOS_USER_AGY_BINARY`` is imported above from the Antigravity adapter, which owns
 #: the launch recipe for both agy reads (``agy models`` here, ``/usage`` there).
+
+#: ``agy models`` with agy's log on stderr, so its sign-in lines name the Google account
+#: that answered, as the ``/usage`` read does. ``--log-file`` is a global flag here: agy
+#: refuses it after ``models`` ("flags provided but not defined") and takes it before.
+#: Measured 2026-10-20 on agy 1.4.3 and 1.3.5: exit 0, the model lines on stdout, and
+#: both sign-in lines on stderr.
+AGY_MODELS_ARGS: Final[tuple[str, ...]] = ("--log-file", "/dev/stderr", "models")
+
+#: One line of agy's own log (glog format), e.g. ``I1020 05:53:43.623024  67 server.go:1722]``.
+_AGY_LOG_LINE: Final[re.Pattern[str]] = re.compile(r"^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+\s")
 
 
 class ReadFailed(Exception):
@@ -306,7 +325,7 @@ def read_codex_listing(
 def _agy_argv_env(account: Any, env: Mapping[str, str]) -> tuple[list[str], dict[str, str]]:
     """``agy models`` with the account's whole launch recipe; shared with the usage read."""
     try:
-        return agy_argv_env(account, ("models",), env)
+        return agy_argv_env(account, AGY_MODELS_ARGS, env)
     except AgyMissing as exc:
         raise ReadFailed("agy_missing", str(exc)) from exc
 
@@ -323,8 +342,21 @@ def read_agy_listing(
     except OSError as exc:
         raise ReadFailed("agy_failed", f"{' '.join(argv)}: {exc}") from exc
     if done.returncode != 0:
-        tail = (done.stderr or done.stdout).strip()[-300:]
+        # stderr now carries agy's whole log; its own message is what is not a log line.
+        message = "\n".join(
+            line for line in (done.stderr or "").splitlines() if not _AGY_LOG_LINE.match(line)
+        ).strip()
+        tail = (message or done.stdout or done.stderr or "").strip()[-300:]
         raise ReadFailed("agy_failed", f"{' '.join(argv)} exited {done.returncode}: {tail}")
+    served = signed_in_as(done.stderr or "")
+    declared = getattr(account, "identity_email", None)
+    if served and declared and {email.casefold() for email in served} != {declared.casefold()}:
+        # The list belongs to another Google account. Keep the last good one instead.
+        raise ReadFailed(
+            "agy_wrong_account",
+            f"agy is signed in as {', '.join(served)}, not the declared {declared}; "
+            f"its model list was not recorded",
+        )
     entries, warnings = [], []
     for line in done.stdout.splitlines():
         text = line.strip()
