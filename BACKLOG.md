@@ -1266,7 +1266,7 @@ of the operator config.
 
 ---
 
-### 22. Subscription windows that start on first use sit idle, and nothing starts them  `[difficulty: high]`  `[filed: 2026-10-19]`
+### 22. Subscription windows that start on first use sit idle, and nothing starts them  `[difficulty: high]`  `[filed: 2026-10-19]`  `[claimed by: #8]`
 
 **Background:** some quota windows do not run on a clock. They start at the first call
 after a reset, and until then the provider reports that no window is running. The poller
