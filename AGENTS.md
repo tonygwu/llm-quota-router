@@ -130,6 +130,34 @@ picked up the new code and exited cleanly, from the data rather than from an
 mtime. `launchctl list | grep llm-quota-router` gives the last exit status, and
 the run before yours is the one it may still be reporting.
 
+While the installed revision is `7f87887`, run that check within about 10
+minutes of the install. Each record is about 3 MB, almost all of it repeated
+reset-scan notes, and the log rotates at 20 MB and keeps one old copy. The two
+files then hold only about 14 to 28 minutes: at 18:15Z on 2026-10-20 they held
+10 records, 17:54:14Z to 18:15:08Z. Commit `411f54d` folds those notes, and one
+scratch run of origin/main, which contains it, wrote a 69 KB record, so the
+window grows to many hours once repo-prod installs it.
+
+For an older run, start from the status records in
+`~/.local/state/quota-router/history*.jsonl`, which keep each run's `at` time and
+account ids for 30 days. Agents and terminals also run `status`, so a history
+record alone does not say which runs were the poller's. Only the poller writes
+`capability-refresh.log`, right after its own `status`, so the poller's run is
+one of the status records between two refresh lines. That log also rotates at
+20 MB and reaches back only a few days (to 2026-10-17T10:53Z on 2026-10-20).
+Search both of its files around the time you need:
+
+```sh
+grep -ho '"generated_at": *"2026-10-20T08:5[0-9][^"]*"' \
+  ~/Library/Logs/llm-quota-router/capability-refresh.log.1 \
+  ~/Library/Logs/llm-quota-router/capability-refresh.log
+```
+
+The refresh lines narrow the candidates but do not pick one. On 2026-10-20 four
+status runs, at `08:54:50Z`, `08:56:28Z`, `08:56:29Z` and `08:56:59Z`, fell
+between the refreshes at `08:54:29Z` and `08:57:18Z`. One agent session's
+transcript accounted for three of them, which left `08:56:29Z` as the poller's.
+
 The poller also runs `quotapick capabilities --refresh` after `status`, which
 writes `capabilities.json` (the only input `pick --capability` reads). It logs
 to `capability-refresh.log`, one JSON report per run, never to
