@@ -400,7 +400,7 @@ stay byte-identical.
 
 ---
 
-### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`
+### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`  `[claimed by: #9]`
 
 **Background:** `run` narrows its candidates to Claude subscriptions and credit pools
 (`src/quota_router/run.py:443-446`). An `--only` that names anything else is refused.
