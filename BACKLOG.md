@@ -1264,7 +1264,7 @@ of the operator config.
 
 ---
 
-### 23. Nobody has checked that Antigravity now serves real work  `[difficulty: medium]`  `[filed: 2026-10-19]`  `[BLOCKED: one week of routing after the 2026-10-19 change is installed]`
+### 23. Nobody has checked that Antigravity now serves real work  `[difficulty: medium]`  `[filed: 2026-10-19]`  `[BLOCKED: results of the controlled digital-twin workload run]`
 
 **Background:** until 2026-10-19, `pick` credited a provider whose accounts are all
 `unmetered = "fallback"` with the metered providers' demand, capped at 0.2 PSE/h. That
@@ -1291,6 +1291,13 @@ completions.
 consumers override the ranking, pin a provider, launch through `cl`, or fail on the
 Gemini output. Pick history carries no client or completion field, and Antigravity picks
 arrive in bursts, so history alone overstates Antigravity's share of the work.
+
+**Operator decision 2026-10-20:** do not wait a week. Run a controlled test now: an
+agent in the digital-twin repo picks a non-trivial workload that already routes through
+quotapick by capability only ("standard", "premium" or "frontier"), for example the
+contact-enrichment or thread-intelligence agent, runs it, and reports which account and
+model each call landed on, with the served model from the call's own telemetry. The
+week-long measurement below stays as the follow-up.
 
 **Fix:** after one week of routing on the installed change, measure from the consumer
 side:
@@ -1465,7 +1472,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 ---
 
-### 29. Window pings lack full native telemetry qualification and remain disabled  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[BLOCKED: operator approval for further probes and live activation; #26 deployment gate]`
+### 29. Window pings lack full native telemetry qualification and remain disabled  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #22 shipped a default-dry-run command and installer integration.
 `docs/window-pings.md:90` "Keep recurring pings dry-run until provider telemetry and post-ping window behavior"
@@ -1479,6 +1486,21 @@ Gemini and alternate-account paths were outside that three-call allowance.
 **Impact:** enabling now would retry unverified calls every 30 minutes. The chosen
 Claude/GPT model, gpt-oss-120b-medium, is listed for removal on November 2, 2026;
 there is no automatic fallback. No installation or recurring pings were enabled.
+
+**Operator decision 2026-10-20:** turn the pings on.
+- Use Claude Sonnet 5.5 (Low) for the Antigravity Claude/GPT pool instead of GPT-OSS,
+  so the November 2 retirement does not matter.
+- A one-time probe per pool that asks "what model are you?" instead of "1 + 1 = ?" is
+  allowed, to check the model. A model's own answer about its name is weak evidence;
+  record it as such.
+- Activation does not wait for a served-model stamp. Where a provider's output has
+  none (Codex and Antigravity today), record the call as "selected model only" and
+  count it as a success for the cooldown, instead of `model_unverified`. A stamp that
+  names a different model is still a failure.
+- The two implemented choices in step 3 stay as built unless the operator changes them.
+- Live installation still waits for #26's live-install approval, because installing
+  from repo-prod also installs the v3 waste writer, which needs the reconstructed
+  ledger in place first.
 
 **Fix:** carries every live-qualification and operator-gated remainder of deleted
 #22: served-model evidence from Fix step 3, deployment from step 4, post-ping
