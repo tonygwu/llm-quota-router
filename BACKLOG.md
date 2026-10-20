@@ -209,14 +209,21 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   line as it is. `premium` keeps no Antigravity model; the operator should say if that is
   not wanted. A zero-code path exists today: a `[capabilities.frontier] antigravity =
   "Gemini 4 Argon (High)"` pin, which `validate_table` accepts. A consumer's smoke test on
-  `antigravity_gemini_b` at 2026-10-18T22:41Z asked for Argon and succeeded. The
+  `antigravity_gemini_b` at 2026-10-18T22:41Z asked for Argon and succeeded.
+  **Operator decision 2026-10-20:** Argon serves `premium` as well as `frontier` on the
+  Gemini pools. The operator config carries both pins since 2026-10-20T05:44Z (backup
+  taken first); the Claude/GPT pools read the `claude` column and keep Opus. A dry-run
+  pick at 05:45Z sent both capabilities to `antigravity_gemini_b` on Gemini 4 Argon
+  (High). The code change below is still needed so the default table, and every
+  operator without the pins, gets the same. The
   consumer's agent reported, in a note the operator passed on, that the backend selected
   Argon; this repo holds no record of that. agy's JSON output has no served-model field,
   so the telemetry check below must read agy's own record of the call instead, and on
   `antigravity_gemini_b` that record belongs to another macOS user, whose database the
   measurement's provenance read could not open. Closes
   when `argon` is an Antigravity selector (`SELECTORS`, `capability.py:82`), the default
-  table's `frontier` row names it for Antigravity (`capability.py:97`), a test pins both,
+  table's `premium` and `frontier` rows name it for Antigravity (`capability.py:95-97`),
+  a test pins both,
   and one call's telemetry shows the model that actually served it.
 
 - **A consumer's evals ran on `claude_c` with no router pick on 2026-10-12.** The ledger
@@ -414,6 +421,13 @@ weakened:
 
 Prove each with a probe on one pool before building, the way #16 proves #12's facts, and
 keep the probe records outside git.
+
+*Progress 2026-10-20:* the window pings (#29) already call agy headless for one turn:
+`src/quota_router/ping_cli.py:64` runs `agy -p` with `--output-format json`, `--mode
+plan`, `--sandbox` and `--disable-slash-commands` through the usage read's user switch,
+parses the JSON result and checks the sign-in identity. Reuse that for the output and
+identity bullets. The open question is still the first bullet: nobody has shown that
+plan mode plus the sandbox stops every tool.
 
 *Risks and edge cases:* agy may offer no way to turn tools off in headless mode. Then this
 item stops at the probe and says so. agy's output format and failure taxonomy also differ
