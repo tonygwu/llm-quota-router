@@ -519,16 +519,20 @@ def test_agy_failure_is_reported_with_its_kind(env, tmp_path, agy_on_path):
     }
 
 
-#: The two sign-in lines agy logs on every run, as captured on 2026-10-20 from
-#: ``agy --log-file /dev/stderr models`` (1.4.3 and 1.3.5), with the address replaced.
-def _agy_log(email):
-    return (
-        "I1020 05:53:43.623024      67 server.go:1722] Starting language server process\n"
-        f"I1020 05:53:44.101010      67 auth.go:210] applyAuthResult: email={email}, "
-        "authMethod=oauth\n"
-        f"I1020 05:53:44.101200      67 auth.go:233] OAuth: authenticated successfully as "
-        f"{email}\n"
-    )
+#: agy's two sign-in lines as captured on 2026-10-20 from
+#: ``agy --log-file /dev/stderr models`` (1.4.3), with the address replaced, after one
+#: illustrative log line that the sign-in pattern must not match.
+def _agy_log(*emails):
+    lines = ["I1020 06:02:47.912016       1 server.go:1722] Starting language server process "
+             "with pid 90296"]
+    for email in emails:
+        lines += [
+            f"I1020 06:02:48.564352       1 server_oauth.go:224] applyAuthResult: "
+            f"email={email}, authMethod=consumer, quotaProject=",
+            f"I1020 06:02:48.564361       1 server_oauth.go:229] OAuth: authenticated "
+            f"successfully as {email}",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def _refresh_with_identity(env, tmp_path, io, identity, now_s=NOW):
@@ -560,6 +564,26 @@ def test_a_model_list_from_another_google_account_is_refused(env, tmp_path, agy_
     assert _committed(env, "antigravity_gemini", "premium") == before
     # A pool with no identity_email declared cannot be checked, so it records as before.
     assert "antigravity_claude" not in failed
+
+
+def test_a_model_list_whose_log_names_two_accounts_is_refused(env, tmp_path, agy_on_path):
+    io = FakeIO(agy_log=_agy_log("me@example.com", "someone.else@example.com"))
+    report = _refresh_with_identity(env, tmp_path, io, "me@example.com")
+    assert {o["account"]: o["kind"] for o in report.failed}["antigravity_gemini"] == (
+        "agy_wrong_account")
+
+
+def test_a_model_list_whose_log_names_no_account_is_kept_with_a_warning(
+    env, tmp_path, agy_on_path
+):
+    report = _refresh_with_identity(env, tmp_path, FakeIO(agy_log="no sign-in lines here"),
+                                    "me@example.com")
+    assert "antigravity_gemini" not in {o["account"] for o in report.failed}
+    assert _committed(env, "antigravity_gemini", "premium")["id"] == "Gemini 3.1 Pro (High)"
+    assert any(w.startswith("antigravity_gemini: agy's log named no signed-in Google account")
+               and "me@example.com" in w for w in report.warnings)
+    # Undeclared pools have nothing to check against, so they carry no such warning.
+    assert not any(w.startswith("antigravity_claude: agy's log named no") for w in report.warnings)
 
 
 def test_a_model_list_whose_log_names_the_declared_account_is_recorded(

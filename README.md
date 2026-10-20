@@ -911,7 +911,10 @@ table names a version, so Opus 5 → 5.5 or gpt-6-sol → gpt-6.1-sol needs no e
   telemetry.
   The read passes `--log-file /dev/stderr` before `models` (agy refuses it after), and a
   list whose log names a Google account other than the pool's `identity_email` is refused
-  as `agy_wrong_account`, keeping the last good list, as the `/usage` read does.
+  as `agy_wrong_account`, keeping the last good list, as the `/usage` read does. A list
+  whose log names no account is still recorded, with a warning, where the `/usage` read
+  refuses that reading and keeps serving the last confirmed one: a model list rarely
+  differs between two accounts.
 
 **`pick` never reads a model list.** digital-twin kills `pick` after 3000 ms, and a timeout
 silently drops its routing. The lists are read by `quotapick capabilities --refresh`, which

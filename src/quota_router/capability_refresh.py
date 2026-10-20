@@ -22,8 +22,8 @@ Sources, per provider:
   Claude label was sent a retired label; agy 1.2.0 and 1.3.1 now refuse one (exit 1),
   and on 2026-10-08 both served Claude Opus and Sonnet 5.5 under their own labels. agy's
   log goes to stderr, and a list whose sign-in lines name an account other than the
-  pool's ``identity_email`` is refused (``agy_wrong_account``); with no address logged or
-  none declared, the list is recorded as before.
+  pool's ``identity_email`` is refused (``agy_wrong_account``). With none declared the list
+  is recorded as before; with no address logged it is recorded with a warning.
 """
 
 from __future__ import annotations
@@ -358,6 +358,14 @@ def read_agy_listing(
             f"its model list was not recorded",
         )
     entries, warnings = [], []
+    if declared and not served:
+        # The /usage read refuses such a reading and serves the last confirmed one. A
+        # model list rarely differs between two accounts of one tier, so it is kept,
+        # but not silently.
+        warnings.append(
+            f"{account.id}: agy's log named no signed-in Google account, so this model "
+            f"list could not be checked against {declared}"
+        )
     for line in done.stdout.splitlines():
         text = line.strip()
         if not text or text == "Fetching available models...":
