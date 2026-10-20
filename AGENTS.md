@@ -76,8 +76,12 @@ To ship a change to the live binaries, after it is pushed:
 
 ```sh
 git -C ~/Code/llm-quota-router/repo-prod pull
-uv tool install --force --reinstall --no-cache ~/Code/llm-quota-router/repo-prod
+uv tool install --force --reinstall --no-cache --python 3.12 ~/Code/llm-quota-router/repo-prod
 ```
+
+`--python 3.12` fixes the live interpreter, so a reinstall cannot change it as a side
+effect. The 2026-10-20 install used it, and its receipt records `python = "3.12"`.
+Moving to a newer Python is a separate, reviewed change.
 
 `--reinstall --no-cache` is not belt-and-braces. The version is static at
 `0.1.0`, so `--force` alone can rebuild from uv's cache and reinstall the code
@@ -165,7 +169,11 @@ writes `capabilities.json` (the only input `pick --capability` reads). It logs
 to `capability-refresh.log`, one JSON report per run, never to
 `usage-poll.log`. That second command exists only in a plist written by an
 `ops/install-launchd.sh` that has it, so after shipping a change to the script,
-re-run it **from repo-prod**. Then check the refresh from its own data:
+re-run it **from repo-prod**. Keep the ping mode the live plist already has. Window
+pings went live on 2026-10-20, but a rollback may have turned them off since. Check
+with `grep -A1 window-ping ~/Library/LaunchAgents/local.llm-quota-router.usage-poll.plist`,
+and pass `WINDOW_PING_MODE=execute` only if the live plist ends in `execute`. Without
+it the installer writes its dry-run default. Then check the refresh from its own data:
 
 ```sh
 tail -1 ~/Library/Logs/llm-quota-router/capability-refresh.log \
@@ -201,8 +209,8 @@ The waiting-stretch reconstruction is also read-only by default:
 See `docs/measurements/2026-10-20-forgone-capacity.md`. Under #32, the closed historical
 stretches were adopted into live state on 2026-10-20, after operator approval and a
 backup. The calibration ledger and v3 reset writer were adopted under #26 at
-revision `7f87887`; that installation does not include the waiting-capacity writer,
-whose installation belongs to #29.
+revision `7f87887`. The waiting-capacity writer was installed on 2026-10-20 under
+#29, at revision `94b0cf6`.
 The Gemini re-analysis uses saved responses only:
 `./.venv/bin/python ops/reanalyze-gemini-oct12.py --help`.
 See `docs/measurements/2026-10-19-calibration-reconstruction.md` for the required
@@ -234,6 +242,7 @@ single-writer rule" is the full account. Reading usage uses the existing
 
 `PYTHONPATH=src ./.venv/bin/python -m quota_router.cli window-ping --dry-run`
 reads status history without sending calls or changing state. See
-`docs/window-pings.md`. The launchd installer defaults to dry-run; live activation
-requires the operator's decision and a repo-prod reinstall with
-`WINDOW_PING_MODE=execute`. Do not enable it before provider telemetry is qualified.
+`docs/window-pings.md`. Live pings were activated on 2026-10-20 under the operator's
+decision, from repo-prod with `WINDOW_PING_MODE=execute`. The installer still defaults
+to dry-run, so any re-run without that variable turns the pings off. Do that only to
+roll back, and record why under #29.

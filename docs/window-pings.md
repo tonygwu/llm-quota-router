@@ -96,16 +96,10 @@ changes future calls to selection-only successes when the remaining checks pass.
 The diagnostic calls did not establish a waiting-window start: those accounts
 already had running windows.
 
-Keep recurring pings dry-run until the coordinating session activates them under #29.
+Recurring pings went live on October 20 under #29; see "Live activation, October 20".
 The operator approved live pings and accepted the missing served-model stamps, the
 exact previous-reset-plus-length waiting test, and literal elapsed-time cooldowns.
-The calibration ledger and v3 reset writer were adopted on October 20 at `7f87887`.
-That installation preserved the plist, which still has no ping invocation, and
-does not include the later ping changes or waiting-capacity writer. The separate
-raw-history adoption under #32 completed on October 20. Installing those changes
-still needs a revision at or after `e979c1a`. It also needs a replay of that
-revision's writer against the adopted records, with a first run that passes, as #32
-records.
+The raw-history adoption under #32 completed the same day, before the installation.
 The coordinating session owns activation. Post-ping boundary verification remains
 necessary, including the Antigravity fixed stretch.
 
@@ -155,8 +149,9 @@ No raw credentials were read or used by the probe harness.
 
 These diagnostics wrote no production ping journal entries and activated no
 recurring job. The model-name allowance is spent for the nine called pools;
-an exhausted pool was not retried. #29 remains open for ledger adoption,
-installation, and actual poller/journal verification.
+an exhausted pool was not retried. Ledger adoption, installation and the first live
+pings followed under #29 on October 20; poller and journal verification of every pool
+kind remains open there.
 
 The ordinary poller's 05:19:23Z observation showed nonzero five-hour usage in
 all four Antigravity pools, with these resets. No extra usage request was sent.
@@ -220,6 +215,37 @@ Its default is dry-run. Only a deliberate operator-approved reinstallation with
 Returning to the default installer disables them again. Inspect both the ping log's
 counts and subsequent journal verification records; an installed file is not proof
 of a successful ping or window start.
+
+### Live activation, October 20
+
+The operator's condition for all pools was that the SQL-capable MCP server leave
+agy first. It was removed from agy's global MCP config, and `agy mcp list` reports no
+servers for either macOS user. The coordinating session installed revision `94b0cf6`
+from repo-prod at 18:26 UTC and re-ran the installer there in dry-run mode at 18:27
+UTC. The first launchd-written dry-run record would have pinged the two Antigravity
+Claude/GPT pools. At 18:28:46 UTC the installer ran again with
+`WINDOW_PING_MODE=execute`.
+
+The first execute run, at 18:29 UTC, attempted 2 pings, with 2 succeeded and 0 failed.
+They went to the two Antigravity Claude/GPT pools with `claude-sonnet-5-5-low`. Both
+results carry selected-model evidence only, with no served-model stamp, and both
+carry token counts. A process sampler ran through that run, and neither ping's agy
+process started an MCP server. The next run, at 18:32 UTC, verified both five-hour
+windows from the usage read at 18:31:36 UTC. Each reset fell within 7 seconds of the
+ping start plus five hours, with nonzero use. The boundary record says
+`moved_or_missing`, as expected for windows that were not running.
+
+At 18:40 UTC a Claude account's five-hour window stopped running, and the next run
+pinged it with `claude-haiku-5-5`. The result carries a matching served-model stamp.
+It was verified at 18:43 UTC: the reset reads 46 seconds before the ping start plus
+five hours, inside Claude's ten-minute start flooring.
+
+Still open under #29: the first Antigravity Gemini and Codex weekly pings, and the
+Antigravity fixed stretch after a scheduled reset. The Codex pings are
+the first launchd test of its PATH fix. Two facts about agy limit what the evidence
+shows. agy ignores `--mode plan` when `--disable-slash-commands` is also passed, and
+it says so on stderr; `--sandbox` is still passed and logged as enabled. Built-in agy tools stay
+available, and ping results cannot show whether one was used.
 
 ## Router-model follow-up
 

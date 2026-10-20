@@ -184,8 +184,8 @@ The [saved waiting-capacity proposal](2026-10-20-forgone-capacity.md) was also
 recalculated in scratch with all approved beliefs: 19 records attempted,
 19 validated, 0 failed. The second Claude/GPT pool contributes
 0.0883416402116402 PSE, and the total becomes 4.265023712993716 PSE.
-Its raw-history adoption followed on October 20 under #32. Writer installation
-remains under #29.
+Its raw-history adoption followed on October 20 under #32. The writer was installed
+the same day under #29.
 This additional belief append did not install code or change the schedule.
 
 ## Reproduction and adoption

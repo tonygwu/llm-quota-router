@@ -156,7 +156,7 @@ the same 0.124515 total.
 The live history still held the same 120 rotated files byte for byte, and the saved
 active file is a prefix of its rotated successor. Detection over a copy of live
 history through 06:45 UTC reproduces the same 19 records exactly. It also finds two
-open stretches that began after the saved history ends; the writer that #29 installs,
+open stretches that began after the saved history ends; the writer installed under #29,
 not this adoption, records those.
 
 A replay of the writer over that copy at each daily 30-day pruning cutoff found a
@@ -203,13 +203,39 @@ The checks that followed all passed:
 - Against live state, the same read also merges retained history and returned 21 rows:
   the 19, plus two Codex stretches from 06:32 UTC that only retained history holds.
 
-The installed revision has no waiting-stretch writer and ignores the file. Before #29
-installs a later revision, the private hand-off replays that revision's writer
-against the adopted file and live history. Installation needs a first run that raises
-no append or merge error, changes no durable record, and detects again every record
-whose first waiting read is still retained. Until installation, rollback only moves
-the file aside, and it refuses bytes the adoption did not write. After installation,
+Until October 20 the installed revision had no waiting-stretch writer and ignored the
+file. Before #29 installed a later revision, the private hand-off replayed that revision's writer
+against the adopted file and live history. Installation needed a first run that raised
+no append or merge error, changed no durable record, and detected again every record
+whose first waiting read was still retained. Until installation, rollback only moved
+the file aside, and it refused bytes the adoption did not write. After installation,
 no record is moved or rewritten. Backup details, hashes and raw evidence stay private.
+
+### Writer installation, October 20
+
+At 18:26 UTC the coordinating session installed revision `94b0cf6` from repo-prod
+under #29. Its source and ops code equal `dfe8691`. Fresh reviews of the deployment
+plan ran in four rounds: three returned fix-first, and the fourth ship-with-notes. Just
+before the install, the private hand-off replayed this revision's writer against the
+adopted file and live history. The first run raised nothing, kept the 19 records
+identical and appended 2. The replay ran 31 times, once on the uncut history and once
+at each of 30 daily pruning cutoffs: 31 attempted, 31 succeeded, 0 failed. The full test suite passed with 1794 tests and 3
+deselected, on Python 3.14 and on Python 3.12, the live interpreter.
+
+The first scheduled poll on the new code ran at 18:26:39 UTC and printed no writer
+warning. `forgone.jsonl` grew from 19 to 21 records by appending only. The new records
+are the two Codex stretches from 06:32 UTC that the adoption check had found in
+retained history. The 19 adopted records kept their bytes, and so did the reset log
+and the calibration ledger. The private adoption check then attempted 1, succeeded 1
+and failed 0. It found the writer installed, 21 durable records with 2 after the
+adoption, both prefixes preserved and the marker unchanged. It did not compare the
+report figures, because the ledger had grown after the proposal: six unexplained tier
+encodings appended at 08:54 and 08:56 UTC, filed as #37.
+
+From now on, rollback keeps every durable record and never moves or rewrites it. A
+binary rollback must first restore a plist without the ping step: the previous tool
+ignores the waiting file, but its ping-journal reader rejects the selected-model-only
+successes the new code writes.
 
 ## Reproduction and adoption
 
@@ -234,9 +260,9 @@ non-temporary destination. Use scratch `XDG_STATE_HOME` for all development.
 ordinary `quotapick waste` is read-only and combines durable and retained evidence.
 
 Before any live write, the operator must approve this raw-stretch proposal and
-a backup under #32. Both were approved and done on October 20, as described above.
-Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`, under #29's
-deployment approval. Never run a working checkout's `quotapick` against live state;
+a backup under #32. Both were approved and done on October 20, as described above,
+and the writer was installed the same day. Preserve `waste.jsonl` byte for byte.
+Install only from `repo-prod`. Never run a working checkout's `quotapick` against live state;
 AGENTS.md gives the rule and the writes it prevents.
 This document does not authorize further live writes, installation, a schedule
 change, or ping execution.
