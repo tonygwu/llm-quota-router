@@ -398,6 +398,62 @@ def test_status_records_what_a_pool_had_left_when_it_expired(env) -> None:
     assert pool["expired_unused_usd"] == pytest.approx(140.0)
 
 
+def _state_bytes(env) -> dict[str, bytes]:
+    """Every data file under the state folder. Lock files hold no data and are skipped."""
+    root = Path(env["XDG_STATE_HOME"])
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*"))
+            if p.is_file() and not p.name.endswith(".lock")}
+
+
+def test_status_dry_run_records_nothing(env) -> None:
+    """``--dry-run`` promises no writes, and agents add it to keep a checkout off live
+    state. ``status`` used to ignore it and append history, reset rows, waiting
+    records, ledger encodings, credit expiries and a forecast (BACKLOG #35)."""
+    from quota_router import calibrations
+    from tests.test_calibrations import T0, measurement
+
+    expires = 1_792_368_000.0  # the pool's configured expiry, 2026-10-19T00:00:00Z
+    credits.append(env, {"t": expires - 3 * DAY, "pool": "anthropic_api_d",
+                         "type": "checkpoint", "remaining_usd": 150.0})
+    # A reconstructed ledger with no encodings: a recording status appends every one.
+    calibrations.append_records([measurement()], env=env)
+    calibrations.mark_reconstruction_complete(
+        env=env, now_s=calibrations.parse_time(T0), reason="Fixture reconstruction")
+    before = _state_bytes(env)
+    for argv in (["status", "--dry-run"], ["status", "--dry-run", "--json"]):
+        code, out, err = run(argv, env, snapshots=real_capture(), now_s=expires + HOUR,
+                             cwd=_NO_CONFIG_FILES)
+        assert code == cli.EXIT_OK, err
+        assert "claude_c" in out
+    assert _state_bytes(env) == before
+    # Without the flag the same call writes, so the assertion above can fail.
+    code, _out, err = run(["status", "--json"], env, snapshots=real_capture(),
+                          now_s=expires + HOUR, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    after = _state_bytes(env)
+    assert {"history.jsonl", "forecast.json"} <= {Path(k).name for k in after}
+    assert after["quota-router/credits.jsonl"] != before["quota-router/credits.jsonl"]
+    assert after["quota-router/calibrations.jsonl"] != before["quota-router/calibrations.jsonl"]
+
+
+def test_waste_backfill_refuses_dry_run(env) -> None:
+    """``waste --backfill`` exists to write; with ``--dry-run`` the request contradicts
+    itself, so it fails loudly instead of writing (BACKLOG #35)."""
+    before = _state_bytes(env)
+    code, _out, err = run(["waste", "--backfill", "--dry-run"], env, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_USAGE
+    assert "--dry-run" in err and "--backfill" in err
+    assert _state_bytes(env) == before
+
+
+def test_dry_run_help_no_longer_promises_no_state(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["status", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "write no state" not in text
+    assert "history" in text
+
+
 def test_doctor_flags_a_pool_with_no_checkpoint_and_a_missing_key(env) -> None:
     from quota_router import doctor
 

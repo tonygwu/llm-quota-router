@@ -1804,6 +1804,7 @@ def _prepare(
     write_state: bool,
     objective: str | None = None,
     job_stream: str = "other",
+    record_history: bool = True,
 ) -> Prepared:
     """Config -> oracle -> history -> state -> pileup -> filter -> decide.
 
@@ -2093,7 +2094,8 @@ def _prepare(
     # snapshot and what it was used for land together. ``chosen`` is set only when this
     # invocation really spent something -- calibration divides recorded picks by observed
     # burn, so a dry run or a `status` call must not inflate the numerator.
-    if snapshots:
+    # ``status --dry-run`` records nothing at all, so it skips even this record.
+    if snapshots and record_history:
         write = history_mod.append_snapshots(
             prepared.raw_snapshots,
             now_s=now_s,
@@ -2648,19 +2650,29 @@ def _cmd_status(
     stderr: TextIO,
     cwd: str | None,
 ) -> int:
-    prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False)
+    # The poller's `status` is the machine's recorder. A dry run reads and reports the
+    # same accounts but writes nothing: agents add --dry-run to keep a checkout off live
+    # state, and every recorder below appends to a file that only grows.
+    dry_run = bool(getattr(args, "dry_run", False))
+    prepared = _prepare(args, env, now_s, deps, cwd, event="status", write_state=False,
+                        record_history=not dry_run)
     model_class = prepared.model.model_class
-    try:
-        calibration_notes = calibrations_mod.detect_config_changes(
-            prepared.config, env=env, now_s=now_s,
-            observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots
-                            if snapshot.windows})
-    except (calibrations_mod.LedgerError, OSError) as exc:
-        # Routing can still show usage, but no reset may acquire an unauditable basis.
-        calibration_notes = [f"calibration ledger invalid; waste recording stopped: {exc}"]
-        ledger_valid = False
+    if dry_run:
+        calibration_notes = ["dry run: recorded no history, resets, waiting stretches, "
+                             "calibration encodings, credit expiries or forecast"]
+        ledger_valid = False  # not checked: checking appends any new encoding
     else:
-        ledger_valid = True
+        try:
+            calibration_notes = calibrations_mod.detect_config_changes(
+                prepared.config, env=env, now_s=now_s,
+                observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots
+                                if snapshot.windows})
+        except (calibrations_mod.LedgerError, OSError) as exc:
+            # Routing can still show usage, but no reset may acquire an unauditable basis.
+            calibration_notes = [f"calibration ledger invalid; waste recording stopped: {exc}"]
+            ledger_valid = False
+        else:
+            ledger_valid = True
 
     # Two populations of warning, and only one of them is about this reading. The waste
     # scan re-walks every retained history record on every run, so its notes describe
@@ -2669,8 +2681,8 @@ def _cmd_status(
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
     # --verbose prints both in full, and --json still carries both, in that order.
-    notes = _record_waste(prepared.config, env) if ledger_valid else []
-    forecast_notes = _refresh_forecast(prepared.config, env, now_s)
+    notes = _record_waste(prepared.config, env) if ledger_valid and not dry_run else []
+    forecast_notes = [] if dry_run else _refresh_forecast(prepared.config, env, now_s)
     # Joint status reports refresh problems here. Own-waste pick reports an unusable
     # working rate when it needs one, so status does not repeat those warnings.
     engine = prepared.config.engine
@@ -2706,7 +2718,8 @@ def _cmd_status(
             "degraded": list(prepared.degraded),
             "warnings": list(dict.fromkeys(prepared.warnings)),
         }
-        pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True)
+        pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s,
+                                              record_expiries=not dry_run)
         if pools:
             # Additive, and only when [credit_pools] is configured.
             payload["credit_pools"] = pools
@@ -2722,7 +2735,7 @@ def _cmd_status(
         _write_status_verbose(prepared, now_s, model_class, stdout)
     else:
         _write_status_compact(prepared, now_s, model_class, stdout)
-    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=True)
+    pools, pool_notes = _credit_pool_rows(prepared.config, env, now_s, record_expiries=not dry_run)
     if pools:
         zone, zone_note = _display_zone(env)
         stdout.write("\n" + _credit_pool_table(pools, now_s, zone))
@@ -3150,6 +3163,12 @@ def _cmd_waste(
     measured, and a total plus an honest observed/missed split is what a publishing
     decision turns on.
     """
+    if getattr(args, "backfill", False) and getattr(args, "dry_run", False):
+        # --backfill exists to append; accepting --dry-run and writing anyway is the
+        # failure `run` already hit with the shared flag.
+        stderr.write(f"{_PROG}: --backfill appends records and --dry-run forbids writes; "
+                     "drop one of them\n")
+        return EXIT_USAGE
     config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
     warnings: list[str] = []
 
@@ -3426,7 +3445,9 @@ def _common_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "--dry-run",
         action="store_true",
-        help="decide, but write no state and spawn nothing",
+        help="pick, exec, explain: decide without routing-state writes or spawning, but "
+        "still append one history record; status: record nothing; waste --backfill "
+        "refuses it; other commands ignore it. Provider reads still refresh usage caches",
     )
     common.add_argument(
         "--explain",

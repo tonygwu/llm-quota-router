@@ -60,7 +60,8 @@ other writes:
 - `status` also appends reset rows and new encodings to the calibration ledger.
 - From commit `e2cd00c`, `status` and `waste --backfill` also append waiting records
   to `forgone.jsonl`.
-- `--dry-run` does not stop these writes.
+- `--dry-run` stops them only for `status`; `pick`, `explain` and `exec` still append
+  history, and other commands ignore the flag.
 
 The ledger and the waiting records only grow, so records from unfinished code stay
 there. A waiting record that the installed writer disagrees with can make it refuse
