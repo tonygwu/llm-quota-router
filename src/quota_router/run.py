@@ -258,8 +258,8 @@ class Attempt:
     effort: str | None = None
     #: Whether this attempt was billed, as far as the router saw: ``True`` when the
     #: child reported a positive cost or the credit ledger booked a spend, ``False``
-    #: when it reported zero cost and zero tokens or never started, ``None`` when
-    #: nobody can tell.
+    #: when it reported zero cost, zero tokens and no per-model usage, or never
+    #: started, ``None`` when nobody can tell.
     #: A client may route elsewhere only when every attempt says ``False``.
     spent: bool | None = None
 
@@ -286,17 +286,10 @@ _NOT_STARTED: Final[tuple[type[OSError], ...]] = (
 
 
 def _zero_tokens(counts: Any) -> bool:
-    """True for a mapping that reports at least one token count, all of them zero.
-
-    A key ending in ``tokens`` is a count, except a limit such as ``maxOutputTokens``,
-    which every ``modelUsage`` entry carries whatever the call used.
-    """
+    """True for a mapping that reports at least one token count, all of them zero."""
     if not isinstance(counts, Mapping):
         return False
-    tokens = [
-        value for key, value in counts.items()
-        if str(key).lower().endswith("tokens") and not str(key).lower().startswith("max")
-    ]
+    tokens = [value for key, value in counts.items() if str(key).lower().endswith("tokens")]
     return bool(tokens) and all(
         isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
         for value in tokens
@@ -310,17 +303,18 @@ def _spent_from_result(result: Mapping[str, Any], cost_usd: float | None) -> boo
     model, even a $0.000125 subscription call, and zero on a call refused before it ran
     (exhausted, logged out). That cost is Claude Code's own price estimate, and a
     pricing override can set it to zero for a call that ran, so a zero counts as
-    "nothing billed" only when ``usage`` and every ``modelUsage`` entry report zero
-    tokens as well. A missing, negative or non-finite cost says nothing.
+    "nothing billed" only when ``usage`` reports zero tokens and ``modelUsage`` is
+    empty. Claude Code adds a ``modelUsage`` entry only once a model call has started,
+    and an endpoint that reports no usage leaves that entry at zero counts, so any
+    entry leaves the answer unknown. A missing ``modelUsage`` key reads as empty. A
+    missing, negative or non-finite cost says nothing.
     """
     if cost_usd is None or not math.isfinite(cost_usd) or cost_usd < 0:
         return None
     if cost_usd > 0:
         return True
     models = result.get("modelUsage", {})
-    if not _zero_tokens(result.get("usage")) or not isinstance(models, Mapping):
-        return None
-    if not all(_zero_tokens(entry) for entry in models.values()):
+    if not _zero_tokens(result.get("usage")) or not isinstance(models, Mapping) or models:
         return None
     return False
 

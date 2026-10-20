@@ -252,7 +252,7 @@ def test_an_auth_failure_is_spent_only_when_the_call_ran(env) -> None:
     pytest.param((1, _refused("boom", modelUsage={MODEL: {
         "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0,
         "cacheCreationInputTokens": 0, "maxOutputTokens": 64000, "costUSD": 0}}), ""),
-        False, id="zero cost, a model entry with only a token limit"),
+        None, id="zero cost, a model entry with zero counts"),
     pytest.param(subprocess.TimeoutExpired(cmd="claude", timeout=5), None, id="timeout"),
     pytest.param(FileNotFoundError(2, "No such file or directory", "/opt/test/claude"), False,
                  id="binary missing"),

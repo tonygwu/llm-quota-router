@@ -1179,18 +1179,18 @@ spent, detail}`) and `decision {reason, objective, fallback}`. `served.effort` i
 `--effort` the child was given (the router's translation of a capability request), or
 null when it was given none; each attempt carries its own. Exit 0 whenever the request
 parsed, whatever the outcome; exit 2 for a request or config refused before anything was
-spent.
+spent. Outcomes: `ok`, `exhausted`, `wrong_model`, `auth`, `transient`, `timeout`,
+`schema_invalid`, `cli_error`, `no_candidate`, `bad_request`.
 
 Each attempt's `spent` says whether it was billed, as far as the router saw. It is
 `true` when the child reported a positive `total_cost_usd` or a credit pool's ledger
 booked a spend (a timed-out credit call is booked at its hold). It is `false` when the
-child reported zero cost and zero tokens, or could not be started. A zero cost alone is
-not enough, because it is Claude Code's own price estimate and a pricing override can
-zero it for a call that ran. It is `null` when nothing says, for example a subscription
-call that timed out or a child that ended without a result event. An `auth` outcome can be either: a refused login costs nothing, while a call that
-ran on the wrong credential was billed. Outcomes: `ok`, `exhausted`,
-`wrong_model`, `auth`, `transient`, `timeout`, `schema_invalid`, `cli_error`,
-`no_candidate`, `bad_request`.
+child reported zero cost, zero tokens and no per-model usage, or could not be started.
+A zero cost alone is not enough, because it is Claude Code's own price estimate and a
+pricing override can zero it for a call that ran. It is `null` when nothing says, for
+example a subscription call that timed out or a child that ended without a result
+event. An `auth` outcome can be either: a refused login costs nothing, while a call
+that ran on the wrong credential was billed.
 
 What it guarantees, each checked from the CLI's own stream-json rather than assumed:
 
@@ -1229,11 +1229,10 @@ fallback in two cases only. The first is an installed router without `run`, whic
 client should detect once, before any call, rather than from a failed call:
 `echo x | quotapick run` prints a `bad_request` response carrying `run_contract` and
 exits 2 without spending anything, while a router without `run` prints nothing on
-stdout. The second
-is a call that failed with every attempt saying `spent: false` (`no_candidate` has no
-attempts, so it qualifies). A revision from before 2026-10-20 omits `spent`; read a
-missing one as `null`. Never fall back on a missing or unparsable response: the router
-may have failed after the child ran and billed. A client that
+stdout. The second is a call that failed with every attempt saying `spent: false`
+(`no_candidate` has no attempts, so it qualifies). A revision from before 2026-10-20
+omits `spent`; read a missing one as `null`. Never fall back on a missing or unparsable
+response: the router may have failed after the child ran and billed. A client that
 strips `ANTHROPIC_API_KEY` from its own environment may keep doing so: `run` reads a
 credit pool's key from the Keychain itself.
 
