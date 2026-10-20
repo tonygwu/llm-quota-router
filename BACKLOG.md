@@ -1149,7 +1149,7 @@ folder in the checkout container. No code.
 
 ---
 
-### 43. Six config sections ignore a mistyped key silently  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 43. Six config sections ignore a mistyped key silently  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** since #17 (2026-10-20) `[engine]`, `[credit_pools]` and account sections
 name an unknown key and ignore it. A review of #17 loaded a config with misspelled keys
