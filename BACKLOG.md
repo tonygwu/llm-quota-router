@@ -1149,7 +1149,7 @@ folder in the checkout container. No code.
 
 ---
 
-### 17. A mistyped key in an account section is ignored silently  `[difficulty: low]`  `[filed: 2026-10-18]`
+### 17. A mistyped key in an account section is ignored silently  `[difficulty: low]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
 
 **Background:** `_build_accounts` (`config.py:1361`) reads the keys it knows from each
 `[accounts.<id>]` table and ignores the rest. `[engine]` (`config.py:708`) and
