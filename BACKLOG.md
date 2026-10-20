@@ -212,6 +212,24 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   Closes when every resolver takes `HOME` from one place, with a test that passes a
   mapping `HOME` and no injected home.
 
+- **A `run` whose stderr is unusable exits non-zero after printing its answer.** Since
+  2026-10-20 a router failure after a child was attempted is echoed to stderr after the
+  response is printed, and the write ignores `OSError`. In a real process that is not
+  enough: Python's shutdown flush of a broken stderr pipe exits 120, and a closed stderr
+  (`2>&-`) makes `sys.stderr` `None`, which exits 1. The README promises exit 0 for every
+  parsed request. A review reproduced both through `main` in a subprocess; the answer was
+  on stdout each time. Closes when `_cmd_run` points file descriptor 2 at `/dev/null`
+  after a failed write (and handles a `None` stderr), with a subprocess test, or when the
+  README states the exception.
+
+- **A retry's credit hold stays unsettled if the router fails before its child starts.**
+  `run` books a pool's hold before it starts the child,
+  `src/quota_router/run.py:683` "target.hold_usd})",
+  and the router-failure handler adds a stand-in attempt only for a child that was
+  started. On a retry, a failure between the hold and the child start leaves the hold to
+  expire (one hour) instead of releasing it, as before 2026-10-20. Closes when the
+  handler releases a hold whose child never started, with a test.
+
 - **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
   Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
   Flash. Gemini 3.1 Pro left both lists between 21:30Z and 22:30Z on 2026-10-12. The
@@ -368,34 +386,6 @@ So the Antigravity part of (a) is done, with one open doubt: #21.
 item. The Codex half of (a) needs a Codex size measurement that no item carries yet.
 **Operator decision 2026-10-18:** proceed with the rest once the Gemini size lands. It
 landed on 2026-10-19.
-
----
-
-### 41. A `run` that fails after its child started prints no response, so the client loses what was billed  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
-
-**Background:** `_cmd_run` prints the response only when `run_mod.execute` returns,
-`src/quota_router/cli.py:4784` "payload = run_mod.execute(".
-An exception raised after a child has run escapes to `main`, which writes
-`src/quota_router/cli.py:4915` "unexpected failure:" to stderr and exits 127 with nothing
-on stdout. A review of #5 on 2026-10-20 reproduced it in a test folder: a credit call was
-billed, then the ledger append failed with "No space left on device", and the router
-exited 127 with empty stdout after one child call. A `ConfigError` raised by a later
-attempt's `_prepare` would exit 2, which the README reserves for a request refused before
-anything was spent.
-
-**Impact:** since `ded22c0` the README tells clients never to fall back on a missing or
-unparsable response, so this no longer bills twice. The client still loses the attempts,
-their `spent` values and `served`, cannot retry an attempt that was refused, and the
-history `run` line is never written, so the call is missing from the record.
-
-**Fix:** catch failures inside `execute` once the first child has been started, and still
-return a response: the attempts so far, `outcome: "cli_error"` with the error named, and
-`spent` as each attempt recorded it. Keep exit 2 for refusals before any child started.
-Add a test that fails the ledger append after a billed credit call and asserts the
-response carries that attempt with `spent: true`.
-
-**Touch points:** `run.py` `execute` (the attempt loop and the ledger appends),
-`cli.py` `_cmd_run`, `tests/test_run_credit.py`.
 
 ---
 
