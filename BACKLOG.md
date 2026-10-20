@@ -1171,32 +1171,36 @@ a test per section and a test that each set equals what its loader reads.
 
 ---
 
-### 18. Eleven test calls read the operator's live config through `load_config(env={})`  `[difficulty: low]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
+### 44. Fifty tests still reach `load_config` with no `cwd` through `select_account` and the launchers  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** `load_config(env={})` falls back to `Path.home()` for an absent HOME and to
-`Path.cwd()` for an absent cwd, so it reads `~/.config/quota-router/config.toml` and any
-project file the suite runs from. `tests/test_cli.py:56-65` documents this, and the repo
-learned it on 2026-08-24 and on 2026-09-16. It happened a third time on 2026-10-18: three
-tests in `tests/test_account_capacity.py` failed on the operator's machine as soon as the
-live config set `capacity = 0.088`, while CI, which has no live config, stayed green. Those
-were fixed in `ee665a7`. The same call remains at `tests/test_k_calibration.py:311`, `:565`
-and `:630`, `tests/test_launcher.py:629`, `:657`, `:880`, `:892`, `:1397` and `:1420`,
-`tests/test_library_api.py:254` and `tests/test_no_token_rotation.py:216`.
+**Background:** #18's guard (`tests/test_no_live_config_in_tests.py`) checks only calls
+written as `load_config(...)` or `cli.main(...)` in a test module. The review of #18
+found two gaps on 2026-10-20. First, `select_account` and `report_failure` default to no
+`cwd` (`src/quota_router/api.py:119` "def select_account("), and both launchers load
+the config with none (`src/quota_router/launcher.py:500` "config = deps.load_config(env=dict(env))"
+and `src/quota_router/codex_launcher.py:297` "config = deps.load_config(env=dict(env))").
+A wrapper around `config_search_paths` recorded 133 searches of the checkout's
+`.quota-router.toml` from 50 tests (`test_library_api` 97, `test_launcher` 35,
+`test_deprioritize` 1). With a hostile project file at the checkout root, 32 tests failed
+(16 `test_library_api`, 15 `test_launcher`, 1 `test_deprioritize`). Second, the guard
+misses shapes that still read the real home: `env=dict()`, an env with neither `HOME` nor
+`XDG_CONFIG_HOME`, `cwd=None`, a renamed import, a dotted call path and a helper module
+not named `test_*.py`. `config_search_paths` resolves the first two to
+`~/.config/quota-router/config.toml`.
 
-**Impact:** each of these passes today only because the live config does not touch what it
-asserts. The next config edit that does turns the gate red on this machine and nowhere
-else, and the failure looks like a code regression.
+**Impact:** a `.quota-router.toml` in a checkout root, which `cl` reads from its working
+directory, turns 32 tests red in that checkout only. A partial env in a new test reads the
+operator's live config and passes the guard.
 
-**Fix:** pass an environment rooted in the test's temp dir and `cwd=_NO_CONFIG_FILES` at
-every one of these calls, as `tests/test_account_capacity.py` now does. Add one guard test
-that fails if any test module calls `load_config` with an empty `env` or with no `cwd`, so
-the pattern cannot come back a fourth time. The `cwd` half is wider: about 16 calls pass an
-env but no `cwd` (for example `tests/test_plan_end.py:149`, `tests/test_deprioritize.py:88`,
-`tests/test_cli.py:2011`, and the `_run` helper at `tests/test_waste.py:1055`). They read
-a project config file from the directory the suite runs in, if one exists; none does in
-any checkout today.
+**Fix:** pass `cwd=_NO_CONFIG_FILES` at the `select_account` and `report_failure` calls in
+tests, and give both launchers a `cwd` they pass to `load_config`. Then replace or back the
+static guard with a runtime one: an autouse fixture in a new `tests/conftest.py` that wraps
+`config_search_paths` and, outside `-m live`, fails a test whose search falls under
+`Path.home()` or `Path.cwd()`.
 
-**Touch points:** the eleven call sites above, and one new guard test.
+**Touch points:** `src/quota_router/launcher.py`, `src/quota_router/codex_launcher.py`,
+`tests/test_library_api.py`, `tests/test_launcher.py`, `tests/test_deprioritize.py`, a new
+`tests/conftest.py`, and `tests/test_no_live_config_in_tests.py`.
 
 ---
 
@@ -1213,6 +1217,8 @@ Three read the statusline caches under `~/Library/Caches/twin-networking`:
 `tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
 `tests/test_antigravity_usage.py:653` "def test_pick_never_spawns_agy_and_status_does" and
 `tests/test_adapters.py:1793` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
+The review of #18 also saw reads of
+`~/.local/state/quota-router/usage/antigravity_*.json` and `~/.cursor/cli-config.json`.
 Three start the real `codex app-server` binary, now only against empty temp homes:
 that last test, `tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
 and `tests/test_adapters.py:1747` "def test_load_snapshots_is_the_one_call_the_cli_needs".
