@@ -100,6 +100,12 @@ def test_a_misspelled_key_is_named_with_the_known_ones(tmp_path, section) -> Non
         assert read(config) == default
 
 
+def test_every_misspelled_key_in_a_section_is_named(tmp_path) -> None:
+    config = _load(tmp_path, "[pileup]\nwindow = 1.0\nrecords = 5\n")
+    unknown = [w for w in config.warnings if w.startswith("unknown key [pileup] ")]
+    assert [w.split()[3] for w in unknown] == ["records", "window"]
+
+
 def test_every_known_section_key_loads_without_a_warning(tmp_path) -> None:
     config = _load(tmp_path, EVERY_SECTION_KEY)
     assert not [w for w in config.warnings if "unknown key" in w], config.warnings
@@ -118,11 +124,16 @@ def test_the_fixture_covers_every_known_key() -> None:
 
 def test_the_known_keys_are_exactly_the_keys_the_loader_reads() -> None:
     """A key read but not known would warn on every use; one known but never read would
-    be accepted and ignored. Reads are found as ``<name>_raw.get("key"``."""
+    be accepted and ignored. Reads are found as ``raw.get("key"``, ``raw["key"]`` or
+    ``"key" in raw``, with either quote, as the account-key scan finds them. A key read
+    through a variable, or passed with the table to a helper, is not seen."""
     source = inspect.getsource(config_mod._build)
     assert set(RAW_NAMES) == set(config_mod._SECTION_KEYS)
     for section, raw in RAW_NAMES.items():
-        read = set(re.findall(rf'\b{raw}\.get\(\s*["\']([A-Za-z0-9_]+)["\']', source))
+        read = set(
+            re.findall(rf'\b{raw}(?:\.get\(|\[)\s*["\']([A-Za-z0-9_]+)["\']', source)
+        )
+        read |= set(re.findall(rf'["\']([A-Za-z0-9_]+)["\']\s+(?:not\s+)?in\s+{raw}\b', source))
         assert read == config_mod._SECTION_KEYS[section], section
 
 
@@ -160,3 +171,29 @@ def test_an_alias_in_a_later_file_overrides_the_canonical_name_in_an_earlier_one
     )
     assert config.sources == (str(user), str(tmp_path / "config.toml"))
     assert config.hysteresis.switch_margin_ratio == pytest.approx(1.7)
+
+
+@pytest.mark.parametrize(
+    ("line", "alias"),
+    [('ttl_s = "soon"', "ttl_s"), ("switch_margin = 2.0", "switch_margin")],
+)
+def test_a_bad_alias_value_is_reported_under_the_alias(tmp_path, line, alias) -> None:
+    """The operator wrote the alias, so an error naming only the canonical key would point
+    at text that is not in their file."""
+    with pytest.raises(config_mod.ConfigError) as caught:
+        _load(tmp_path, f"[hysteresis]\n{line}\n")
+    assert f"(set as {alias} in {tmp_path / 'config.toml'})" in str(caught.value)
+
+
+def test_a_later_canonical_name_clears_an_earlier_alias_origin(tmp_path) -> None:
+    user = tmp_path / "xdg" / "quota-router" / "config.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text("[hysteresis]\nttl_s = 60\n", encoding="utf-8")
+    with pytest.raises(config_mod.ConfigError) as caught:
+        _load(
+            tmp_path,
+            '[hysteresis]\nmax_dwell_s = "soon"\n',
+            env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")},
+        )
+    assert "max_dwell_s must be" in str(caught.value)
+    assert "set as" not in str(caught.value)

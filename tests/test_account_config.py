@@ -68,8 +68,7 @@ def test_the_known_keys_are_exactly_the_keys_the_loader_reads() -> None:
     """A key added to the loader but not to the set would warn on every use; one in the
     set that the loader never reads would be accepted and ignored. Reads are found as
     ``body.get(key)``, ``body[key]`` or ``key in body``, with either quote. A key read
-    through a variable, or passed with ``body`` to a helper such as ``_first_present``,
-    is not seen."""
+    through a variable, or passed with ``body`` to a helper, is not seen."""
     source = inspect.getsource(config_mod._build_accounts)
     read = set(re.findall(r'body(?:\.get\(|\[)\s*["\']([A-Za-z0-9_]+)["\']', source))
     read |= set(re.findall(r'["\']([A-Za-z0-9_]+)["\']\s+(?:not\s+)?in\s+body\b', source))

@@ -270,12 +270,17 @@ def _as_str_table(value: Any, section: str) -> dict[str, str]:
 
 
 def _resolve_aliases(
-    data: Mapping[str, Any], path: Path, warnings: list[str]
+    data: Mapping[str, Any],
+    path: Path,
+    warnings: list[str],
+    origins: dict[tuple[str, str], str],
 ) -> dict[str, Any]:
     """One file's table with each section alias renamed to its canonical name.
 
     A file that sets both names keeps the canonical one, and the alias is reported as
-    ignored.
+    ignored. ``origins`` records which alias and file supplied each renamed value, so a
+    bad value is reported under the name the operator wrote. A later file that sets the
+    canonical name itself clears the record.
     """
     out = dict(data)
     for section, aliases in _SECTION_ALIASES.items():
@@ -284,6 +289,8 @@ def _resolve_aliases(
             continue
         table = dict(table)
         for alias, canonical in aliases.items():
+            if canonical in table:
+                origins.pop((section, canonical), None)
             if alias not in table:
                 continue
             value = table.pop(alias)
@@ -294,6 +301,7 @@ def _resolve_aliases(
                 )
             else:
                 table[canonical] = value
+                origins[(section, canonical)] = f"{alias} in {path}"
         out[section] = table
     return out
 
@@ -1679,9 +1687,16 @@ def _build(
     *,
     eligibility_explicit: bool = False,
     layer_warnings: Sequence[str] = (),
+    alias_origins: Mapping[tuple[str, str], str] | None = None,
 ) -> Config:
     """Validate a merged mapping into a :class:`Config`."""
     warnings: list[str] = list(layer_warnings)
+
+    def _named(section: str, key: str) -> str:
+        """``key``, or the alias and file that supplied its value."""
+        origin = (alias_origins or {}).get((section, key))
+        return f"{key} (set as {origin})" if origin else key
+
     for section in merged:
         if section in _KNOWN_SECTIONS or section in _KNOWN_TOP_LEVEL_KEYS:
             continue
@@ -1724,13 +1739,13 @@ def _build(
             switch_margin_ratio=_as_number(
                 hysteresis_raw.get("switch_margin_ratio", 1.15),
                 "hysteresis",
-                "switch_margin_ratio",
+                _named("hysteresis", "switch_margin_ratio"),
                 minimum=0.0,
             ),
             switch_margin_abs=_as_number(
                 hysteresis_raw.get("switch_margin_abs", 0.02),
                 "hysteresis",
-                "switch_margin_abs",
+                _named("hysteresis", "switch_margin_abs"),
                 minimum=0.0,
                 maximum=1.0,
             ),
@@ -1743,7 +1758,7 @@ def _build(
             max_dwell_s=_as_number(
                 hysteresis_raw.get("max_dwell_s", 900.0),
                 "hysteresis",
-                "max_dwell_s",
+                _named("hysteresis", "max_dwell_s"),
                 minimum=0.0,
             ),
         ),
@@ -1881,12 +1896,13 @@ def load_config(
     # spells out the default 0.02 is still someone asking for that floor.
     eligibility_explicit = False
     layer_warnings: list[str] = []
+    alias_origins: dict[tuple[str, str], str] = {}
 
     for path, required in layers:
         data = _read_toml(path, required=required)
         if data is None:
             continue
-        data = _resolve_aliases(data, path, layer_warnings)
+        data = _resolve_aliases(data, path, layer_warnings, alias_origins)
         eligibility = data.get("eligibility")
         if isinstance(eligibility, Mapping) and "min_remaining" in eligibility:
             eligibility_explicit = True
@@ -1899,4 +1915,5 @@ def load_config(
         sources,
         eligibility_explicit=eligibility_explicit,
         layer_warnings=layer_warnings,
+        alias_origins=alias_origins,
     )
