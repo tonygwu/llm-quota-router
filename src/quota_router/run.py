@@ -519,6 +519,7 @@ def execute(
     # Before any child starts, a failure is the command's failure, as it always was.
     running: _Target | None = None
     running_t0, running_run_id, recorded_before = 0.0, "", 0
+    router_failed = False
     scrubbers: list[Callable[[str], str]] = []
     try:
         for index in range(request.max_attempts):
@@ -684,7 +685,10 @@ def execute(
                               system=request.system, json_schema=request.json_schema)
             argv += target.argv_extra
             t0 = time.monotonic()
-            with tempfile.TemporaryDirectory(prefix="quota-router-run-") as scratch:
+            # A failed cleanup must not turn a finished, billed call into a router failure.
+            with tempfile.TemporaryDirectory(
+                prefix="quota-router-run-", ignore_cleanup_errors=True
+            ) as scratch:
                 if target.secret is not None:
                     scrubbers.append(target.secret.scrub)
                 running, running_t0, recorded_before = target, t0, len(attempts)
@@ -779,23 +783,24 @@ def execute(
     except Exception as exc:  # noqa: BLE001 - reported in the response, see above
         if running is None:
             raise
+        router_failed = True
         error = f"{type(exc).__name__}: {exc}"
         for scrub_text in scrubbers:
             error = scrub_text(error)
         warnings.append(
-            f"router failed after the child ran; this response carries only what was "
-            f"recorded before the failure: {error[:300]}"
+            f"router failed after a child was attempted; this response carries only what "
+            f"was recorded before the failure: {error[:300]}"
         )
         if len(attempts) == recorded_before:
-            spent: bool | None = None
+            # A credit child ran with the pool's key, so it may have billed: spent, and
+            # booked at its hold as a timeout is. A subscription call may or may not have.
+            spent: bool | None = True if running.kind == "credit" else None
             if running.kind == "credit":
-                # As for a timeout: the call may have spent, so book the hold as spent.
                 try:
                     credits_mod.append(env, {
                         "t": now_s, "pool": running.account, "type": "spend",
                         "run_id": running_run_id, "usd": running.hold_usd, "estimated": True,
                     })
-                    spent = True
                 except Exception as book_exc:  # noqa: BLE001 - said, never raised
                     warnings.append(
                         f"{running.account}: could not book the estimated spend: "
@@ -804,13 +809,18 @@ def execute(
             final = Attempt(
                 running.account, running.kind, running.model, "cli_error",
                 int((time.monotonic() - running_t0) * 1000), None,
-                f"router failed after the child ran: {error}"[:300],
+                f"router failed after the child was started: {error}"[:300],
                 effort=running.effort, spent=spent,
             )
             attempts.append(final)
-        outcome = final.outcome if final is not None else "cli_error"
+        # A billed answer that passed every check stays ok; anything else is the router's
+        # failure, whatever the last recorded attempt's own outcome was.
+        outcome = "ok" if final is not None and final.outcome == "ok" else "cli_error"
 
     ok = final is not None and final.outcome == "ok"
+    result_outcome = outcome if router_failed else (
+        final.outcome if final is not None else outcome
+    )
     cost_usd = final.cost_usd if final is not None else None
     cost_pse = cost_usd / usd_per_pse if cost_usd is not None else None
     served = None
@@ -834,7 +844,7 @@ def execute(
         event="run",
         run={
             "request_id": request_id,
-            "outcome": final.outcome if final is not None else outcome,
+            "outcome": result_outcome,
             "group": "claude",
             "pool_kind": final.pool_kind if final is not None else None,
             "account": final.account if final is not None else None,
@@ -850,7 +860,7 @@ def execute(
     return {
         "run_contract": RUN_CONTRACT_VERSION,
         "ok": ok,
-        "outcome": final.outcome if final is not None else outcome,
+        "outcome": result_outcome,
         "text": final.text if ok and final is not None else None,
         "structured": final.structured if ok and final is not None else None,
         "served": served,

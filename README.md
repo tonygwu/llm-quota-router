@@ -1185,9 +1185,11 @@ spent, detail}`) and `decision {reason, objective, fallback}`. `served.effort` i
 `--effort` the child was given (the router's translation of a capability request), or
 null when it was given none; each attempt carries its own. Exit 0 whenever the request
 parsed, whatever the outcome; exit 2 for a request or config refused before anything was
-spent. A router failure after a child started still returns a response: the attempts
-recorded so far, the running one as `cli_error` if it was not recorded yet, and a warning
-that names the failure. Outcomes: `ok`, `exhausted`, `wrong_model`, `auth`, `transient`, `timeout`,
+spent. A router failure after a child was attempted still returns a response, exit 0,
+with the attempts recorded so far, the running one as `cli_error` if it was not recorded
+yet, and a warning that names the failure (also on stderr). The top-level outcome is then
+`cli_error`, unless the last attempt's answer passed every check: that billed answer is
+returned as `ok`, with the warning. Outcomes: `ok`, `exhausted`, `wrong_model`, `auth`, `transient`, `timeout`,
 `schema_invalid`, `cli_error`, `no_candidate`, `bad_request`.
 
 Each attempt's `spent` says whether it was billed, as far as the router saw. It is

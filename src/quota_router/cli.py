@@ -4791,6 +4791,11 @@ def _cmd_run(
         request_id = data.get("request_id") if isinstance(data, Mapping) else None
         _dump_json(run_mod.bad_request_payload(str(exc), request_id), stdout)
         return EXIT_USAGE
+    # A router failure after a child was attempted is in the response; say it on stderr
+    # too, where a failure of this command has always been reported.
+    for warning in payload.get("warnings") or ():
+        if warning.startswith("router failed after a child was attempted"):
+            stderr.write(f"{_PROG}: {warning}\n")
     payload["generated_at"] = _iso(now_s)
     _dump_json(payload, stdout)
     return EXIT_OK

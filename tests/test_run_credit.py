@@ -292,10 +292,36 @@ def test_a_ledger_failure_after_a_billed_call_still_returns_the_answer(env, monk
     assert payload["ok"] is True and payload["text"] == "ok"
     attempt, = payload["attempts"]
     assert (attempt["pool_kind"], attempt["spent"]) == ("credit", True)
-    assert any("router failed after the child ran" in w and "No space left on device" in w
-               for w in payload["warnings"])
+    assert payload["outcome"] == "ok"
+    assert any(w.startswith("router failed after a child was attempted")
+               and "No space left on device" in w for w in payload["warnings"])
+    assert "router failed after a child was attempted" in err  # said on stderr too
     history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
     assert json.loads(history.read_text().splitlines()[-1])["run"]["outcome"] == "ok"
+
+
+def test_a_scratch_cleanup_failure_does_not_discard_a_paid_answer(env, monkeypatch):
+    import tempfile as tempfile_mod
+    from quota_router import run as run_mod
+
+    real = tempfile_mod.TemporaryDirectory
+
+    class CleanupFails(real):
+        def __init__(self, *args, ignore_cleanup_errors=False, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.ignore = ignore_cleanup_errors
+
+        def __exit__(self, *exc):
+            super().__exit__(*exc)
+            if not self.ignore:
+                raise OSError(66, "Directory not empty")
+    monkeypatch.setattr(run_mod.tempfile, "TemporaryDirectory", CleanupFails)
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    code, payload, err = _run(env, _request(), runner)
+    assert code == cli.EXIT_OK, err
+    assert payload["ok"] is True and payload["attempts"][0]["cost_usd"] == pytest.approx(0.02)
+    assert [line["type"] for line in _ledger(env)] == ["hold", "spend"]
+    assert _ledger(env)[1]["usd"] == pytest.approx(0.02)
 
 
 @pytest.mark.parametrize("allow_credit, account, spent, ledger", [
@@ -327,6 +353,22 @@ def test_a_failure_before_the_attempt_is_recorded_still_reports_the_attempt(
         assert SENTINEL not in json.dumps(payload) and "<redacted>" in attempt["detail"]
 
 
+def test_a_credit_attempt_that_could_not_be_booked_still_says_spent(env, monkeypatch):
+    from quota_router import run as run_mod
+
+    def broken_judge(*args, **kwargs):
+        raise RuntimeError("parser broke")
+    monkeypatch.setattr(run_mod, "judge", broken_judge)
+    monkeypatch.setattr(credits, "append",
+                        _failing_append("spend", OSError(28, "No space left on device")))
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    _code, payload, _err = _run(env, _request(), runner)
+    attempt, = payload["attempts"]
+    assert (attempt["pool_kind"], attempt["outcome"], attempt["spent"]) == (
+        "credit", "cli_error", True)
+    assert any("could not book the estimated spend" in w for w in payload["warnings"])
+
+
 def test_a_config_error_on_a_retry_returns_what_ran_instead_of_exit_2(env, monkeypatch):
     # Exit 2 means "refused before anything was spent"; a retry's config failure is not.
     refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
@@ -344,6 +386,10 @@ def test_a_config_error_on_a_retry_returns_what_ran_instead_of_exit_2(env, monke
     assert code == cli.EXIT_OK, err
     assert [(a["outcome"], a["spent"]) for a in payload["attempts"]] == [("exhausted", False)]
     assert any("ConfigError" in w for w in payload["warnings"])
+    # The run ended because the router failed, not because the pool was exhausted.
+    assert (payload["ok"], payload["outcome"]) == (False, "cli_error")
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    assert json.loads(history.read_text().splitlines()[-1])["run"]["outcome"] == "cli_error"
 
 
 def test_a_failure_before_any_child_started_still_fails_the_command(env, monkeypatch):
