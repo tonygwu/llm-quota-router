@@ -1427,10 +1427,20 @@ decided Gemini belief (step 3) after its scratch check. Live pings stay off unti
    interval; retain the unresolved predecessor and all measurement records.
    Record the chosen basis in the measurement document and verify current versus
    logged figures plus `--beliefs-as-of` in a scratch copy before appending that belief to live state.
+4. **Operator decision 2026-10-20:** `antigravity_claude_b` (the second Claude/GPT pool)
+   is the same size as the measured `antigravity_claude`, 0.088 PSE per five-hour window,
+   for all time, including history before its 2026-10-18 capacity encoding. Reason: the
+   same plan and the same model group, and the config has given both pools 0.088 since
+   2026-10-18. Append it as a belief whose reason is this decision and whose evidence
+   is the first pool's measurement; it is not a measurement of the second pool, so never
+   record it as one. It replaces the historical placeholder size 1.0 behind
+   `antigravity_claude_b`'s 1.003882 PSE in
+   `docs/measurements/2026-10-20-forgone-capacity.md`, about 0.088 at the new size.
+   Same scratch check as step 3 before the live append.
 
 *Risks and edge cases:* no live reconstruction or install is authorized by claiming
-this item. Never rewrite the reset log, promote the secondary Claude/GPT pool's
-unmeasured capacity to a measured belief, or invent missing historical Fable
+this item. Never rewrite the reset log, record the secondary Claude/GPT pool's size as
+a measurement (step 4 is an operator belief, not a measurement), or invent missing historical Fable
 coupling readings. The ledger belongs in private state, not git.
 
 *Why high not medium:* this changes the live poller's durable output and requires
