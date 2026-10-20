@@ -1527,8 +1527,12 @@ there first. Writing it into live state requires approval and a backup, and must
 precede installing any v3 writer. Only then mark reconstruction complete with
 `quotapick calibrations --mark-reconstructed "reviewed reconstruction reason"`.
 Installing the writer is a separate operator decision and runs only from `repo-prod`.
-The Gemini window ending on 2026-10-16 remains `unresolved` until the operator chooses
-its belief; preserving both candidate figures is part of the reconstruction.
+The operator-approved calibration adoption completed on October 20. For the Gemini
+window ending on October 16, the appended beliefs select unchanged weekly pools of
+9.72 and 9.80 PSE. The unresolved predecessors and both candidate figures remain
+available through a historical cutoff. See the
+[adoption record](docs/measurements/2026-10-19-calibration-reconstruction.md#approved-live-adoption-october-20)
+for the installed revision, scheduled-poller evidence and report checks.
 
 One line per window reset per account, written by `quotapick status` — which the poller
 already runs, so a reset is at most one poll interval stale when it is seen. Never on

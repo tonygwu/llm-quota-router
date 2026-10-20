@@ -7,8 +7,9 @@ while k fell from 15 to 4. This evidence is closer to an unchanged weekly pool.
 It does not establish that belief: the primary pool differs by 16.5%, neither
 fine estimate is settled, and complete independent activity evidence is missing.
 
-The historical Gemini belief remains **unresolved**. Choosing either candidate
-belongs to the operator; the measurement is an additional ledger record.
+On October 20 the operator chose the **unchanged weekly pool** belief, and it was
+appended to the live ledger after a scratch check. The measurement remains a
+separate record; it does not establish that choice by itself.
 All times below are UTC. No provider requests were made for this re-analysis.
 
 ## Results
@@ -146,8 +147,49 @@ remainders are 0.996062 and 0.994486. The early-reset instants are
 These candidates use the settled October 18 capacities already encoded by the
 operator. They are not comparisons of settled October 18 values with fine
 October 12 values. The like-for-like fine comparison is the first table.
-Neither candidate is selected by this script. Until the operator decides,
-these two rows are unresolved and excluded from current-belief totals.
+Neither candidate is selected by this script. The initial reconstruction retains
+both candidates as unresolved. The later operator decision is a separate append.
+
+## Operator decision and live beliefs, October 20
+
+The operator chose weekly pools of **9.72 and 9.80 PSE** for the window ending
+October 16. The recorded rationale compares the October 12 fine estimates with
+the October 18 fine estimates, which are closer to unchanged weekly capacity
+than to the other candidate's 3.75-fold difference. The operator accepted that
+interpretation with the settlement and other-activity caveats above; it is also
+the smaller candidate. Neither the measurements nor the old belief were removed.
+
+The installed CLI appended these records at `2026-10-20T05:42:21.199671Z`:
+
+- `belief-antigravity_gemini-weekly-unchanged-20261020`
+- `belief-antigravity_gemini_b-weekly-unchanged-20261020`
+
+Each is a resolved `weekly_pool` belief with `valid_from: null` and
+`valid_to: 2026-10-18T23:02:36Z`, matching the predecessor's historical interval.
+The later October 18 beliefs remain unchanged. Values k=4 and window sizes
+2.43 / 2.45 encode the chosen weekly totals; they are not a new measurement of
+the historical five-hour size. Reasons and evidence retain the October 12 and
+October 18 k runs, settled capacities and fine re-analysis records.
+`evidence_at: 2026-10-20T05:15:20Z` is the UTC recording time of decision commit
+`523772a1c1d95e7957a9cb8c1ead40c6c6d19e5b`, not an invented exact time for the
+human's decision.
+
+The first v3 poll recovered unrounded readings. These produce slightly different
+forfeits from the rounded v2 inputs in the candidate table above:
+
+| Account | Current forfeit PSE | Unchanged logged PSE |
+|---|---:|---:|
+| `antigravity_gemini` | 9.68172129392624 | 6.225387 |
+| `antigravity_gemini_b` | 9.745963716506958 | 6.215538 |
+
+The scratch check independently multiplied the raw remaining fraction by the
+chosen weekly size, compared current and logged results, and reproduced the
+unresolved predecessor with a cutoff before the append. The installed commands
+`quotapick waste --json` and
+`quotapick waste --beliefs-as-of 2026-10-20T05:42:21.199671Z --json` reproduced
+those results after adoption. The latter uses records written strictly before
+the cutoff. See the [adoption record](2026-10-19-calibration-reconstruction.md#approved-live-adoption-october-20)
+for backup, installation and scheduled-poller validation.
 
 ## Reproduction and proposed ledger measurements
 
@@ -173,6 +215,7 @@ combined statistical error bound is supported.
 
 These are new measurements, not corrections of the October 18 experiment and
 not provider-change beliefs. The reconstruction tool can ingest them without
-choosing either candidate. The ledger stays in operator state, outside git;
-writing its reconstructed contents to live state still needs operator approval
-after backup, before installing any v3 writer.
+choosing either candidate. The ledger stays in operator state, outside git.
+Its approved reconstruction was backed up and adopted on October 20 before
+installing the v3 writer; the two decided beliefs were appended afterwards.
+Any future reconstruction still requires operator approval and backup.

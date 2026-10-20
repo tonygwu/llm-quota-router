@@ -1,7 +1,8 @@
 # Reconstructing the calibration ledger
 
-The reconstruction is a proposal for the operator's private state, not an amendment
-to `waste.jsonl`. `ops/reconstruct-calibrations.py` reads the supplied config,
+The reconstruction tool produces a proposal for the operator's private state, not
+an amendment to `waste.jsonl`. The operator-approved proposal was adopted on
+October 20, 2026, as recorded below. `ops/reconstruct-calibrations.py` reads the supplied config,
 timestamped backups, a saved status response, historical reset tiers, and the
 [Gemini re-analysis](2026-10-19-gemini-reanalysis.md). It emits every proposed ledger
 record as JSON. By default it writes nothing. It can initialize a new **scratch**
@@ -34,11 +35,12 @@ backup is listed as excluded from chronology. Nothing is silently sampled.
   primary pool's measured size cover all time because there is no evidence of a
   change. The second Claude/GPT pool's configured 0.088 stays an encoding, without
   a measured size belief. Codex and other default inheritors gain no measured belief.
-- **Gemini decisions:** both pools have an unresolved historical weekly-pool belief,
+- **Initial Gemini beliefs:** both pools have an unresolved historical weekly-pool belief,
   including the October 16 resets, followed by the operator's settled-value belief
   from the October 18 experiment onward. That boundary says where the later
   measurement applies; it does not assert when a provider change occurred. Neither
-  the new analysis nor an encoding change chooses the unresolved belief.
+  the new analysis nor an encoding change chooses the unresolved belief. The
+  October 20 operator decision was appended separately, retaining these records.
 
 The measured 11.9 versus 6.25 disagreement comes from different experiments, so it
 is a dispute. The end-of-run versus settled Gemini sizes come from the same
@@ -64,7 +66,7 @@ minute, and records the settled correction in the 20:33 UTC minute. Separate
 encoding records preserve that evidence with minute-wide bounds. The script does
 not replace those bounds with an invented second.
 
-## The unresolved rows
+## The historical Gemini rows
 
 The immutable v2 rows retain their logged k 6.25 and size 1.0. The candidates use
 the two interpretations specified by the operator; they are not rescalings chosen
@@ -79,7 +81,75 @@ The two candidates use weekly sizes 9.72 / 9.80 and 36.45 / 36.75 PSE respective
 The [read-only re-analysis](2026-10-19-gemini-reanalysis.md) found fine weekly sizes
 16.216900 / 18.309661 PSE, compared with the October 18 fine figures
 19.423512 / 19.562576 PSE. These are measurements, not settled sizes or a decision.
-Both rows remain excluded from current-belief totals until the operator decides.
+These proposal figures use the rounded v2 remainders. Both rows were excluded
+from current-belief totals until the October 20 decision was appended. The v3
+writer subsequently recovered unrounded readings from retained history; the
+current figures below use those readings.
+
+## Approved live adoption, October 20
+
+The approved deployment used revision `7f8788769547cb10fe5b0eca3087e520f9a64137`.
+All times in this section are UTC. The full backup, exact commands, raw responses,
+validation and review reports remain in the private adoption record.
+
+1. The state backup completed at `05:32:35Z`: one attempt, one success, zero
+   failures. Full source-before, source-after and backup manifests agreed.
+2. At `05:32:42.935565Z`, the CLI appended 137 reconstruction records:
+   16 measurements, 109 encodings and 12 beliefs. Validation passed and the
+   reconstruction-complete marker was valid. `waste.jsonl` was byte-identical
+   to the backup at this point. The CLI stamped the actual append time rather
+   than copying the proposal's earlier `recorded_at`.
+3. Installation from clean `repo-prod` completed at `05:34:10.637910Z`, using
+   `uv tool install --force --reinstall --no-cache`. The receipt named
+   `repo-prod`; all 44 installed Python source files matched the pinned revision,
+   with zero mismatches and no extra source files. The installed copy exposed
+   `WASTE_VERSION = 3` and `detect_config_changes`.
+4. The ordinary scheduled poll ran the new writer. The before and after evidence
+   was:
+
+   | Check | Before installation | After installation |
+   |---|---|---|
+   | Status `generated_at` | `05:33:11Z` | `05:35:25Z` |
+   | Accounts | 11 | 11 |
+   | Raw reset rows | 172: 86 v1 and 86 v2 | 240: original 172 plus 68 v3 |
+   | Ledger records | 137 | 137 |
+
+   The completed job's exit status was 0. All 68 appended rows had validated raw
+   and basis blocks, including the weekly companion on Fable rows, and preserved
+   the earliest recorded basis. The entire original 95,287-byte reset-log prefix
+   remained unchanged. Calibration detection emitted zero warnings and added no
+   unexplained encoding records. The scheduled capability refresh at `05:37:54Z`
+   reported 10 attempted, 10 succeeded, 0 failed, with no failure kinds.
+5. After repeating the current/logged/as-of checks against copied post-poller
+   state, the installed CLI appended the operator's two Gemini beliefs at
+   `05:42:21.199671Z`. The ledger now holds 139 records: 16 measurements,
+   109 encodings and 14 beliefs. Its marker remains valid and all earlier records
+   remain intact. This belief append left `waste.jsonl` unchanged.
+
+The launchd plist and its 120-second interval stayed unchanged; it still has no
+window-ping invocation. The installation did not include the later waiting-capacity
+writer or ping changes. Those deployments remain separate.
+
+The installed `quotapick calibrations --json`, `quotapick waste --json`, and
+`quotapick waste --beliefs-as-of 2026-10-20T05:42:21.199671Z --json` checks all
+succeeded: 3 attempted, 3 succeeded, 0 failed. The cutoff selects records written
+strictly before the append and reproduces both unresolved predecessor beliefs.
+Current reports resolve them as follows:
+
+| Account | Chosen weekly PSE | Current forfeit PSE | Unchanged logged PSE |
+|---|---:|---:|---:|
+| `antigravity_gemini` | 9.72 | 9.68172129392624 | 6.225387 |
+| `antigravity_gemini_b` | 9.80 | 9.745963716506958 | 6.215538 |
+
+The chosen basis and its evidence are detailed in the
+[Gemini decision record](2026-10-19-gemini-reanalysis.md#operator-decision-and-live-beliefs-october-20).
+The pre-deployment test gate, with both XDG homes in scratch storage, was
+`./.venv/bin/python -m pytest -q`: `1563 passed, 3 deselected in 17.63s`.
+A fresh reviewer returned `ship` before the first live write. A later scoped
+review also returned `ship` before the belief append, after its verification
+calculation was updated for recovered raw precision. No live operation failed.
+Installation waited for an active poll to finish before invoking uv; no job was
+signalled and no rollback was needed.
 
 ## Reproduction and adoption
 
@@ -122,5 +192,6 @@ removal. These events retain both backup bounds.
 
 Before live adoption, the operator must approve the concrete proposal and a backup
 of existing state. The reconstructed ledger and its marker must be in place **before
-any v3 writer is installed**, and installation must use `repo-prod`. The October 16
-Gemini choice is a separate pending decision; installing the ledger does not resolve it.
+any v3 writer is installed**, and installation must use `repo-prod`. These gates
+were fulfilled on October 20. Installing the initial ledger alone did not resolve
+the October 16 Gemini choice; the separately approved belief append did.
