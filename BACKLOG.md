@@ -1391,7 +1391,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
-**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:187` "Before any live write, the operator must approve this raw-stretch proposal"
+**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:223` "Before any live write, the operator must approve this raw-stretch proposal"
 gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
 `forgone.jsonl` writer and retained-history reconstruction, then assigned its live
 adoption to #26 while that calibration deployment was already running. The approved
@@ -1455,9 +1455,9 @@ history must raise nothing and change no durable record.
 *Why high not medium:* this adopts persistent historical data and changes a
 scheduled writer while preserving current and historical interpretations.
 
-**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:187` "Before any live write, the operator must approve this raw-stretch proposal";
+**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:223` "Before any live write, the operator must approve this raw-stretch proposal";
 `ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
-`AGENTS.md:149` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
+`AGENTS.md:156` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
 `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
 operator-private retained history, ledger, waiting records and adoption evidence;
 repo-prod installation and actual poller records.
