@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from quota_router import cli, credits, forecast
+from quota_router.state import StateStore
 from quota_router.secrets import Secret
 from tests.test_cli import FIVE_HOURS, NOW, _NO_CONFIG_FILES, account, run, window
 from tests.test_run import NOTHING_RAN, MODEL, FakeRunner, _stream
@@ -209,6 +211,67 @@ def test_only_a_pool_never_falls_back_to_a_subscription(env) -> None:
     history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
     chosen = [json.loads(line).get("chosen") for line in history.read_text().splitlines()]
     assert not {"claude_b", "claude_d"} & set(chosen)
+
+
+def _routing_state(env):
+    return StateStore(env=env).load()
+
+
+def _history_chosen(env):
+    """``chosen`` on each decision line; the closing ``run`` outcome line is skipped."""
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    lines = [json.loads(line) for line in history.read_text().splitlines()]
+    assert [line["event"] for line in lines] == ["run"] * len(lines)
+    assert "run" in lines[-1] and not any("run" in line for line in lines[:-1])
+    return [line.get("chosen") for line in lines[:-1]]
+
+
+def test_a_pool_served_run_records_no_subscription_pick(env) -> None:
+    """BACKLOG #6: run decides between the best subscription and the pools only after
+    the subscription pick exists. When a pool serves, that pick never ran, so it must
+    leave no history pick, no pileup reservation and no sticky entry."""
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    _code, payload, err = _run(env, _request(), runner)
+    assert payload["served"]["pool_kind"] == "credit", err
+    assert _history_chosen(env) == [None]
+    state = _routing_state(env)
+    assert state.reservations == ()
+    assert dict(state.sticky) == {}
+    assert state.selection == {}
+
+
+def test_a_subscription_served_run_still_records_its_pick(env) -> None:
+    runner = FakeRunner((0, _stream(), ""))
+    _code, payload, err = _run(env, _request(allow_credit=False), runner)
+    served = payload["served"]["account"]
+    assert payload["served"]["pool_kind"] == "subscription", err
+    assert _history_chosen(env) == [served]
+    state = _routing_state(env)
+    assert [r.account for r in state.reservations] == [served]
+    assert {entry.account for entry in state.sticky.values()} == {served}
+    assert state.selection
+
+
+def test_a_deferred_record_writes_once_and_only_on_the_chosen_account(env) -> None:
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(_drained_subscriptions()), []))
+    args = SimpleNamespace(
+        capability=None, effort=None, model=MODEL, only=None, exclude=None,
+        min_remaining=None, no_sticky=False, timeout_ms=None, config=None, dry_run=False,
+        json=True, explain=False, now=None, job_pse=None,
+    )
+    prepared = cli._prepare(args, env, NOW, cli.Deps.resolve(deps), _NO_CONFIG_FILES,
+                            event="run", write_state=True, record_later=True)
+    chosen = prepared.decision.chosen
+    assert chosen is not None and not Path(env["XDG_STATE_HOME"], "quota-router",
+                                           "history.jsonl").exists()
+    record = prepared.record
+    with pytest.raises(ValueError, match="the decision chose"):
+        record("anthropic_api_d")
+    record(chosen)
+    assert prepared.record is None
+    assert _routing_state(env).reservations[0].account == chosen
+    with pytest.raises(RuntimeError, match="already been recorded"):
+        record(None)
 
 
 def test_excluding_the_pool_keeps_the_job_on_a_subscription_and_reads_no_key(env) -> None:

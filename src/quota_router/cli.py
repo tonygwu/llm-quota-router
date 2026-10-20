@@ -495,6 +495,10 @@ class Prepared:
     #: payload; only groups whose candidates carry a weekly window appear. Under the
     #: joint objective the block is informational: that scorer reads the forecast itself.
     rates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Set only by ``_prepare(record_later=True)``, until called: writes the pick on the
+    #: account that ran (``None`` for none) and the history line, and returns the
+    #: warnings the writes produced.
+    record: Callable[[str | None], tuple[str, ...]] | None = None
 
     def rates_by_group(self) -> dict[str, float]:
         """Measured group budgets; a group left out receives the documented default."""
@@ -1805,12 +1809,18 @@ def _prepare(
     objective: str | None = None,
     job_stream: str = "other",
     record_history: bool = True,
+    record_later: bool = False,
 ) -> Prepared:
     """Config -> oracle -> history -> state -> pileup -> filter -> decide.
 
     ``objective`` overrides ``[engine] objective`` for this call (``run`` ranks by the
     joint projection whatever ``pick`` defaults to); ``job_stream`` says which demand
     stream the job belongs to.
+
+    ``record_later`` leaves the writes to the caller: the decision is made exactly as
+    it would be, and :attr:`Prepared.record` then writes the pick, its reservation, the
+    selection state and the history line, for the account that actually ran or for
+    none. ``run`` needs it because it compares this pick against credit pools first.
     """
     config = load_config(env=env, cwd=cwd, explicit_path=getattr(args, "config", None))
     base_config = config
@@ -2057,9 +2067,53 @@ def _prepare(
         spent_class = capability_ctx.classes.get(decision.chosen or "")
         spent_multiplier = mc.demand_multiplier(spent_class, config.model_multipliers)
 
-    if records_a_pick:
+    recorded = False
+
+    def record(ran: str | None) -> tuple[str, ...]:
+        """Write what this invocation spent on ``ran`` (``None``: nothing); once only."""
+        nonlocal recorded
+        if recorded:
+            raise RuntimeError("this decision has already been recorded")
+        if ran is not None and (not records_a_pick or ran != decision.chosen):
+            raise ValueError(
+                f"cannot record a pick on {ran!r}: the decision chose {decision.chosen!r}"
+                + ("" if records_a_pick else " and records no pick")
+            )
+        recorded = True
+        before = len(prepared.warnings)
+        _record_decision(
+            prepared, store, snapshots, ran=ran, event=event, env=env,
+            spent_class=spent_class, spent_multiplier=spent_multiplier,
+            record_history=record_history,
+        )
+        prepared.record = None
+        return prepared.warnings[before:]
+
+    if record_later:
+        prepared.record = record
+    else:
+        record(decision.chosen if records_a_pick else None)
+    return prepared
+
+
+def _record_decision(
+    prepared: Prepared,
+    store: StateStore,
+    snapshots: Sequence[AccountSnapshot],
+    *,
+    ran: str | None,
+    event: str,
+    env: Mapping[str, str],
+    spent_class: str | None,
+    spent_multiplier: float,
+    record_history: bool,
+) -> None:
+    """The writes behind one decision: the pick on ``ran``, then the history line."""
+    config, model, decision = prepared.config, prepared.model, prepared.decision
+    now_s = prepared.now_s
+    if ran is not None:
         result = store.record_pick(
-            decision.chosen or "",
+            ran,
             now_s=now_s,
             cost=spent_multiplier,
             scope=model.model_class or GLOBAL_SCOPE,
@@ -2074,7 +2128,7 @@ def _prepare(
                 (
                     w.used_fraction
                     for snap in snapshots
-                    if snap.id == decision.chosen
+                    if snap.id == ran
                     for w in snap.windows
                     if w.key == WINDOW_KEY_5H
                 ),
@@ -2100,18 +2154,16 @@ def _prepare(
             prepared.raw_snapshots,
             now_s=now_s,
             event=event,
-            chosen=decision.chosen if records_a_pick else None,
+            chosen=ran,
             model_class=spent_class,
-            multiplier=spent_multiplier if records_a_pick else None,
-            cost=spent_multiplier if records_a_pick else None,
+            multiplier=spent_multiplier if ran is not None else None,
+            cost=spent_multiplier if ran is not None else None,
             regime=decision.regime,
             degraded=bool(prepared.degraded) or decision.degraded,
             objective=prepared.objective,
             env=env,
         )
         prepared.warnings = prepared.warnings + write.warnings
-
-    return prepared
 
 
 # ======================================================================================

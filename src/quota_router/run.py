@@ -541,11 +541,13 @@ def execute(
                 else None
             ),
         )
-        # With no subscription allowed, the pick below only builds the joint projection
-        # the pools are ranked by; its choice is discarded, so it is not recorded.
+        # The subscription pick is recorded only once the target is known (below): a
+        # credit pool may win, and a pick that never ran must leave no history pick,
+        # reservation or sticky entry. With no subscription allowed, the pick only
+        # builds the joint projection the pools are ranked by, so it records nothing.
         prepared = cli_mod._prepare(
             args, env, now_s, deps, cwd, event="run", write_state=bool(sub_ids),
-            objective="joint", job_stream=joint_mod.STREAM_RUN,
+            objective="joint", job_stream=joint_mod.STREAM_RUN, record_later=True,
         )
         warnings.extend(w for w in prepared.warnings if w not in warnings)
         report = prepared.objective or {}
@@ -653,6 +655,10 @@ def execute(
                                 hold_usd=expected,
                             )
 
+        if prepared.record is not None:
+            runs = target is not None and bool(target.model)
+            ran = target.account if runs and target.kind == "subscription" else None
+            warnings.extend(w for w in prepared.record(ran) if w not in warnings)
         if target is None:
             outcome = "no_candidate"
             break
