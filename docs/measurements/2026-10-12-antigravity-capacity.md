@@ -136,7 +136,7 @@ Using each Claude rep's own window value gives a range of 0.082 to 0.100.
   moves its bar. Check for foreign busy sessions before and during every rep.
 - **An idle Antigravity pool's weekly reset slides 168 hours ahead of the clock** at some
   times and stays fixed at others. This was seen after the measurement, and its cause is
-  unknown. BACKLOG item 22 carries the observation and the open question.
+  unknown. [Window ping verification](../window-pings.md) records whether the first ping moves that boundary; live activation remains operator-gated.
 
 ## Raw data
 

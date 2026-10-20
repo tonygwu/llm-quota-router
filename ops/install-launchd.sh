@@ -32,6 +32,7 @@
 #   ./ops/install-launchd.sh --print      print the plist, install nothing
 #
 # Env: POLL_INTERVAL_S    (default 120 -- see below; do not raise it casually)
+#      WINDOW_PING_MODE   (default dry-run; execute requires operator approval)
 #      POLL_LOG_MAX_BYTES (default 20000000 -- the log rotates itself past this)
 
 set -uo pipefail
@@ -73,6 +74,12 @@ LOG_FILE="${LOG_DIR}/usage-poll.log"
 # with status's code, so `launchctl list` keeps meaning what it meant. A refresh that
 # keeps failing shows up in this log and as a doctor FAIL once the table goes stale.
 CAPABILITY_LOG_FILE="${LOG_DIR}/capability-refresh.log"
+PING_LOG_FILE="${LOG_DIR}/window-ping.log"
+PING_MODE="${WINDOW_PING_MODE:-dry-run}"
+case "$PING_MODE" in
+  dry-run|execute) ;;
+  *) echo "error: WINDOW_PING_MODE must be dry-run or execute" >&2; exit 1 ;;
+esac
 
 if [ "${1:-}" = "--uninstall" ]; then
   launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null \
@@ -98,7 +105,7 @@ read -r -d '' PLIST_XML <<XML
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
-  <!-- \$0 is quotapick, \$1 the log, \$2 the cap, \$3 the capability-refresh log.
+  <!-- \$0 is quotapick, \$1 the log, \$2 the cap, \$3 the capability-refresh log, \$4 the window-ping log, \$5 its mode.
        The run's own output lands in the log first; the rotation happens after it,
        from inside the same process, which is safe because launchd reopens
        StandardOutPath fresh for every run. The refresh appends to its own log and
@@ -107,11 +114,13 @@ read -r -d '' PLIST_XML <<XML
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>"\$0" status --json; rc=\$?; size=\$(stat -f %z "\$1" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$1" "\$1.1"; fi; "\$0" capabilities --refresh --json >>"\$3" 2>&amp;1; size=\$(stat -f %z "\$3" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$3" "\$3.1"; fi; exit \$rc</string>
+    <string>"\$0" status --json; rc=\$?; size=\$(stat -f %z "\$1" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$1" "\$1.1"; fi; "\$0" capabilities --refresh --json >>"\$3" 2>&amp;1; size=\$(stat -f %z "\$3" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$3" "\$3.1"; fi; "\$0" window-ping "--\$5" --json >>"\$4" 2>&amp;1; size=\$(stat -f %z "\$4" 2>/dev/null || echo 0); if [ "\$size" -gt "\$2" ]; then mv -f "\$4" "\$4.1"; fi; exit \$rc</string>
     <string>${QUOTAPICK}</string>
     <string>${LOG_FILE}</string>
     <string>${LOG_MAX_BYTES}</string>
     <string>${CAPABILITY_LOG_FILE}</string>
+    <string>${PING_LOG_FILE}</string>
+    <string>${PING_MODE}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

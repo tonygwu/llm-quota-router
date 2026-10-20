@@ -697,7 +697,8 @@ def test_the_poller_logs_the_refresh_separately_and_keeps_status_exit_code(tmp_p
     program = plistlib.loads(printed)["ProgramArguments"]
     assert program[:2] == ["/bin/sh", "-c"]
     status_log, refresh_log = tmp_path / "usage-poll.log", tmp_path / "capability-refresh.log"
-    argv = [*program[:3], str(fake), str(status_log), program[5], str(refresh_log)]
+    ping_log = tmp_path / "window-ping.log"
+    argv = [*program[:3], str(fake), str(status_log), program[5], str(refresh_log), str(ping_log), "dry-run"]
 
     with open(status_log, "a") as out:  # launchd's StandardOutPath
         done = subprocess.run(argv, stdout=out, stderr=out, check=False)

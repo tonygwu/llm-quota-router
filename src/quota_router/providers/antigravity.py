@@ -334,7 +334,7 @@ AgyRunner = Callable[[Sequence[str], Mapping[str, str], float], AgyCompleted]
 
 
 def default_run_agy(
-    argv: Sequence[str], env: Mapping[str, str], timeout_s: float
+    argv: Sequence[str], env: Mapping[str, str], timeout_s: float, *, cwd: str | None = None
 ) -> AgyCompleted:
     """Run agy in its own session; on timeout, end its whole process group and re-raise.
 
@@ -351,6 +351,7 @@ def default_run_agy(
         env=dict(env),
         start_new_session=True,
         close_fds=True,
+        cwd=cwd,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout_s)

@@ -57,6 +57,7 @@ from ..types import (
     TIER_UNKNOWN,
     AccountSnapshot,
     Identity,
+    NotRunningWindow,
     Window,
     normalize_model_class,
 )
@@ -408,7 +409,10 @@ def _model_class_for(entry: Mapping[str, Any]) -> str | None:
     return None
 
 
-def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Window], list[str]]:
+def parse_usage_payload(
+    payload: Any, *, observed_at_s: float,
+    not_running: list[NotRunningWindow] | None = None,
+) -> tuple[list[Window], list[str]]:
     """Turn one ``/api/oauth/usage`` response into windows.
 
     Only ``limits[]`` is read. The top-level ``five_hour`` / ``seven_day`` blocks
@@ -473,12 +477,16 @@ def parse_usage_payload(payload: Any, *, observed_at_s: float) -> tuple[list[Win
             if (
                 resets_at_s is None
                 and entry.get("is_active") is False
-                and pct_to_fraction(entry.get("percent")) == 0.0
+                and type(entry.get("percent")) in (int, float)
+                and entry["percent"] == 0
             ):
                 # An idle account: the endpoint says no such window is running, so
                 # the whole of it is available. That is an answer, not missing data,
                 # and there is no deadline to give it. A scoped row is different: it
                 # inherits the weekly reset above.
+                if not_running is not None and kind in _KIND_TO_WINDOW:
+                    not_running.append(NotRunningWindow(key, length_s, observed_at_s))
+                taken.add(key)
                 continue
         window = make_window(
             key=key,
@@ -809,9 +817,10 @@ class ClaudeOAuthAdapter(ProviderAdapter):
         """Turn one usage payload into the account's snapshot, whatever fetched it."""
         label = _label(config)
         identity = config.identity
-        windows, warnings = parse_usage_payload(payload, observed_at_s=observed_at_s)
+        idle: list[NotRunningWindow] = []
+        windows, warnings = parse_usage_payload(payload, observed_at_s=observed_at_s, not_running=idle)
         warnings.extend(extra)
-        if not windows:
+        if not windows and not idle:
             return [
                 self._unavailable(
                     config,
@@ -835,6 +844,7 @@ class ClaudeOAuthAdapter(ProviderAdapter):
             AccountSnapshot(
                 id=config.account_id,
                 windows=tuple(windows),
+                not_running=tuple(idle),
                 tier=config.tier,
                 source=source,
                 confidence=confidence,

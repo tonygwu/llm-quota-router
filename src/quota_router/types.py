@@ -120,6 +120,7 @@ __all__ = [
     "Identity",
     "Window",
     "AccountSnapshot",
+    "NotRunningWindow",
     "unreadable_reason",
     "WindowSlack",
     "ScoreBreakdown",
@@ -774,6 +775,25 @@ class Window:
 
 
 @dataclass(frozen=True, slots=True)
+class NotRunningWindow:
+    """An explicit provider answer: this account-wide window has no deadline yet."""
+
+    key: str
+    length_s: float
+    observed_at_s: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "key", _as_text(self.key, "NotRunningWindow.key"))
+        for name in ("length_s", "observed_at_s"):
+            object.__setattr__(self, name, _as_finite(getattr(self, name), name))
+        if self.length_s <= 0:
+            raise ValueError("NotRunningWindow.length_s must be positive")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"key": self.key, "length_s": self.length_s, "observed_at_s": self.observed_at_s}
+
+
+@dataclass(frozen=True, slots=True)
 class AccountSnapshot:
     """Everything the router knows about one spendable account at one instant.
 
@@ -814,6 +834,7 @@ class AccountSnapshot:
     note: str | None = None
     identity: Identity | None = None
     capacity_override: float | None = None
+    not_running: tuple[NotRunningWindow, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", _as_text(self.id, "AccountSnapshot.id"))
@@ -825,6 +846,12 @@ class AccountSnapshot:
         if isinstance(windows, Window):
             windows = (windows,)
         object.__setattr__(self, "windows", tuple(windows))
+        object.__setattr__(self, "not_running", tuple(self.not_running))
+        if any(not isinstance(w, NotRunningWindow) for w in self.not_running):
+            raise TypeError("not_running must contain NotRunningWindow readings")
+        keys = [w.key for w in (*self.windows, *self.not_running)]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate window key in account reading")
 
         object.__setattr__(self, "tier", normalize_tier(self.tier))
         object.__setattr__(
@@ -871,9 +898,10 @@ class AccountSnapshot:
     @property
     def observed_at_s(self) -> float | None:
         """Most recent observation time across windows, or ``None`` if there are none."""
-        if not self.windows:
+        readings = (*self.windows, *self.not_running)
+        if not readings:
             return None
-        return max(window.observed_at_s for window in self.windows)
+        return max(window.observed_at_s for window in readings)
 
     def staleness_s(self, now_s: float) -> float | None:
         """Age of the freshest window reading in seconds, or ``None`` without windows."""
@@ -961,6 +989,7 @@ class AccountSnapshot:
             "available": self.available,
             "note": self.note,
             "identity": None if self.identity is None else self.identity.to_dict(),
+            **({"not_running": [w.to_dict() for w in self.not_running]} if self.not_running else {}),
         }
 
 

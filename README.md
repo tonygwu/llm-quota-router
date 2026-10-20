@@ -1669,3 +1669,13 @@ projects depend on the same undocumented, drift-prone surfaces.
 ## License
 
 MIT.
+
+### Start idle subscription windows (dry-run first)
+
+`quotapick window-ping --dry-run` lists waiting windows from status history and the
+cheap vendor-CLI calls that would start them. It writes nothing and sends nothing;
+API credit pools are excluded. The poller installer adds this command in dry-run
+mode on the existing cadence, logging separately to `window-ping.log`. Only an
+operator-approved reinstall from repo-prod with `WINDOW_PING_MODE=execute` enables
+pings. Provider telemetry qualification and the existing installation gates still
+apply. See [window ping rules, evidence and recovery](docs/window-pings.md).

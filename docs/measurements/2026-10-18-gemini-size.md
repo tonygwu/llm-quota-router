@@ -139,7 +139,7 @@ unknown.
   | `antigravity_gemini_b` | 2026-10-19T03:41:43Z | 04:26:30Z | slides |
 
   That is 33 to 50 minutes fixed, the same fixed-then-slide pattern as the weekly
-  question in BACKLOG item 22.
+  question documented in [window ping verification](../window-pings.md).
 - **Weekly window.** Both pools had been used earlier in the week, and both weekly resets
   stayed fixed for the whole run. The run says nothing about an idle weekly window.
 

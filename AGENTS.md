@@ -167,3 +167,12 @@ rotates refresh tokens, so redeeming one revokes the copy Claude Code holds and
 silently logs the operator out of that account. The README section "The
 single-writer rule" is the full account. Reading usage uses the existing
 *access* token as a plain bearer, and mints nothing.
+
+
+## Waiting-window pings
+
+`PYTHONPATH=src ./.venv/bin/python -m quota_router.cli window-ping --dry-run`
+reads status history without sending calls or changing state. See
+`docs/window-pings.md`. The launchd installer defaults to dry-run; live activation
+requires the operator's decision and a repo-prod reinstall with
+`WINDOW_PING_MODE=execute`. Do not enable it before provider telemetry is qualified.

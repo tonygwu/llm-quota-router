@@ -131,6 +131,7 @@ class Deps:
     #: I/O for ``capabilities --refresh`` (``model/list``, ``agy models``). ``pick``
     #: never uses it; tests inject it so no process is spawned.
     capability_refresh: Any = None
+    window_ping: Any = None
     #: Reads a credit pool's key by Keychain item; ``run`` only. ``None`` means
     #: :func:`quota_router.secrets.read_api_key`.
     read_secret: Callable[[str], Any] | None = None
@@ -3416,6 +3417,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
+    ping_parser = subparsers.add_parser(
+        "window-ping", help="list or start waiting subscription windows from status history"
+    )
+    ping_mode = ping_parser.add_mutually_exclusive_group()
+    ping_mode.add_argument("--dry-run", action="store_true", help="list only (the default); no writes or calls")
+    ping_mode.add_argument("--execute", action="store_true", help="send eligible pings; operator opt-in")
+    ping_parser.add_argument("--json", action="store_true")
+    ping_parser.add_argument("--config")
+    ping_parser.add_argument("--now", help="evaluation timestamp; dry-run only")
+    ping_parser.add_argument("--resume-window", metavar="ACCOUNT:KEY", help="clear a verification stop; requires --execute and sends nothing")
+
     pick_parser = subparsers.add_parser(
         "pick",
         parents=[common],
@@ -4605,7 +4617,35 @@ def _cmd_run(
     return EXIT_OK
 
 
+def _cmd_window_ping(args, env, now_s, deps, stdout, stderr, cwd):
+    from . import window_ping
+    from .state import state_path
+
+    if args.execute and args.now:
+        raise ConfigError("window-ping --execute cannot use a synthetic --now")
+    config = load_config(env=env, cwd=cwd, explicit_path=args.config)
+    records = history_mod.iter_records(env=env, include_rotated=True,
+        since_s=now_s - window_ping.HISTORY_LOOKBACK_S, strict=True)
+    report = window_ping.run_pings(config, records, state_path(env).parent / "window-pings.jsonl",
+        env=env, now_s=now_s, dry_run=not args.execute, send=deps.window_ping,
+        resume=args.resume_window)
+    report["generated_at"] = _iso(now_s)
+    if args.json:
+        stdout.write(json.dumps(report, separators=(",", ":")) + "\n")
+    else:
+        for p in report["plans"]:
+            stdout.write(f"{p['account']}: {p['action']} {p['model'] or '-'} — {p['reason']}\n")
+            for w in p["waiting_windows"]:
+                stdout.write(f"  {w['key']}: {w['waiting_reason']}; {w['gate']}\n")
+        stdout.write(f"attempted={report['attempted']} succeeded={report['succeeded']} failed={report['failed']} "
+                     f"failed_by_kind={report['failed_by_kind']} would_ping={report['would_ping']}\n")
+        for warning in report["warnings"]:
+            stdout.write(f"warning: {warning}\n")
+    return 1 if report["failed"] or report["warnings"] else EXIT_OK
+
+
 _COMMANDS: Final[Mapping[str, Callable[..., int]]] = {
+    "window-ping": _cmd_window_ping,
     "pick": _cmd_pick,
     "exec": _cmd_exec,
     "status": _cmd_status,

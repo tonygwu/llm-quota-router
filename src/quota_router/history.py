@@ -40,6 +40,7 @@ from .types import (
     SOURCE_CACHE,
     AccountSnapshot,
     Identity,
+    NotRunningWindow,
     Window,
 )
 
@@ -416,6 +417,7 @@ def iter_records(
     env: Mapping[str, str] | None = None,
     since_s: float | None = None,
     include_rotated: bool = False,
+    strict: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Yield history records oldest file first, skipping anything unparseable.
 
@@ -429,6 +431,8 @@ def iter_records(
 
     A truncated final line (a crash mid-append) is simply skipped: a partial record must
     not stop the router from reading the good ones before it.
+    ``strict=True`` instead raises on malformed records or read errors. Actions that
+    spend quota use it so a bad latest record cannot resurrect an older eligibility.
     """
     target = Path(path) if path is not None else history_path(env)
 
@@ -437,6 +441,8 @@ def iter_records(
         try:
             rotated = list(target.parent.glob(_ROTATED_GLOB))
         except OSError:
+            if strict:
+                raise
             rotated = []
         files.extend(_rotated_in_order(rotated, since_s))
     files.append(target)
@@ -447,6 +453,8 @@ def iter_records(
         except (FileNotFoundError, NotADirectoryError):
             continue
         except OSError:
+            if strict:
+                raise
             continue
         with handle:
             for line in handle:
@@ -456,10 +464,16 @@ def iter_records(
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    if strict:
+                        raise
                     continue
                 if not isinstance(record, dict):
+                    if strict:
+                        raise ValueError(f"non-object history record in {file_path}")
                     continue
                 timestamp = record.get("t")
+                if strict and (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp)):
+                    raise ValueError(f"invalid history timestamp in {file_path}")
                 if since_s is not None and (
                     not isinstance(timestamp, (int, float)) or timestamp < since_s
                 ):
@@ -549,6 +563,7 @@ def record_to_snapshots(
                     id=str(entry["id"]),
                     provider=str(entry.get("provider") or ""),
                     windows=windows,
+                    not_running=tuple(NotRunningWindow(**w) for w in entry.get("not_running", [])),
                     tier=entry.get("tier"),
                     source=source,
                     confidence=(
