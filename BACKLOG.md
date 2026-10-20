@@ -1512,49 +1512,29 @@ with unreadable lines, and record the choice. The ping journal must stay strict.
 
 ---
 
-### 36. Most commands accept the shared `--dry-run` and ignore it, including commands that write  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
+### 46. `status --dry-run` hides the encodings a real run would add, and repeats one message  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** every subcommand built with the shared parser accepts `--dry-run`.
-Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3556` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
-Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3489` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4152` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4701` "def _cmd_credits("),
-`calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3496` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4454` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:4091` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3906` "def _cmd_forensics("),
-and `doctor`, which appends a history record through the shared prepare step.
-`run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3812` "# --dry-run was accepted, ignored, and a real call ran.".
+**Background:** split out of #36 on 2026-10-20, when the shared `--dry-run` was limited
+to the commands that honour it. Two gaps in `status --dry-run` itself, left by #35's fix,
+remain. A dry run shows the ledger's existing unexplained encodings, but not the
+encodings a recording run would add for a changed config or code default, because
+`src/quota_router/calibrations.py:473` "def detect_config_changes(" computes and appends
+them in one step. The text "calibration reconstruction is absent or incomplete" also
+exists twice, in `detect_config_changes` and at
+`src/quota_router/cli.py:2754` "calibration reconstruction is absent or incomplete;".
 
-**Impact:** `calibrations --append --dry-run` appends to the operator-approved
-ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
-operator-gated step, `credits set --dry-run` records a balance, and `capabilities
---refresh --dry-run` rewrites the table that `pick --capability` reads. Each says nothing,
-because argparse accepts the flag. The help text now warns, but a flag that is
-accepted and ignored is the trap #35 fixed for `status`.
+**Impact:** an agent that runs `status --dry-run` to see what a real run would record
+cannot see the new encodings, which are exactly what a config edit adds. The repeated
+text can drift apart.
 
-**Fix:** give `--dry-run` only to the commands that honour it (`pick`, `exec`,
-`explain`, `status`, and `waste`, which refuses it with `--backfill`), as `run`
-already does, so argparse rejects it elsewhere. Alternatively, make each writer
-honour it. Before removing it, check callers: on 2026-10-20 nothing under `ops/`
-passed the shared `--dry-run`. Test: for each writer, `<command> --dry-run` exits
-with argparse's usage error or leaves a scratch state folder unchanged; it must fail
-on today's code.
+**Fix:** split the pending-encoding calculation out of `detect_config_changes`, so a dry
+run lists the encodings it would add without appending them. Keep the reconstruction
+message in one constant. Test: with a changed config default and a scratch ledger,
+`status --dry-run` names the pending encoding and leaves the ledger unchanged; it must
+fail on today's code.
 
-Two smaller gaps in `status --dry-run` itself, left by #35's fix: it shows the ledger's
-existing unexplained encodings but not the encodings a recording run would add for a
-changed config or code default, and the "calibration reconstruction is absent" text now
-exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split the
-pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
-and keep that text in one constant.
-
-**Touch points:** `src/quota_router/cli.py:3556` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3812` "# --dry-run was accepted, ignored, and a real call ran.";
-`tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
+**Touch points:** `src/quota_router/calibrations.py`, `src/quota_router/cli.py`
+(`_cmd_status`), and the status dry-run tests.
 
 ---
 
