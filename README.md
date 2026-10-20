@@ -1517,8 +1517,9 @@ their sources with the latest encodings. A changed value is appended once as
 `unexplained`; the warning remains until an explained encoding record references its
 id through `annotates` and supplies evidence. Annotating an old change preserves its
 value and change-time bounds and cannot restore it as today's setting. Unknown or
-corrupt ledger data is reported; an invalid ledger stops waste recording for that
-status run. With no completed reconstruction, detection stays off and status emits
+corrupt ledger data is reported; an invalid ledger stops reset recording for that
+status run, while the waiting-stretch writer, which takes no ledger input, still
+runs. With no completed reconstruction, detection stays off and status emits
 one reconstruction warning instead of creating an entry for every value.
 
 **Deployment requires an operator decision.** Develop and test with scratch

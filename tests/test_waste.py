@@ -1189,3 +1189,34 @@ def test_backfill_recovers_resets_from_retained_history(env, tmp_path):
     assert code == cli.EXIT_OK
     rows, _ = waste.read_records(env=env)
     assert [r.reset_at_s for r in rows] == [reset_at]
+
+
+def test_every_append_refusal_is_reported_as_a_failure(tmp_path, monkeypatch):
+    """status prints `failures` live; routine scan notes stay in `warnings` only."""
+    import fcntl
+
+    unreadable = tmp_path / "unreadable.jsonl"
+    unreadable.write_text("{not json\n", encoding="utf-8")
+    write = waste.update_from_history([], path=unreadable)
+    assert not write.ok
+    assert write.failures == (
+        f"1 unreadable line(s) in {unreadable}; the readable rows are unaffected",
+        "refusing to append behind unreadable waste rows; preserve and inspect the file",
+    )
+
+    directory = tmp_path / "directory.jsonl"
+    directory.mkdir()
+    write = waste.update_from_history([], path=directory)
+    assert not write.ok and len(write.failures) == 1
+    assert write.failures[0].startswith(f"cannot append to waste file {directory}: ")
+
+    locked = tmp_path / "locked.jsonl"
+    monkeypatch.setattr(waste, "LOCK_TIMEOUT_S", 0.0)
+    with open(locked, "a", encoding="utf-8") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        write = waste.update_from_history([], path=locked)
+    assert not write.ok
+    assert write.failures == (f"waste lock timed out after 0s on {locked}; no rows appended",)
+
+    healthy = waste.update_from_history([], path=tmp_path / "healthy.jsonl")
+    assert healthy.ok and healthy.failures == ()

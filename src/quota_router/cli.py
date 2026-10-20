@@ -53,7 +53,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Final, TextIO
+from typing import Any, Callable, Final, NamedTuple, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import explain as explain_mod
@@ -2573,12 +2573,23 @@ def _plans_for(config: Config) -> tuple[dict[str, pse.Plan], list[str]]:
     return plans, warnings
 
 
-#: A stopped waiting-stretch writer records nothing until the cause clears, so ``status``
-#: prints this note as a live warning rather than counting it with past transitions.
+#: A refused waiting-stretch append. It is about this run, so ``status`` prints it live.
 _FORGONE_STOPPED: Final[str] = "forgone recording stopped"
 
 
-def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
+class _WasteNotes(NamedTuple):
+    """What the two history writers said, split by what it is about.
+
+    ``live``: a writer refused or failed on this run and records nothing until the cause
+    clears, so ``status`` prints it. ``history``: past window transitions seen in retained
+    history, which ``status`` only counts by default.
+    """
+
+    live: list[str]
+    history: list[str]
+
+
+def _record_waste(config: Config, env: Mapping[str, str], *, resets: bool = True) -> _WasteNotes:
     """Append any window reset the retained history can attest to.
 
     Run from ``status`` because that is what the launchd poller invokes: it already
@@ -2586,24 +2597,38 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     when it is seen, and no new job has to exist. Deliberately NOT on ``pick`` -- the
     launcher caps its whole routing decision at three seconds, and scanning retained
     history there is exactly the work that turns a decision into a timeout.
+
+    Also appends closed waiting stretches. ``resets=False`` (an invalid calibration ledger)
+    skips only the reset writer: waiting stretches take no ledger input. A writer that
+    refuses, or a history that cannot be read, is reported in ``live``.
     """
-    plans, warnings = _plans_for(config)
-    records = list(history_mod.iter_records(env=env, include_rotated=True, strict=True))
-    ledger = calibrations_mod.read_records(env=env)
-    write = waste_mod.update_from_history(records, plans=plans, env=env, ledger=ledger)
+    plans, history = _plans_for(config)
+    live: list[str] = []
+    try:
+        records = list(history_mod.iter_records(env=env, include_rotated=True, strict=True))
+    except (ValueError, OSError) as exc:
+        live.append(f"history unreadable; no resets or waiting stretches recorded: {exc}")
+        return _WasteNotes(live=live, history=history)
+    if resets:
+        # Resets need an auditable ledger basis; the caller passes False when it is invalid.
+        ledger = calibrations_mod.read_records(env=env)
+        write = waste_mod.update_from_history(records, plans=plans, env=env, ledger=ledger)
+        live.extend(write.failures)
+        history.extend(w for w in write.warnings if w not in write.failures)
+    # Waiting stretches take no ledger input, so an invalid ledger does not stop them.
     from . import forgone
     counts: dict[str, int] = {}
     try:
         forgone.append_records(forgone.detect(records), env=env, counts=counts)
     except (ValueError, KeyError, OSError) as exc:
-        warnings.append(f"{_FORGONE_STOPPED}: {exc}")
+        live.append(f"{_FORGONE_STOPPED}: {exc}")
     if counts.get("retention_shifted"):
         # Expected for weeks after pruning, so it is a history note, not a live warning.
-        warnings.append(
+        history.append(
             f"forgone kept {counts['retention_shifted']} durable stretch(es) whose "
             "re-detection names a later window waiting start after history pruning"
         )
-    return warnings + list(write.warnings)
+    return _WasteNotes(live=live, history=history)
 
 
 #: Read this much history before the forecast window, so the reading that straddles the
@@ -2686,30 +2711,33 @@ def _cmd_status(
                                 if snapshot.windows})
         except (calibrations_mod.LedgerError, OSError) as exc:
             # Routing can still show usage, but no reset may acquire an unauditable basis.
-            calibration_notes = [f"calibration ledger invalid; waste recording stopped: {exc}"]
+            calibration_notes = [f"calibration ledger invalid; waste recording stopped for resets "
+                                 f"(the waiting-stretch writer still runs): {exc}"]
             ledger_valid = False
         else:
             ledger_valid = True
 
     # Two populations of warning, and only one of them is about this reading. The waste
     # scan re-walks every retained history record on every run, so its notes describe
-    # window transitions observed days ago and their count only grows. A stopped
-    # waiting-stretch writer is the exception: it is about this run, so it is live. Printing them
+    # window transitions observed days ago and their count only grows. Printing them
     # beside a warning about the snapshot just taken buries the second in the first --
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
-    # --verbose prints both in full, and --json still carries both, in that order.
-    notes = _record_waste(prepared.config, env) if ledger_valid and not dry_run else []
+    # --verbose prints both in full, and --json still carries both, in that order. A
+    # writer that refused on this run (_WasteNotes.live) is about this run, so it is live.
+    waste_notes = (_WasteNotes(live=[], history=[]) if dry_run
+                   else _record_waste(prepared.config, env, resets=ledger_valid))
+    notes = list(waste_notes.history)
     forecast_notes = [] if dry_run else _refresh_forecast(prepared.config, env, now_s)
     # Joint status reports refresh problems here. Own-waste pick reports an unusable
     # working rate when it needs one, so status does not repeat those warnings.
     engine = prepared.config.engine
     if engine.objective != "own_waste" or engine.shadow:
         notes = notes + forecast_notes
-    stopped = tuple(note for note in notes if note.startswith(_FORGONE_STOPPED))
-    history_notes = tuple(note for note in dict.fromkeys(notes) if note not in stopped)
+    history_notes = tuple(dict.fromkeys(notes))
     live_warnings = tuple(
-        note for note in dict.fromkeys(prepared.warnings + tuple(calibration_notes) + stopped)
+        note for note in dict.fromkeys(
+            prepared.warnings + tuple(calibration_notes) + tuple(waste_notes.live))
         if note not in set(history_notes)
     )
     prepared.warnings = live_warnings + history_notes
@@ -3193,7 +3221,8 @@ def _cmd_waste(
     warnings: list[str] = []
 
     if getattr(args, "backfill", False):
-        warnings.extend(_record_waste(config, env))
+        waste_notes = _record_waste(config, env)
+        warnings.extend(waste_notes.live + waste_notes.history)
 
     path = waste_mod.waste_path(env)
     records, read_warnings = waste_mod.read_records(env=env)

@@ -1221,7 +1221,8 @@ def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypat
     just taken. The default view counts the history notes and prints every live warning.
     """
     notes = [f"codex/7d: incoherent pair -- observation {index}" for index in range(12)]
-    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+    monkeypatch.setattr(cli, "_record_waste",
+                        lambda config, env, resets=True: cli._WasteNotes(live=[], history=list(notes)))
     blind = AccountSnapshot(id="cursor", provider="cursor", windows=(), note="no API")
 
     code, _, err = run(["status"], env, snapshots=real_capture() + (blind,))
@@ -1244,8 +1245,8 @@ def test_status_prints_a_stopped_forgone_writer_as_a_live_warning(env, monkeypat
     stopped = "forgone recording stopped: conflicting forgone record identity"
     kept = ("forgone kept 1 durable stretch(es) whose re-detection names a later window "
             "waiting start after history pruning")
-    notes = [kept, "codex/7d: incoherent pair -- observation 0", stopped]
-    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+    monkeypatch.setattr(cli, "_record_waste", lambda config, env, resets=True: cli._WasteNotes(
+        live=[stopped], history=[kept, "codex/7d: incoherent pair -- observation 0"]))
 
     code, _, err = run(["status"], env, snapshots=real_capture())
     assert code == cli.EXIT_OK
@@ -1274,10 +1275,99 @@ def test_record_waste_stop_note_reaches_the_default_status_view(env, monkeypatch
     assert "forgone kept" not in err
 
 
+def test_status_prints_a_refusing_reset_writer_as_a_live_warning_with_its_file(env):
+    """An unreadable waste row stops every reset append until someone repairs it."""
+    waste = Path(env["XDG_STATE_HOME"]) / "quota-router" / "waste.jsonl"
+    waste.parent.mkdir(parents=True)
+    waste.write_text("{not json\n", encoding="utf-8")
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert "! refusing to append behind unreadable waste rows" in err, err
+    assert f"! 1 unreadable line(s) in {waste}" in err, err
+    assert "note(s) about past window transitions" not in err, err
+
+
+def test_status_prints_a_failed_reset_write_as_a_live_warning(env):
+    waste = Path(env["XDG_STATE_HOME"]) / "quota-router" / "waste.jsonl"
+    waste.mkdir(parents=True)  # a directory where the file belongs: the open fails
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert f"! cannot append to waste file {waste}" in err, err
+
+
+def test_routine_reset_scan_notes_stay_history_beside_a_live_refusal(env, monkeypatch):
+    """The real split in _record_waste, not a mock: refusals live, scan notes counted."""
+    from quota_router import waste
+
+    monkeypatch.setattr(waste, "detect_resets", lambda records, plans=None: waste.Detection(
+        records=(), warnings=("codex/7d: incoherent pair -- observation 0",)))
+    path = Path(env["XDG_STATE_HOME"]) / "quota-router" / "waste.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json\n", encoding="utf-8")
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert "! refusing to append behind unreadable waste rows" in err, err
+    assert "incoherent pair" not in err, err
+    assert "1 note(s) about past window transitions" in err, err
+
+    code, out, err = run(["waste", "--backfill"], env)
+    assert "! refusing to append behind unreadable waste rows" in err, err
+
+
+def test_unreadable_history_is_a_live_warning_not_a_crash(env, monkeypatch):
+    from quota_router import calibrations
+
+    def bad_ledger(*args, **kwargs):
+        raise calibrations.LedgerError("unreadable calibration record")
+
+    monkeypatch.setattr(calibrations, "detect_config_changes", bad_ledger)
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("{not json\n", encoding="utf-8")
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert "! history unreadable; no resets or waiting stretches recorded" in err, err
+
+
+def test_unreadable_history_with_a_valid_ledger_is_also_a_live_warning(env):
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_text("{not json\n", encoding="utf-8")
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert "! history unreadable; no resets or waiting stretches recorded" in err, err
+
+
+def test_invalid_ledger_stops_resets_but_still_records_waiting_stretches(env, monkeypatch):
+    """The waiting-stretch writer takes no ledger input, so a bad ledger must not stop it."""
+    from quota_router import calibrations, forgone, waste
+
+    def bad_ledger(*args, **kwargs):
+        raise calibrations.LedgerError("unreadable calibration record")
+
+    calls = []
+    monkeypatch.setattr(calibrations, "detect_config_changes", bad_ledger)
+    monkeypatch.setattr(forgone, "append_records",
+                        lambda rows, path=None, *, env=None, counts=None: calls.append("forgone") or 0)
+    monkeypatch.setattr(waste, "update_from_history",
+                        lambda *a, **k: calls.append("resets") or waste.WasteWrite(ok=True))
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert "! calibration ledger invalid; waste recording stopped for resets" in err, err
+    assert calls == ["forgone"], calls
+
+
 def test_status_json_still_carries_every_warning(env, monkeypatch):
     """The compact view is a rendering choice; the machine-readable contract loses nothing."""
     notes = ["codex/7d: incoherent pair -- observation 0"]
-    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+    monkeypatch.setattr(cli, "_record_waste",
+                        lambda config, env, resets=True: cli._WasteNotes(live=[], history=list(notes)))
     blind = AccountSnapshot(id="cursor", provider="cursor", windows=(), note="no API")
 
     _, out, _ = run(["status", "--json"], env, snapshots=real_capture() + (blind,))

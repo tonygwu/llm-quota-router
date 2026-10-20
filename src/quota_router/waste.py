@@ -1073,9 +1073,13 @@ class WasteWrite:
     appended: int = 0
     skipped: int = 0
     warnings: tuple[str, ...] = ()
+    #: The subset of ``warnings`` that says this append refused or failed. It is about
+    #: this run, not a past transition, so ``status`` prints it as a live warning.
+    failures: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(self.warnings))
+        object.__setattr__(self, "failures", tuple(self.failures))
 
 
 def _iter_lines(path: Path) -> Iterator[str]:
@@ -1167,14 +1171,17 @@ def append_records(
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        return WasteWrite(ok=False, path=target, warnings=(
-                            f"waste lock timed out after {LOCK_TIMEOUT_S:g}s; no rows appended",))
+                        failure = (f"waste lock timed out after {LOCK_TIMEOUT_S:g}s on {target}; "
+                                   "no rows appended",)
+                        return WasteWrite(ok=False, path=target, warnings=failure, failures=failure)
                     time.sleep(0.01)
             existing, warnings = read_records(target)
             if warnings:
-                return WasteWrite(ok=False, path=target, warnings=warnings + (
+                # The unreadable-line count names the file; the refusal alone does not.
+                failure = warnings + (
                     "refusing to append behind unreadable waste rows; preserve and inspect the file",
-                ))
+                )
+                return WasteWrite(ok=False, path=target, warnings=failure, failures=failure)
             earliest: dict[tuple[str, str, str], ResetRecord] = {}
             seen = {record.key for record in existing if record.version >= WASTE_VERSION}
             for old in existing:
@@ -1202,8 +1209,9 @@ def append_records(
             handle.flush()
             os.fsync(handle.fileno())
     except OSError as exc:
+        failure = (f"cannot append to waste file {target}: {exc}",)
         return WasteWrite(ok=False, path=target, appended=appended, skipped=skipped,
-                          warnings=warnings + (f"cannot append to waste file {target}: {exc}",))
+                          warnings=warnings + failure, failures=failure)
     return WasteWrite(ok=True, path=target, appended=appended, skipped=skipped,
                       warnings=warnings)
 
@@ -1246,6 +1254,7 @@ def update_from_history(
         appended=write.appended,
         skipped=write.skipped,
         warnings=write.warnings + detection.warnings,
+        failures=write.failures,
     )
 
 
