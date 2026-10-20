@@ -132,7 +132,7 @@ covers one full weekly cycle.
 
 ---
 
-### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`
+### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`  `[claimed by: #0]`
 
 Workable bullets come first. The last one waits on an operator decision and is marked
 so; do not start it. One bullet was closed by the operator on 2026-10-18:
