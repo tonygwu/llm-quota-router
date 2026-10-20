@@ -9,14 +9,21 @@ import pytest
 
 from quota_router import config as config_mod
 
+pytest_plugins = ["pytester"]
+
 #: Where a config search may not reach from a test (BACKLOG #44). Every checkout of this
 #: repository sits under a home directory, so the home covers a ``.quota-router.toml`` in
 #: the checkout as well as ``~/.config/quota-router``; the working directory is listed
-#: for a suite run from outside the home, and the process ``XDG_CONFIG_HOME`` for a
-#: config kept outside it.
+#: for a suite run from outside the home, and the process ``XDG_CONFIG_HOME`` and
+#: ``QUOTA_ROUTER_CONFIG`` for a config kept outside it (BACKLOG #47).
 _REAL_ROOTS = tuple(
     Path(root).resolve()
-    for root in (Path.home(), Path.cwd(), os.environ.get("XDG_CONFIG_HOME"))
+    for root in (
+        Path.home(),
+        Path.cwd(),
+        os.environ.get("XDG_CONFIG_HOME"),
+        os.environ.get("QUOTA_ROUTER_CONFIG", "").strip(),
+    )
     if root
 )
 

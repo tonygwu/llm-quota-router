@@ -2,8 +2,9 @@
 
 This is BACKLOG #18. The check reads the source of each ``test_*.py`` and sees only
 those two calls by name. ``tests/conftest.py`` backs it at run time (BACKLOG #44): it
-fails any test whose config search reaches the real home or working directory, however
-the search was reached. The last tests below check that run-time guard.
+fails any test whose config search reaches the real home, the working directory, or the
+process ``XDG_CONFIG_HOME`` or ``QUOTA_ROUTER_CONFIG``, however the search was reached,
+and allows pytest's own temp folder. The last tests below check that run-time guard.
 
 ``load_config`` searches ``$XDG_CONFIG_HOME`` (else ``$HOME/.config``, and with no
 ``HOME`` in ``env``, the real home) and the working directory. A call with an empty
@@ -106,11 +107,57 @@ def test_the_run_time_guard_is_installed_for_this_test(monkeypatch) -> None:
     assert config_mod.config_search_paths.__name__ == "guarded"
 
 
-def test_the_run_time_guard_allows_pytest_temp_folders(tmp_path) -> None:
-    layers = [(tmp_path / "config.toml", False)]
-    assert real_paths_searched(layers, allowed=(tmp_path.resolve(),)) == []
+def test_the_run_time_guard_allows_pytest_temp_folders() -> None:
+    """A temp folder under a real root, as with ``--basetemp=./tmp``, is not real."""
+    layers = [(Path.cwd() / "tmp" / "config.toml", False)]
+    assert real_paths_searched(layers)
+    assert real_paths_searched(layers, allowed=((Path.cwd() / "tmp").resolve(),)) == []
 
 
 def test_the_run_time_guard_passes_a_search_kept_off_the_machine(tmp_path) -> None:
     rooted = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": test_cli._NO_CONFIG_FILES}
     assert real_paths_searched(config_search_paths(rooted, test_cli._NO_CONFIG_FILES)) == []
+
+
+def test_a_search_of_the_real_machine_fails_the_test(pytester, monkeypatch, tmp_path) -> None:
+    """The guard must fire, not only be installed. A refactor that bypasses the patched
+    name, or a guard that stops recording or asserting, leaves these inner tests green.
+
+    The inner run is a subprocess, so this test's own guard never sees its searches, and
+    it gets a scratch HOME, so the real home is never searched.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    operator_config = tmp_path / "operator" / "operator.toml"
+    operator_config.parent.mkdir()
+    operator_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("QUOTA_ROUTER_CONFIG", str(operator_config))
+    monkeypatch.setenv("PYTHONPATH", str(TESTS.parent / "src"))
+    pytester.makeconftest((TESTS / "conftest.py").read_text(encoding="utf-8"))
+    pytester.makepyfile(
+        test_inner=f"""
+        import os
+        from quota_router.config import load_config
+
+        NOWHERE = {test_cli._NO_CONFIG_FILES!r}
+
+        def test_the_home():
+            load_config(env={{}}, cwd=NOWHERE)
+
+        def test_the_process_xdg_config_home():
+            load_config(env={{"HOME": NOWHERE, "XDG_CONFIG_HOME": os.environ["XDG_CONFIG_HOME"]}},
+                        cwd=NOWHERE)
+
+        def test_the_process_quota_router_config():
+            env = {{"HOME": NOWHERE, "XDG_CONFIG_HOME": NOWHERE,
+                    "QUOTA_ROUTER_CONFIG": os.environ["QUOTA_ROUTER_CONFIG"]}}
+            load_config(env=env, cwd=NOWHERE)
+
+        def test_a_search_kept_off_the_machine():
+            load_config(env={{"HOME": NOWHERE, "XDG_CONFIG_HOME": NOWHERE}}, cwd=NOWHERE)
+        """
+    )
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(passed=4, errors=3)

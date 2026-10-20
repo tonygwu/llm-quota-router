@@ -119,14 +119,19 @@ class NetworkAttempted(BaseException):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_network(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Hard guarantee: no test in this module may open a socket."""
+def _no_real_network() -> Iterator[None]:
+    """Hard guarantee: no test in this module may open a socket.
+
+    The patch has its own ``MonkeyPatch``, so a test that calls ``monkeypatch.undo()``
+    cannot reopen the network.
+    """
 
     def explode(*args: Any, **kwargs: Any) -> None:
         raise NetworkAttempted(f"a test tried to reach the network: {args!r}")
 
-    monkeypatch.setattr(urllib.request, "urlopen", explode)
-    yield
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(urllib.request, "urlopen", explode)
+        yield
 
 
 # ======================================================================================
