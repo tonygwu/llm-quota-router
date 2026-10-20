@@ -51,7 +51,9 @@ def test_codex_usage_only_is_not_served_model_evidence():
         {"type": "turn.completed", "usage": {"input_tokens": 5, "cached_input_tokens": 0, "output_tokens": 1}}]
     response = SimpleNamespace(returncode=0, stdout="\n".join(map(json.dumps, events)), stderr="model: gpt-6-luna")
     parsed = parse_response(a, response)
-    assert parsed["kind"] == "model_unverified"
+    assert parsed["outcome"] == "succeeded"
+    assert parsed["model_evidence"] == "selected_model_only"
+    assert parsed["model_served"] is None
     assert parsed["tokens"]["input_tokens"] == 5
 
 
@@ -61,7 +63,10 @@ def test_agy_selected_label_is_not_a_served_stamp():
         "usage": {"input_tokens": 5, "output_tokens": 1, "thinking_tokens": 0, "cache_read_tokens": 0}},
         'OAuth: authenticated successfully as synthetic@example.test\n'
         'Propagating selected model override to backend: label="Gemini 3.8 Flash (Low)"')
-    assert parse_response(a, response)["kind"] == "model_unverified"
+    parsed = parse_response(a, response)
+    assert parsed["outcome"] == "succeeded"
+    assert parsed["model_evidence"] == "selected_model_only"
+    assert parsed["model_served"] is None
     response.stderr = 'OAuth: authenticated successfully as wrong@example.test'
     assert parse_response(a, response)["kind"] == "account_identity"
 
@@ -89,7 +94,7 @@ def test_agy_wrapper_and_separate_pool_models():
     argv, env = command_for(a, {"HOME": "/wrong", "PATH": "/bin"}, "/tmp/synthetic")
     assert argv[:5] == ["sudo", "-n", "/synthetic/wrapper", "synthetic-user", "/usr/local/bin/agy"]
     assert "HOME" not in env
-    assert argv[argv.index("--model")+1] == "gpt-oss-120b-medium"
+    assert argv[argv.index("--model")+1] == "claude-sonnet-5-5-low"
     assert model_for(AccountConfig(id="antigravity_gemini")) == "gemini-3.8-flash-low"
 
 
@@ -103,3 +108,91 @@ def test_agy_final_environment_cannot_restore_credit_credentials():
     _, env = command_for(a, {**banned, "PATH": "/bin"}, "/tmp/synthetic")
     assert not (env.keys() & banned.keys())
     assert env["AGY_MODEL"] == "claude"
+
+
+def native_response(provider, *, stamp=None, answer="2", missing_tokens=False):
+    usage = {"input_tokens": 5, "output_tokens": 1}
+    if missing_tokens:
+        del usage["output_tokens"]
+    if provider == "codex":
+        usage["cached_input_tokens"] = 0
+        result = {"type": "turn.completed", "usage": usage}
+        if stamp is not None:
+            result["model"] = stamp
+        events = [{"type": "item.completed", "item": {"type": "agent_message", "text": answer}}, result]
+        return SimpleNamespace(returncode=0, stdout="\n".join(map(json.dumps, events)), stderr="")
+    usage.update(thinking_tokens=0, cache_read_tokens=0)
+    result = {"status": "SUCCESS", "num_turns": 1, "usage": usage, "response": answer}
+    if stamp is not None:
+        result["model"] = stamp
+    return completed(result, "OAuth: authenticated successfully as synthetic@example.test")
+
+
+@pytest.mark.parametrize("provider", ["codex", "antigravity_gemini"])
+def test_selected_only_still_rejects_bad_answer_tokens_and_model(provider):
+    account = AccountConfig(id=provider, identity_email="synthetic@example.test")
+    assert parse_response(account, native_response(provider, answer="3"))["kind"] == "answer"
+    assert parse_response(account, native_response(provider, missing_tokens=True))["kind"] == "telemetry"
+    assert parse_response(account, native_response(provider, stamp="different-model"))["kind"] == "wrong_model"
+    for invalid_stamp in ("", [], 0, False):
+        assert parse_response(account, native_response(provider, stamp=invalid_stamp))["kind"] == "telemetry"
+    parsed = parse_response(account, native_response(provider, stamp=model_for(account)))
+    assert parsed["outcome"] == "succeeded"
+    assert parsed["model_evidence"] == "served_model"
+
+
+def test_claude_multiple_served_models_cannot_be_called_selected_only():
+    account = AccountConfig(id="claude")
+    response = claude_result()
+    response["modelUsage"]["different-model"] = {"inputTokens": 1}
+    assert parse_response(account, completed(response))["kind"] == "wrong_model"
+
+
+def test_claude_without_served_stamp_records_selection_only():
+    response = claude_result()
+    del response["modelUsage"]
+    parsed = parse_response(AccountConfig(id="claude"), completed(response))
+    assert parsed["outcome"] == "succeeded"
+    assert parsed["model_evidence"] == "selected_model_only"
+    assert parsed["model_served"] is None
+
+
+@pytest.mark.parametrize("stamp,evidence", [
+    (None, None), ("different-model", "selected_model_only"),
+    ("different-model", "served_model"), ("gpt-6-luna", "selected_model_only"),
+])
+def test_journal_rejects_unlabelled_or_conflicting_success(tmp_path, stamp, evidence):
+    from quota_router.window_ping import _journal
+    path = tmp_path / "pings.jsonl"
+    path.write_text(json.dumps({"event": "result", "pool": "codex", "at_s": 1800000000,
+        "started_at_s": 1800000000, "attempt_id": "synthetic", "windows": [],
+        "outcome": "succeeded", "model_asked": "gpt-6-luna", "model_served": stamp,
+        "model_evidence": evidence, "tokens": {"input_tokens": 5, "output_tokens": 1}}) + "\n")
+    with pytest.raises(ValueError, match="identity/token"):
+        _journal(path)
+
+
+@pytest.mark.parametrize("provider", ["codex", "antigravity_gemini"])
+def test_selected_only_success_survives_journal_reload_and_sets_full_cooldown(tmp_path, provider):
+    from quota_router.config import Config
+    from quota_router.types import AccountSnapshot, Window
+    from quota_router.window_ping import run_pings
+    now = 1_800_000_000.0
+    account = AccountConfig(id=provider, identity_email="synthetic@example.test")
+    config = Config(accounts={provider: account})
+    path = tmp_path / "pings.jsonl"
+    def records(at):
+        window = Window("5h", 0, 18000, at + 18000, at)
+        return [{"event": "status", "t": at, "accounts": [
+            AccountSnapshot(id=provider, source="live", windows=(window,)).to_dict()]}]
+    report = run_pings(config, records(now), path, now_s=now, dry_run=False, env={},
+        clock=lambda: now, send=lambda *_: parse_response(account, native_response(provider)))
+    assert (report["attempted"], report["succeeded"], report["failed"]) == (1, 1, 0)
+    # Resolve verification separately so the cooldown, not a pending check, blocks.
+    with path.open("a") as out:
+        out.write(json.dumps({"event": "verification", "pool": provider, "at_s": now + 1,
+            "attempt_id": report["results"][0]["attempt_id"], "key": "5h", "outcome": "verified"}) + "\n")
+    later = now + 1801  # Past failure backoff, still inside the successful 5h cooldown.
+    again = run_pings(config, records(later), path, now_s=later, env={})
+    assert again["plans"][0]["reason"] == "successful_ping_cooldown"
+    assert again["attempted"] == again["would_ping"] == 0

@@ -112,8 +112,15 @@ def _journal(path):
         if e["event"] == "result":
             if not math.isfinite(e["started_at_s"]) or not isinstance(e["model_asked"], str):
                 raise ValueError("invalid ping result time/model")
-            if e["outcome"] == "succeeded" and (not isinstance(e["model_served"], str) or not isinstance(e["tokens"], dict)):
-                raise ValueError("successful ping lacks identity/token evidence")
+            if e["outcome"] == "succeeded":
+                served = e["model_served"]
+                # Old successful entries have a served stamp but no evidence label.
+                # A missing stamp is allowed only with the new explicit selection label.
+                matching_stamp = (isinstance(served, str) and bool(served.strip()) and
+                    served == e["model_asked"] and e.get("model_evidence") in {None, "served_model"})
+                selected_only = served is None and e.get("model_evidence") == "selected_model_only"
+                if not (matching_stamp or selected_only) or not isinstance(e["tokens"], dict):
+                    raise ValueError("successful ping lacks identity/token evidence")
         if e["event"] in {"verification", "resume"} and not isinstance(e["key"], str):
             raise ValueError("invalid ping window key")
         if e["event"] == "verification" and e["outcome"] not in {"verified", "blocked"}:

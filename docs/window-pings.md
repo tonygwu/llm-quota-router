@@ -39,7 +39,7 @@ Each call asks exactly `1 + 1 = ?` in an empty workspace through the account's C
 | Claude | `claude-haiku-5-5` | `claude -p`, account config, safe mode, no tools |
 | Codex | `gpt-6-luna` | `codex exec`, account CODEX_HOME, read-only, low effort |
 | Antigravity Gemini | `gemini-3.8-flash-low` | same `agy_argv_env` user-switch recipe as usage |
-| Antigravity Claude/GPT | `gpt-oss-120b-medium` | same agy recipe; independent pool |
+| Antigravity Claude/GPT | `claude-sonnet-5-5-low` | same agy recipe; independent pool |
 
 Claude uses `CL_CLAUDE_BIN` or `~/.local/bin/claude`; Codex uses
 `QUOTA_ROUTER_CODEX_BIN` or `/opt/homebrew/bin/codex`. Antigravity uses the usage
@@ -47,21 +47,26 @@ adapter's binary resolution, including the configured alternate-user wrapper.
 API-key/provider override environment variables are stripped. Credential renewal
 inside the vendor's CLI is allowed; the router never performs it.
 
-GPT-OSS 120B is the least expensive listed Claude/GPT model by published Google
-Cloud token prices: $0.09/M input and $0.36/M output. This is a price-based choice,
-not a measurement of Antigravity's undisclosed subscription quota weights.
-The current `agy models` listing includes `gpt-oss-120b-medium`. Google announces
-its removal on **November 2, 2026**; replace it before live operation beyond that
-point. There is no silent fallback to another model.
-Sources: [Google pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing),
-[Antigravity models and retirement](https://www.antigravity.google/docs/models/).
+The operator selected Claude Sonnet 5.5 (Low) on 2026-10-20 to replace GPT-OSS
+before its retirement. Native `agy models` returned the exact id
+`claude-sonnet-5-5-low` with label `Claude Sonnet 5.5 (Low)`. This is the operator's
+model choice, not a claim about the cheapest token price or Antigravity's
+undisclosed subscription quota weights. There is no silent fallback.
 
 The audit records the asked and served model, tokens, trigger reading, start and
-completion times, and outcome. A successful exit or model-selection echo is
-insufficient. Missing tokens, a missing/different served model, wrong arithmetic
-answer and account mismatch are named failures. Tokens remain recorded when model
-validation fails after a call. Antigravity compares its own sign-in log with the
-configured identity.
+completion times, and outcome. A successful exit alone is insufficient.
+Missing tokens, a different served model, wrong arithmetic answer and account
+mismatch are named failures. Tokens remain recorded when model validation fails
+after a call. Antigravity compares its own sign-in log with the configured identity.
+
+Under the operator's 2026-10-20 decision, a response without a served-model stamp
+records `model_evidence: "selected_model_only"` and `model_served: null`.
+If its other checks pass, it succeeds and starts the full pool cooldown.
+A matching stamp records `model_evidence: "served_model"`. Neither a selection
+echo nor a model's answer about its own name becomes a served stamp. A malformed
+stamp or any conflicting Claude `modelUsage` entry fails. Saved successes without
+a served stamp require the explicit selection-only label when the journal reloads;
+older successes with matching served stamps remain readable.
 
 **Dry-run qualification:** three separately approved native diagnostic calls ran at
 2026-10-20T00:37:24Z–00:37:34Z, one per provider, with no retry. All returned the
@@ -82,16 +87,88 @@ Native auth checks before those calls reported Claude's `claude.ai` Max subscrip
 and Codex's `Logged in using ChatGPT`. Claude/Codex account selection is evidenced by
 the configured native CLI directory and auth status, not an inference response's
 served-account stamp. Antigravity's native sign-in identity matched configuration.
-Its "Propagating selected model" log remains only selection evidence. A response/turn
-model stamp, if provided, must match the asked model; missing stamps produce
-`model_unverified`, never a successful cooldown entry. The diagnostic calls did not
-establish a waiting-window start: those accounts already had running windows.
+Its "Propagating selected model" log remains only selection evidence. The initial
+parser reported the missing stamps as `model_unverified`; the new operator decision
+changes future calls to selection-only successes when the remaining checks pass.
+The diagnostic calls did not establish a waiting-window start: those accounts
+already had running windows.
 
-Keep recurring pings dry-run until provider telemetry and post-ping window behavior
-are qualified. Otherwise an unverified call is retried after the failure backoff.
-The Gemini pool and alternate-account native invocation paths were not included in
-the three-call allowance. GPT-OSS replacement before its retirement also remains
-part of live qualification. None of this release's work installed or activated pings.
+Keep recurring pings dry-run until deployment approval and ledger adoption in #26.
+The operator approved live pings and accepted the missing served-model stamps, the
+exact previous-reset-plus-length waiting test, and literal elapsed-time cooldowns.
+Installation is still held because it also installs the v3 waste writer. The
+coordinating session handles activation after ledger adoption; this implementation
+does not install or activate anything. Post-ping boundary verification remains
+necessary, including the Antigravity fixed stretch.
+
+### Model-name probes, 2026-10-20
+
+A fresh reviewer approved the concrete execution plan before native calls.
+Between 05:16:00Z and 05:17:49Z, nine pools each received exactly one
+`what model are you?` question through their own CLI, with a 60-second timeout
+and no retries. `claude_b` was skipped before invocation because its latest
+account-wide window was exhausted. The disabled `claude_d` was excluded.
+Native preflights: attempted=9, succeeded=9, failed=0, failed_by_kind={}.
+Model-name probes: attempted=9, succeeded=9, failed=0, failed_by_kind={}.
+Success here means the diagnostic returned a nonempty reply and passed the
+applicable telemetry checks. It does not establish that a self-reported model
+name is true or that the production arithmetic check was exercised.
+
+Full raw stdout, stderr, invocation timestamps, auth checks and derived audits
+are retained privately. Every full inference response was inspected. The
+following replies are summarized to omit temporary workspace paths; all are
+**weak self-reports**, separately classified from telemetry.
+
+| Pool | Model asked | Reply says | Telemetry | Input / output tokens | Cache read / creation |
+|---|---|---|---|---|---|
+| `claude` | `claude-haiku-5-5` | Claude Haiku 5.5, exact requested id | Matching `modelUsage` | 2 / 60 | 649 / 2240 |
+| `claude_b` | `claude-haiku-5-5` | Not called: quota exhausted | No probe | — | — |
+| `claude_c` | `claude-haiku-5-5` | Claude Haiku 5.5, exact requested id | Matching `modelUsage` | 2 / 101 | 649 / 2243 |
+| `claude_e` | `claude-haiku-5-5` | Claude Haiku 5.5, exact requested id | Matching `modelUsage` | 2 / 97 | 649 / 2243 |
+| `codex` | `gpt-6-luna` | “I'm GPT-6.” | Selected model only | 22114 / 10 | 11648 / 0 |
+| `codex_b` | `gpt-6-luna` | “I'm GPT-6.” | Selected model only | 22226 / 10 | 11648 / 0 |
+| `antigravity_gemini` | `gemini-3.8-flash-low` | Gemini 3.8 Flash | Selected model only; log names Flash (Low) | 8356 / 19 | 0 / not reported |
+| `antigravity_claude` | `claude-sonnet-5-5-low` | Antigravity assistant; selected Claude Sonnet 5.5 (Low) | Selected model only; log names Sonnet (Low) | 13088 / 56 | 0 / not reported |
+| `antigravity_gemini_b` | `gemini-3.8-flash-low` | Gemini 3.8 Flash | Selected model only; log names Flash (Low) | 7661 / 17 | 0 / not reported |
+| `antigravity_claude_b` | `claude-sonnet-5-5-low` | Antigravity assistant; selected Claude Sonnet 5.5 (Low) | Selected model only; log names Sonnet (Low) | 11912 / 56 | 0 / not reported |
+
+Codex's cached input is included in its reported input, and its raw response
+reports cache-write and reasoning-output tokens as zero. Antigravity reports
+thinking tokens as zero on all four calls. Claude's cache counts are separate
+fields from its two input tokens. These are vendor counters, not comparable
+token-cost totals.
+
+Native auth status identified the three Claude accounts as `claude.ai` Max
+subscriptions; both Codex accounts reported `Logged in using ChatGPT`.
+Their configured CLI directories select the account, but neither provider's
+inference response gives a served-account stamp. Each Antigravity native sign-in
+matched its configured identity, including both alternate-user invocation paths.
+No raw credentials were read or used by the probe harness.
+
+These diagnostics wrote no production ping journal entries and activated no
+recurring job. The model-name allowance is spent for the nine called pools;
+an exhausted pool was not retried. #29 remains open for ledger adoption,
+installation, and actual poller/journal verification.
+
+The ordinary poller's 05:19:23Z observation showed nonzero five-hour usage in
+all four Antigravity pools, with these resets. No extra usage request was sent.
+
+| Pool | Reset, UTC | Offset from probe start + five hours |
+|---|---|---|
+| `antigravity_gemini` | 2026-10-20T10:16:48Z | +3.994 seconds |
+| `antigravity_claude` | 2026-10-20T10:17:02Z | +3.610 seconds |
+| `antigravity_gemini_b` | 2026-10-20T10:17:27Z | +2.818 seconds |
+| `antigravity_claude_b` | 2026-10-20T10:17:47Z | +3.023 seconds |
+
+These observations support starts near the native inference calls. They do not
+exercise the production journal, and the preflight showed sliding resets rather
+than the ambiguous fixed stretch after a scheduled reset. That specific case
+remains to be observed during activation.
+
+At 05:19:39Z, `PYTHONPATH=src ./.venv/bin/python -m quota_router.cli window-ping --dry-run --json`
+returned attempted=0, succeeded=0, failed=0, failed_by_kind={}, would_ping=0.
+All enabled supported pools reported `no_waiting_window`; `claude_d` was disabled
+and `cursor` unsupported. This was a read of live history, not an installed job.
 
 ## Verification and recovery
 

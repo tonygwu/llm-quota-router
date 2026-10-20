@@ -1,8 +1,8 @@
 """Bounded vendor-CLI pings. No credential reader, HTTP client or API fallback.
 
-A model-selection echo is not served-model evidence. In particular older Codex
-JSONL and agy JSON omit the served name: those calls fail telemetry validation,
-retain their token counts, and never claim success. See docs/window-pings.md.
+A model-selection echo is not served-model evidence. Calls without a served
+stamp record selected_model_only and can succeed under the operator's rule.
+A conflicting stamp remains a failure. See docs/window-pings.md.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .run import child_env, DEFAULT_CLAUDE_BIN, STRIP_ENV
 PROMPT = "1 + 1 = ?"
 PING_TIMEOUT_S = 60.0
 MODELS = {"claude": "claude-haiku-5-5", "codex": "gpt-6-luna",
-          "gemini": "gemini-3.8-flash-low", "claude_gpt": "gpt-oss-120b-medium"}
+          "gemini": "gemini-3.8-flash-low", "claude_gpt": "claude-sonnet-5-5-low"}
 PING_STRIP_ENV = frozenset(STRIP_ENV) | {"OPENAI_API_KEY", "OPENAI_BASE_URL",
     "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}
 
@@ -81,7 +81,7 @@ def _tokens(raw, keys):
 def parse_response(account, completed):
     """Return audit fields even when identity validation fails after a real call."""
     model = model_for(account)
-    audit = {"model_asked": model, "model_served": None, "tokens": None,
+    audit = {"model_asked": model, "model_served": None, "model_evidence": None, "tokens": None,
              "outcome": "failed", "kind": None, "detail": None}
     try:
         if completed.returncode != 0:
@@ -105,8 +105,14 @@ def parse_response(account, completed):
                     raise PingFailure("cli_result", "Claude did not return a successful result")
                 audit["tokens"] = _tokens(result["usage"], ("input_tokens", "output_tokens",
                     "cache_read_input_tokens", "cache_creation_input_tokens"))
-                used = result["modelUsage"]
-                served = next(iter(used)) if len(used) == 1 else None
+                used = result.get("modelUsage")
+                if used is not None:
+                    if not isinstance(used, dict) or any(not isinstance(k, str) or not k.strip() for k in used):
+                        raise PingFailure("telemetry", "invalid Claude modelUsage")
+                    audit["models_served"] = list(used)
+                    if any(k != model for k in used):
+                        raise PingFailure("wrong_model", f"asked for {model}, modelUsage names {list(used)}")
+                served = next(iter(used)) if used else None
                 answer = result["result"]
             else:
                 if result["status"] != "SUCCESS" or result["num_turns"] != 1:
@@ -122,10 +128,14 @@ def parse_response(account, completed):
                     r'Propagating selected model override to backend: label="([^"]*)"', completed.stderr)))
                 answer = result["response"]
         audit["model_served"] = served
-        if not served:
-            raise PingFailure("model_unverified", "call telemetry contains no unambiguous served model")
-        if served != model:
-            raise PingFailure("wrong_model", f"asked for {model}, served {served}")
+        if served is None:
+            audit["model_evidence"] = "selected_model_only"
+        else:
+            if not isinstance(served, str) or not served.strip():
+                raise PingFailure("telemetry", "invalid served-model stamp")
+            audit["model_evidence"] = "served_model"
+            if served != model:
+                raise PingFailure("wrong_model", f"asked for {model}, served {served}")
         # Native arithmetic probes returned plain 2, an equation with bold 2, and
         # a bold Answer label. Accept those exact presentation forms, no extra prose.
         if not isinstance(answer, str) or not re.fullmatch(
