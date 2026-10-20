@@ -1177,8 +1177,9 @@ model_requested, models_seen, effort, auth}`, `usage`, `cost_usd`, `cost_pse`,
 `attempts[]` (each `{account, pool_kind, model, effort, outcome, duration_ms, cost_usd,
 spent, detail}`) and `decision {reason, objective, fallback}`. `served.effort` is the
 `--effort` the child was given (the router's translation of a capability request), or
-null when it was given none; each attempt carries its own. Exit 0 whenever the request parsed, whatever the outcome; exit 2 for a
-request or config refused before anything was spent.
+null when it was given none; each attempt carries its own. Exit 0 whenever the request
+parsed, whatever the outcome; exit 2 for a request or config refused before anything was
+spent.
 
 Each attempt's `spent` says whether it was billed, as far as the router saw. It is
 `true` when the child reported a positive `total_cost_usd` or a credit pool's ledger
@@ -1225,7 +1226,10 @@ in `decision.fallback`. `[engine] usd_per_pse` is required. From Python:
 (digital-twin `callLlm`, memkg-evals `ClaudeCLI.call`, self-rsi-habits' `ModelProvider`)
 with `quotapick run`, and read provenance from `served`. Keep the old path as the
 fallback in two cases only. The first is an installed router without `run`, which a
-client should detect once, before any call, rather than from a failed call. The second
+client should detect once, before any call, rather than from a failed call:
+`echo x | quotapick run` prints a `bad_request` response carrying `run_contract` and
+exits 2 without spending anything, while a router without `run` prints nothing on
+stdout. The second
 is a call that failed with every attempt saying `spent: false` (`no_candidate` has no
 attempts, so it qualifies). A revision from before 2026-10-20 omits `spent`; read a
 missing one as `null`. Never fall back on a missing or unparsable response: the router

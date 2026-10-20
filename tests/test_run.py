@@ -46,10 +46,19 @@ def _stream(*, model=MODEL, text="ok", structured=None, cost=0.0003, is_error=Fa
     return "".join(json.dumps(e) + "\n" for e in events)
 
 
-#: What a call refused before it reached the model reports: no tokens, no model.
+#: What a call refused before it reached the model reports: no tokens, no model. The
+#: usage is Claude Code 2.1.304's empty-usage object, copied whole, because its other
+#: keys (service tier, speed, nested objects) must not read as tokens.
 NOTHING_RAN = {
-    "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
-              "cache_read_input_tokens": 0, "output_tokens": 0},
+    "usage": {"output_tokens_details": {"thinking_tokens": 0}, "input_tokens": 0,
+              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+              "output_tokens": 0,
+              "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+              "service_tier": "standard",
+              "cache_creation": {"ephemeral_1h_input_tokens": 0,
+                                 "ephemeral_5m_input_tokens": 0},
+              "inference_geo": "", "iterations": [], "speed": "standard",
+              "fallback_credit": None},
     "modelUsage": {},
 }
 
@@ -240,6 +249,10 @@ def test_an_auth_failure_is_spent_only_when_the_call_ran(env) -> None:
     pytest.param((1, _refused("boom", modelUsage=[]), ""), None,
                  id="zero cost, malformed modelUsage"),
     pytest.param((1, _refused("boom"), ""), False, id="zero cost, zero tokens"),
+    pytest.param((1, _refused("boom", modelUsage={MODEL: {
+        "inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0, "maxOutputTokens": 64000, "costUSD": 0}}), ""),
+        False, id="zero cost, a model entry with only a token limit"),
     pytest.param(subprocess.TimeoutExpired(cmd="claude", timeout=5), None, id="timeout"),
     pytest.param(FileNotFoundError(2, "No such file or directory", "/opt/test/claude"), False,
                  id="binary missing"),
@@ -251,6 +264,16 @@ def test_spent_is_unknown_unless_the_router_saw_it(env, reply, expected) -> None
     runner = FakeRunner(reply)
     _code, payload, _err = _run(env, _request(max_attempts=1), runner)
     assert payload["attempts"][0]["spent"] is expected
+
+
+def test_a_result_without_model_usage_reads_as_no_model(env) -> None:
+    refused = "".join(
+        json.dumps({key: value for key, value in event.items() if key != "modelUsage"}) + "\n"
+        for event in map(json.loads, _refused("boom").splitlines())
+    )
+    assert "modelUsage" not in refused
+    _code, payload, _err = _run(env, _request(max_attempts=1), FakeRunner((1, refused, "")))
+    assert payload["attempts"][0]["spent"] is False
 
 
 def test_attempts_stop_at_the_cap(env) -> None:

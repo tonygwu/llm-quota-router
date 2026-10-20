@@ -286,10 +286,17 @@ _NOT_STARTED: Final[tuple[type[OSError], ...]] = (
 
 
 def _zero_tokens(counts: Any) -> bool:
-    """True for a mapping that reports at least one token count, all of them zero."""
+    """True for a mapping that reports at least one token count, all of them zero.
+
+    A key ending in ``tokens`` is a count, except a limit such as ``maxOutputTokens``,
+    which every ``modelUsage`` entry carries whatever the call used.
+    """
     if not isinstance(counts, Mapping):
         return False
-    tokens = [value for key, value in counts.items() if str(key).lower().endswith("tokens")]
+    tokens = [
+        value for key, value in counts.items()
+        if str(key).lower().endswith("tokens") and not str(key).lower().startswith("max")
+    ]
     return bool(tokens) and all(
         isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
         for value in tokens
