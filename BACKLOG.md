@@ -1505,7 +1505,7 @@ changes.
 
 ---
 
-### 35. `status --dry-run` writes the same live state as `status`, though the flag promises no writes  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 35. `status --dry-run` writes the same live state as `status`, though the flag promises no writes  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** the shared flag's help says `src/quota_router/cli.py:3429` "decide, but write no state and spawn nothing".
 `_cmd_status` never reads the flag. It appends encodings through
