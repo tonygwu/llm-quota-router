@@ -1181,19 +1181,19 @@ and say so in the README.
 **Background:** #18 covers the `load_config(env={})` calls that read the live config. A
 traced suite run on 2026-10-20 (scratch `HOME`, every vendor binary blocked) found three
 more kinds of leak that #18 does not name. Four tests read `~/.claude*.json` and
-`~/.claude*/.claude.json`: `tests/test_cli.py:2063` "def test_the_cli_hands_cursor_its_configured_accounts",
-`tests/test_cli.py:2105` "def test_antigravity_pools_come_from_the_operator_config",
-`tests/test_cli.py:2136` "def test_a_second_antigravity_account_reaches_the_adapter" and
-`tests/test_adapters.py:448` "def test_every_adapter_satisfies_the_protocol".
+`~/.claude*/.claude.json`: `tests/test_cli.py:2065` "def test_the_cli_hands_cursor_its_configured_accounts",
+`tests/test_cli.py:2107` "def test_antigravity_pools_come_from_the_operator_config",
+`tests/test_cli.py:2138` "def test_a_second_antigravity_account_reaches_the_adapter" and
+`tests/test_adapters.py:465` "def test_every_adapter_satisfies_the_protocol".
 Three read the statusline caches under `~/Library/Caches/twin-networking`:
-`tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
+`tests/test_cli.py:2220` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
 `tests/test_antigravity_usage.py:653` "def test_pick_never_spawns_agy_and_status_does" and
-`tests/test_adapters.py:1793` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
+`tests/test_adapters.py:1810` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
 The review of #18 also saw reads of
 `~/.local/state/quota-router/usage/antigravity_*.json` and `~/.cursor/cli-config.json`.
 Three start the real `codex app-server` binary, now only against empty temp homes:
-that last test, `tests/test_cli.py:2218` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
-and `tests/test_adapters.py:1747` "def test_load_snapshots_is_the_one_call_the_cli_needs".
+that last test, `tests/test_cli.py:2220` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
+and `tests/test_adapters.py:1764` "def test_load_snapshots_is_the_one_call_the_cli_needs".
 
 **Impact:** each passes today because what it asserts does not depend on what the real
 files hold. A statusline cache or a Claude config that changes the asserted field turns
@@ -1421,7 +1421,7 @@ scheduled writer while preserving current and historical interpretations.
 
 **Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal";
 `ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
-`AGENTS.md:168` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
+`AGENTS.md:170` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
 `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
 operator-private retained history, ledger, waiting records and adoption evidence;
 repo-prod installation and actual poller records.
@@ -1657,7 +1657,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 `src/quota_router/waste.py:842` "Find every window reset the history can attest to.";
 `src/quota_router/window_ping.py:28` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
-`tests/test_waste.py:645` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
+`tests/test_waste.py:646` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
 `docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
