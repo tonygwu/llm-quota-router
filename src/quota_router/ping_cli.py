@@ -110,6 +110,16 @@ def parse_response(account, completed):
                     if not isinstance(used, dict) or any(not isinstance(k, str) or not k.strip() for k in used):
                         raise PingFailure("telemetry", "invalid Claude modelUsage")
                     audit["models_served"] = list(used)
+                    if any(not isinstance(entry, dict) for entry in used.values()):
+                        raise PingFailure("telemetry", "invalid Claude modelUsage entry")
+                    canonical = {k: entry["canonicalModel"] for k, entry in used.items()
+                                 if "canonicalModel" in entry}
+                    audit["canonical_models_served"] = canonical
+                    for stamp in canonical.values():
+                        if not isinstance(stamp, str) or not stamp.strip():
+                            raise PingFailure("telemetry", "invalid Claude canonicalModel stamp")
+                        if stamp != model:
+                            raise PingFailure("wrong_model", f"asked for {model}, canonicalModel names {stamp}")
                     if any(k != model for k in used):
                         raise PingFailure("wrong_model", f"asked for {model}, modelUsage names {list(used)}")
                 served = next(iter(used)) if used else None

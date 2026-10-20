@@ -64,7 +64,7 @@ records `model_evidence: "selected_model_only"` and `model_served: null`.
 If its other checks pass, it succeeds and starts the full pool cooldown.
 A matching stamp records `model_evidence: "served_model"`. Neither a selection
 echo nor a model's answer about its own name becomes a served stamp. A malformed
-stamp or any conflicting Claude `modelUsage` entry fails. Saved successes without
+stamp or any conflicting Claude `modelUsage` entry, including a supplied `canonicalModel`, fails. Saved successes without
 a served stamp require the explicit selection-only label when the journal reloads;
 older successes with matching served stamps remain readable.
 

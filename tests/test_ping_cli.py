@@ -157,6 +157,30 @@ def test_claude_without_served_stamp_records_selection_only():
     assert parsed["model_served"] is None
 
 
+@pytest.mark.parametrize("canonical,kind", [
+    ("claude-haiku-5-5", None), ("claude-sonnet-5-5", "wrong_model"),
+    ("", "telemetry"), (False, "telemetry"), (None, "telemetry"), ([], "telemetry"),
+])
+def test_claude_canonical_model_stamp_is_validated_and_preserved(canonical, kind):
+    response = claude_result()
+    response["modelUsage"]["claude-haiku-5-5"]["canonicalModel"] = canonical
+    parsed = parse_response(AccountConfig(id="claude"), completed(response))
+    assert parsed["kind"] == kind
+    assert parsed["outcome"] == ("succeeded" if kind is None else "failed")
+    assert parsed["canonical_models_served"] == {"claude-haiku-5-5": canonical}
+    assert parsed["tokens"]["input_tokens"] == 1
+
+
+@pytest.mark.parametrize("entry", [None, [], "claude-haiku-5-5"])
+def test_claude_model_usage_entry_must_be_an_object(entry):
+    response = claude_result()
+    response["modelUsage"]["claude-haiku-5-5"] = entry
+    parsed = parse_response(AccountConfig(id="claude"), completed(response))
+    assert parsed["outcome"] == "failed"
+    assert parsed["kind"] == "telemetry"
+    assert parsed["tokens"]["input_tokens"] == 1
+
+
 @pytest.mark.parametrize("stamp,evidence", [
     (None, None), ("different-model", "selected_model_only"),
     ("different-model", "served_model"), ("gpt-6-luna", "selected_model_only"),
