@@ -1176,40 +1176,6 @@ and say so in the README.
 
 ---
 
-### 47. The config-search guard can stop firing without a test noticing, and skips `QUOTA_ROUTER_CONFIG`  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
-
-**Background:** #44 (2026-10-20) added a run-time guard,
-`tests/conftest.py:41` "def _no_config_search_reaches_the_real_machine(", that fails a test
-whose config search reaches the real home, working directory or process `XDG_CONFIG_HOME`.
-Its second review left two should-fix findings and three nits. First, the test that the
-guard works checks only that the patch is installed. Deleting the teardown assert, deleting
-the line that records a search, or making `load_config` call the search through a name
-bound at import each left the full suite at `1792 passed`. Second, `config_search_paths`
-adds the process `QUOTA_ROUTER_CONFIG` as a required layer
-(`src/quota_router/config.py:1414` "explicit = environ.get("), but
-the guard does not treat it as a real root: a probe with that variable set to a file
-outside the home loaded the file and passed. No test inherits it today; the suite with it
-set to invalid TOML gave `1792 passed`. The nits: the test for pytest's temp-folder
-exemption and the `XDG_CONFIG_HOME` root cannot fail in the normal layout; the docstring
-of `tests/test_no_live_config_in_tests.py` does not name either; and the network guard
-`tests/test_adapters.py:122` "def _no_real_network(" uses the test's own `monkeypatch`, so
-a `monkeypatch.undo()` in that module would reopen the network (no test calls it today).
-
-**Impact:** a refactor of `load_config` can switch the guard off while the suite stays
-green, and an operator who exports `QUOTA_ROUTER_CONFIG` can have a new test read that
-file unnoticed.
-
-**Fix:** add one `pytester` test that loads this conftest, runs an inner test calling
-`load_config(env={}, cwd=<nonexistent>)`, and asserts one error; it catches all three
-mutations. Add the process `QUOTA_ROUTER_CONFIG` to the guard's real roots. Build the
-exemption test's layer under a real root so that it can fail, and update the docstring.
-Give `_no_real_network` its own `pytest.MonkeyPatch.context()`.
-
-**Touch points:** `tests/conftest.py`, `tests/test_no_live_config_in_tests.py`,
-`tests/test_adapters.py`.
-
----
-
 ### 39. Ten tests still read or spawn under the process `HOME` without injecting one  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #18 covers the `load_config(env={})` calls that read the live config. A
