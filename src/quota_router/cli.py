@@ -2581,9 +2581,14 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     history there is exactly the work that turns a decision into a timeout.
     """
     plans, warnings = _plans_for(config)
-    records = history_mod.iter_records(env=env, include_rotated=True)
+    records = list(history_mod.iter_records(env=env, include_rotated=True, strict=True))
     ledger = calibrations_mod.read_records(env=env)
     write = waste_mod.update_from_history(records, plans=plans, env=env, ledger=ledger)
+    from . import forgone
+    try:
+        forgone.append_records(forgone.detect(records), env=env)
+    except (ValueError, KeyError, OSError) as exc:
+        warnings.append(f"forgone recording stopped: {exc}")
     return warnings + list(write.warnings)
 
 
@@ -3149,9 +3154,14 @@ def _cmd_waste(
     warnings.extend(read_warnings)
     try:
         ledger = calibrations_mod.read_records(env=env)
+        from . import forgone, window_ping
+        stretches = forgone.merge(forgone.read_records(env=env), forgone.detect(
+            history_mod.iter_records(env=env, include_rotated=True, strict=True)))
+        ping_events = window_ping._journal(forgone.forgone_path(env).with_name("window-pings.jsonl"))
         summary = waste_mod.summarize(records, ledger=ledger,
-                                     beliefs_as_of=getattr(args, "beliefs_as_of", None))
-    except (calibrations_mod.LedgerError, OSError) as exc:
+                                     beliefs_as_of=getattr(args, "beliefs_as_of", None),
+                                     forgone_records=stretches, ping_events=ping_events)
+    except (ValueError, KeyError, OSError) as exc:
         raise ConfigError(str(exc)) from exc
     totals = summary["totals"]
     scoped = summary["scoped_totals"]
@@ -3171,6 +3181,7 @@ def _cmd_waste(
         )
         return EXIT_OK
 
+    _render_forgone(summary, stdout)
     if not records:
         stdout.write(
             f"no window reset has been recorded yet ({path}).\n"
@@ -3284,6 +3295,41 @@ def _cmd_waste(
     for warning in dict.fromkeys(warnings):
         stderr.write(f"! {warning}\n")
     return EXIT_OK
+
+
+def _render_forgone(summary, stdout):
+    """Render loss while waiting, including unresolved candidates and raw bounds."""
+    totals = summary['forgone_totals']
+    stdout.write(f"Total waste: {summary['total_wasted_pse']:.6f} PSE, including "
+                 f"{totals['forgone_pse']:.6f} PSE forgone while waiting. Early forfeits are separate.\n")
+    stdout.write(f"Forgone capacity: {totals['stretches']} stretch(es), "
+                 f"{totals['accruing']} accruing, {totals['bounded']} bounded, "
+                 f"{totals['unresolved']} unresolved, {totals['unrecomputable']} unrecomputable.\n")
+    for account, pools in summary['forgone_accounts'].items():
+        for pool, value in pools.items():
+            stdout.write(f"  {account}/{pool}: {value['forgone_pse']:.6f} PSE; "
+                         f"before first ping {value['before_ping_pse']:.6f}, "
+                         f"after {value['after_ping_pse']:.6f}\n")
+    for pool, at in summary['first_live_ping_at_s'].items():
+        stdout.write(f"  First live ping {pool}: {_iso(at)}\n")
+    if not summary['first_live_ping_at_s']:
+        stdout.write("No live ping result is recorded; all retained waiting capacity is before pings.\n")
+    for row in summary['forgone_rows']:
+        current = row['current']
+        stdout.write(f"  {row['account']}/{row['pool']} {_iso(row['start_s'])} to "
+                     f"{_iso(row['end_s'])}: {row['status']}, {current['status']}; "
+                     f"ledger ids {current['ledger_ids']}\n")
+        for segment in row['segments']:
+            detail = segment['current']
+            stdout.write(f"    {_iso(segment['start_s'])} to {_iso(segment['end_s'])}: "
+                         f"{detail['forgone_pse']} PSE; basis {detail['values']}; "
+                         f"{detail['reason']}\n")
+            for candidate in detail['candidates']:
+                stdout.write(f"    {candidate['label']}: {candidate['forgone_pse']} PSE\n")
+        for gap in row['gaps']:
+            stdout.write(f"    gap {gap['start_s']} to {gap['end_s']}: "
+                         f"{'counted' if gap['counted'] else 'excluded bound'}\n")
+    stdout.write(summary['forgone_retention_note'] + "\n\n")
 
 
 # ======================================================================================

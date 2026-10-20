@@ -1401,12 +1401,12 @@ Two design points worth knowing:
 
 The premise is that quota expires unspent. That number had never once been computed —
 every change was justified mechanically ("the scorer now compares like units") rather
-than by evidence. `waste.jsonl` is the measurement.
+than by evidence. `waste.jsonl` and `forgone.jsonl` retain the raw measurement.
 
 ```sh
 quotapick waste            # per account per window: resets, observed, missed, PSE
 quotapick waste --json
-quotapick waste --backfill # re-scan retained history for resets not yet recorded
+quotapick waste --backfill # append resets and finished waiting stretches from retained history
 quotapick waste --beliefs-as-of 2026-10-19T12:00:00Z --json
 quotapick calibrations --json # inspect the append-only assumption ledger
 ```
@@ -1424,6 +1424,32 @@ Early resets, kept out of the total above: 2 across 1 event(s), 9.94 PSE forfeit
   reset between (UTC)                 accounts                      early by  forfeited
   2026-10-11 03:57 - 03:59            codex, codex_b               3.0d-3.1d       9.94  2 accounts at once
 ```
+
+**Waiting capacity is waste.** A pool forgoes paid capacity while every account-wide
+window waits for first use. For duration D, forgone PSE is D times the smallest
+window size divided by its length. The report integrates historical beliefs across
+the stretch. Claude's weekly window runs on a clock and never waits, so Claude
+accounts add no forgone capacity. A waiting five-hour window beside a running weekly
+window also adds none. Model-scoped windows are excluded.
+
+`forgone.jsonl` preserves closed stretches as append-only raw evidence, independently
+of the reset log. `quotapick waste` reports forgone capacity per account and pool,
+including accruing stretches, gap bounds, unresolved candidates, basis values and
+ledger ids. JSON `total_wasted_pse` includes scheduled waste plus `forgone_totals`;
+`totals.wasted_pse` retains the scheduled-reset subtotal. Early forfeits remain
+separate. `forgone_rows` and `forgone_accounts` expose the details. Unresolved
+segments are excluded from the included total, including the October 16 Gemini
+stretches until the operator decides their historical belief.
+
+The first live ping result in `window-pings.jsonl` marks the before/after boundary
+for each pool. Both periods count the same losses, including waiting before pings
+went live. A gap counts if waiting reads bracket it. Otherwise the report bounds it
+at the last waiting read. A later reset measures from first use onward, so it does
+not overlap the waiting stretch. A sliding waiting window adds no reset or early
+forfeit. Open stretches accrue through their last waiting observation. Capacity
+before retained history cannot be recovered. See the
+[reconstruction and adoption procedure](docs/measurements/2026-10-20-forgone-capacity.md)
+for temporal evidence rules, retained-history figures and the operator gate.
 
 A reset's current figure uses the value we currently believe held at that reset.
 Changing today's config alone cannot change a historical waste figure. Three layers

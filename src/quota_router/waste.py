@@ -860,7 +860,27 @@ def detect_resets(
     found: list[ResetRecord] = []
     warnings: list[str] = []
 
-    for account_id, readings in sorted(_series(records).items()):
+    series = _series(records)
+    # Share the stronger temporal classification with forgone accounting. The
+    # legacy reset reader tolerates incomplete rows, so normalize only its usable
+    # observations rather than introducing a stricter parser into this API.
+    from .window_state import classify
+    state_inputs = []
+    for account_id, readings in series.items():
+        for reading in readings:
+            if reading.provider not in {"claude", "codex", "antigravity"}:
+                continue
+            windows = [_raw_window(w) for w in reading.windows.values()
+                       if w.observed_at_s is not None]
+            if not windows or len({w["observed_at_s"] for w in windows}) != 1:
+                continue
+            state_inputs.append({"accounts": [{"id": account_id, "provider": reading.provider,
+                "tier": reading.tier, "capacity": reading.tier_scale,
+                "source": reading.source, "windows": windows}]})
+    states = {(account, r["at_s"], key): state["state"]
+              for account, reads in classify(state_inputs).items()
+              for r in reads for key, state in r["window_states"].items()}
+    for account_id, readings in sorted(series.items()):
         plan = plans.get(account_id) or Plan()
         for before, after in zip(readings, readings[1:]):
             stocks = _stocks(before, plan)
@@ -869,6 +889,10 @@ def detect_resets(
                     continue
                 later = after.windows.get(key)
                 if later is None:
+                    continue
+                if states.get((account_id, before.observed_at_s, key)) in {"waiting", "stale"}:
+                    # Nothing ran here. Its elapsed capacity belongs to the
+                    # forgone log, including sparse sliding reads and old replicas.
                     continue
 
                 jump = later.resets_at_s - window.resets_at_s
@@ -1352,8 +1376,9 @@ def _early_events(records: Sequence[ResetRecord]) -> list[dict[str, Any]]:
 
 def summarize(
     records: Iterable[ResetRecord], *, ledger: Sequence[Mapping[str, Any]] = (),
-    beliefs_as_of: str | None = None,
+    beliefs_as_of: str | None = None, forgone_records=(), ping_events=(),
 ) -> dict[str, Any]:
     """Derive an auditable report; today's config cannot reinterpret a reset."""
     from .waste_report import summarize as derive
-    return derive(records, ledger=ledger, beliefs_as_of=beliefs_as_of)
+    return derive(records, ledger=ledger, beliefs_as_of=beliefs_as_of,
+                  forgone_records=forgone_records, ping_events=ping_events)

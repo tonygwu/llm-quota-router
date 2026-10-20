@@ -284,7 +284,7 @@ def _aggregate(rows: Sequence[waste.ResetRecord]) -> dict[str, Any]:
 
 
 def summarize(records: Iterable[waste.ResetRecord], *, ledger: Sequence[Mapping[str, Any]] = (),
-              beliefs_as_of: str | None = None) -> dict[str, Any]:
+              beliefs_as_of: str | None = None, forgone_records=(), ping_events=()) -> dict[str, Any]:
     current = waste.current_records(records)
     selected = list(ledger)
     if beliefs_as_of is not None:
@@ -306,4 +306,10 @@ def summarize(records: Iterable[waste.ResetRecord], *, ledger: Sequence[Mapping[
         "first_reset_at_s": min((row.reset_at_s for row in current), default=None),
         "last_reset_at_s": max((row.reset_at_s for row in current), default=None),
     })
+    from . import forgone
+    waiting = forgone.summarize(forgone_records, ledger=selected, ping_events=ping_events)
+    summary.update(forgone_totals=waiting['totals'], forgone_accounts=waiting['accounts'],
+                   forgone_rows=waiting['rows'], first_live_ping_at_s=waiting['first_live_ping_at_s'],
+                   forgone_retention_note=waiting['retention_note'],
+                   total_wasted_pse=summary['totals']['wasted_pse']+waiting['totals']['forgone_pse'])
     return summary

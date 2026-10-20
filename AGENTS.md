@@ -145,6 +145,10 @@ channel between them.
 
 The historical calibration reconstruction is read-only by default:
 `PYTHONPATH=src ./.venv/bin/python ops/reconstruct-calibrations.py --help`.
+The waiting-stretch reconstruction is also read-only by default:
+`PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help`.
+See `docs/measurements/2026-10-20-forgone-capacity.md`; adopt its raw log with #26
+after operator approval and a backup, before installing the writer.
 The Gemini re-analysis uses saved responses only:
 `./.venv/bin/python ops/reanalyze-gemini-oct12.py --help`.
 See `docs/measurements/2026-10-19-calibration-reconstruction.md` for the required
