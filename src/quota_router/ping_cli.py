@@ -16,14 +16,14 @@ from pathlib import Path
 from .capability import antigravity_flavour
 from .providers.antigravity import AgyMissing, agy_argv_env, default_run_agy, signed_in_as
 from .providers.codex_app_server import CODEX_BIN_ENV, DEFAULT_CODEX_BIN
-from .run import child_env, DEFAULT_CLAUDE_BIN
+from .run import child_env, DEFAULT_CLAUDE_BIN, STRIP_ENV
 
 PROMPT = "1 + 1 = ?"
 PING_TIMEOUT_S = 60.0
 MODELS = {"claude": "claude-haiku-5-5", "codex": "gpt-6-luna",
           "gemini": "gemini-3.8-flash-low", "claude_gpt": "gpt-oss-120b-medium"}
-AGY_LABELS = {MODELS["gemini"]: "Gemini 3.8 Flash (Low)",
-              MODELS["claude_gpt"]: "GPT-OSS 120B (Medium)"}
+PING_STRIP_ENV = frozenset(STRIP_ENV) | {"OPENAI_API_KEY", "OPENAI_BASE_URL",
+    "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}
 
 
 class PingFailure(ValueError):
@@ -38,12 +38,14 @@ def model_for(account):
     return MODELS[account.provider]
 
 
+def _subscription_env(env):
+    return {k: v for k, v in env.items() if k.strip().upper() not in PING_STRIP_ENV}
+
+
 def command_for(account, env, workspace):
     model = model_for(account)
-    child = child_env(env, account.exec_env(), account.config_dir_env_var)
+    child = _subscription_env(child_env(env, account.exec_env(), account.config_dir_env_var))
     # API/provider overrides cannot turn a subscription wake-up into credit spend.
-    for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
-        child.pop(key, None)
     if account.provider in {"claude", "codex"} and not account.config_dir:
         raise PingFailure("configuration", "account has no config directory")
     if account.provider == "claude":
@@ -59,9 +61,11 @@ def command_for(account, env, workspace):
     if not account.identity_email:
         raise PingFailure("configuration", "Antigravity requires identity_email")
     # Use the exact account-switch recipe used by /usage, including the wrapper.
-    return agy_argv_env(account, ["-p", PROMPT, "--model", model, "--output-format", "json",
+    argv, child = agy_argv_env(account, ["-p", PROMPT, "--model", model, "--output-format", "json",
         "--log-file", "/dev/stderr", "--mode", "plan", "--sandbox", "--disable-slash-commands",
         "--print-timeout", "60s"], child)
+    # The provider helper overlays the account environment again; sanitize last.
+    return argv, _subscription_env(child)
 
 
 def _tokens(raw, keys):
@@ -111,8 +115,8 @@ def parse_response(account, completed):
                 identities = signed_in_as(completed.stderr)
                 if tuple(i.casefold() for i in identities) != (account.identity_email.casefold(),):
                     raise PingFailure("account_identity", "agy sign-in telemetry did not match identity_email")
-                # Current agy may emit a served label in request completion logs.
-                # Selected/propagated model overrides are deliberately not matched.
+                # A response model stamp may qualify future CLI versions. Current
+                # selected/propagated model overrides do not establish served identity.
                 served = result.get("model")
                 audit["model_selected"] = sorted(set(re.findall(
                     r'Propagating selected model override to backend: label="([^"]*)"', completed.stderr)))
@@ -122,7 +126,10 @@ def parse_response(account, completed):
             raise PingFailure("model_unverified", "call telemetry contains no unambiguous served model")
         if served != model:
             raise PingFailure("wrong_model", f"asked for {model}, served {served}")
-        if not isinstance(answer, str) or not re.fullmatch(r"\s*(?:1\s*\+\s*1\s*=\s*)?2[.!]?\s*", answer):
+        # Native arithmetic probes returned plain 2, an equation with bold 2, and
+        # a bold Answer label. Accept those exact presentation forms, no extra prose.
+        if not isinstance(answer, str) or not re.fullmatch(
+                r"\s*(?:\*\*Answer:\*\*\s*)?(?:1\s*\+\s*1\s*=\s*)?(?:2|\*\*2\*\*)[.!]?\s*", answer):
             raise PingFailure("answer", "expected the arithmetic answer 2")
         audit.update(outcome="succeeded")
     except PingFailure as exc:

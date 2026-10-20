@@ -63,15 +63,35 @@ answer and account mismatch are named failures. Tokens remain recorded when mode
 validation fails after a call. Antigravity compares its own sign-in log with the
 configured identity.
 
-**Dry-run qualification:** saved Claude result JSON provides `modelUsage`. Saved
-agy result JSON provides tokens but no served model; its "Propagating selected model"
-log is only selection evidence. Codex JSONL can likewise provide `turn.completed`
-usage without a model. Those shapes produce `model_unverified`, never a successful
-cooldown entry. A response/turn model stamp, if provided, must match the asked model.
-Current live inference telemetry has not been qualified by this dry-run release.
-Do not enable recurring pings until that provider evidence is resolved; otherwise
-an unverified call is retried after the failure backoff. No provider prompt has been
-sent as part of this release's dry-run verification.
+**Dry-run qualification:** three separately approved native diagnostic calls ran at
+2026-10-20T00:37:24Z–00:37:34Z, one per provider, with no retry. All returned the
+arithmetic answer. Full raw responses were inspected and retained privately. The
+Claude response used `1 + 1 = **2**`; the initial strict answer check rejected that
+format. A failing-then-passing regression now accepts the observed plain and bold
+arithmetic forms, while rejecting unrelated text. Replaying the same saved responses
+with that fix gives attempted=3, succeeded=1, failed=2,
+failed_by_kind={model_unverified: 2}; no additional prompts were sent.
+
+| Provider | Served-model evidence | Recorded tokens |
+|---|---|---|
+| Claude | `modelUsage` names `claude-haiku-5-5` | input 2, output 12, cache read 649, cache creation 2242 |
+| Codex | `turn.completed` has usage, no model stamp | input 21267, cached input 11648, output 5 |
+| Antigravity | selected label `GPT-OSS 120B (Medium)`, no served stamp | input 4292, output 43, thinking 0, cache read 2880 |
+
+Native auth checks before those calls reported Claude's `claude.ai` Max subscription
+and Codex's `Logged in using ChatGPT`. Claude/Codex account selection is evidenced by
+the configured native CLI directory and auth status, not an inference response's
+served-account stamp. Antigravity's native sign-in identity matched configuration.
+Its "Propagating selected model" log remains only selection evidence. A response/turn
+model stamp, if provided, must match the asked model; missing stamps produce
+`model_unverified`, never a successful cooldown entry. The diagnostic calls did not
+establish a waiting-window start: those accounts already had running windows.
+
+Keep recurring pings dry-run until provider telemetry and post-ping window behavior
+are qualified. Otherwise an unverified call is retried after the failure backoff.
+The Gemini pool and alternate-account native invocation paths were not included in
+the three-call allowance. GPT-OSS replacement before its retirement also remains
+part of live qualification. None of this release's work installed or activated pings.
 
 ## Verification and recovery
 

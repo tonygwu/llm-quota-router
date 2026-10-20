@@ -43,6 +43,34 @@ def waiting_reason(window, previous):
 
 def _decode(raw):
     # No permissive history parser: a malformed reading must not start calls.
+    for key in ("id", "provider", "source"):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(f"invalid history {key}")
+    if type(raw["available"]) is not bool:
+        raise ValueError("invalid history available")
+    def number(value, key):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"invalid history {key}")
+    number(raw["confidence"], "confidence")
+    for collection in ("windows", "not_running"):
+        entries = raw[collection] if collection == "windows" else raw.get(collection, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"invalid history {collection}")
+        for w in entries:
+            if not isinstance(w["key"], str) or not w["key"].strip():
+                raise ValueError("invalid history window key")
+            fields = ("length_s", "observed_at_s")
+            if collection == "windows":
+                fields += ("used_fraction", "resets_at_s")
+                scope = w.get("applies_to")
+                if scope is not None and (not isinstance(scope, list) or
+                        any(not isinstance(c, str) or not c.strip() for c in scope)):
+                    raise ValueError("invalid history applies_to")
+            for key in fields:
+                number(w[key], key)
+            for key in ("expected_used_fraction", "held_fraction", "reserved_fraction"):
+                if key in w and w[key] is not None:
+                    number(w[key], key)
     windows = tuple(Window(**{k: v for k, v in w.items() if k in Window.__dataclass_fields__})
                     for w in raw["windows"])
     idle = tuple(NotRunningWindow(**w) for w in raw.get("not_running", []))
@@ -96,16 +124,27 @@ def _journal(path):
 
 def _verification(records, events, now_s):
     resolved = {(e["attempt_id"], e["key"]) for e in events if e["event"] == "verification"}
-    checks = []
+    pending = []
     for event in events:
         if event["event"] != "result" or event["outcome"] != "succeeded":
             continue
-        observations = [_decode(raw) for r in records if r.get("event") == "status"
-                        for raw in r["accounts"] if raw["id"] == event["pool"]]
-        for trigger in event["windows"]:
-            if (event["attempt_id"], trigger["key"]) in resolved:
-                continue
-            readings = sorted((w for s in observations if s.available and s.confidence > 0 and s.source in {"live", "cache"}
+        triggers = [w for w in event["windows"] if (event["attempt_id"], w["key"]) not in resolved]
+        if triggers:
+            pending.append((event, triggers))
+    # The journal is append-only: resolved successes must not each decode eight
+    # days of history forever. Pending checks share one decode pass per pool.
+    observations = {event["pool"]: [] for event, _ in pending}
+    if not observations:
+        return []
+    for record in records:
+        if record.get("event") == "status":
+            for raw in record["accounts"]:
+                if raw["id"] in observations:
+                    observations[raw["id"]].append(_decode(raw))
+    checks = []
+    for event, triggers in pending:
+        for trigger in triggers:
+            readings = sorted((w for s in observations[event["pool"]] if s.available and s.confidence > 0 and s.source in {"live", "cache"}
                                for w in (*s.windows, *s.not_running)
                                if w.key == trigger["key"] and event["at_s"] < w.observed_at_s <= now_s),
                               key=lambda w: w.observed_at_s)

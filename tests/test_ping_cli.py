@@ -28,6 +28,22 @@ def test_claude_requires_model_tokens_and_answer():
     assert parse_response(a, completed(claude_result(), code=1))["kind"] == "cli_exit"
 
 
+@pytest.mark.parametrize("answer", ["1 + 1 = **2**", "**Answer:**\u202f1\u202f+\u202f1\u202f=\u202f**2**.\n"])
+def test_observed_markdown_arithmetic_answers(answer):
+    a = AccountConfig(id="claude", config_dir="/synthetic/.claude")
+    result = claude_result()
+    result["result"] = answer
+    assert parse_response(a, completed(result))["outcome"] == "succeeded"
+
+
+@pytest.mark.parametrize("answer", ["12", "2 or 3", "**3**", "2\nI read your files", "answer.txt"])
+def test_arithmetic_validation_rejects_other_content(answer):
+    a = AccountConfig(id="claude", config_dir="/synthetic/.claude")
+    result = claude_result()
+    result["result"] = answer
+    assert parse_response(a, completed(result))["kind"] == "answer"
+
+
 def test_codex_usage_only_is_not_served_model_evidence():
     a = AccountConfig(id="codex", config_dir="/synthetic/codex")
     events = [{"type": "thread.started", "thread_id": "synthetic"},
@@ -75,3 +91,15 @@ def test_agy_wrapper_and_separate_pool_models():
     assert "HOME" not in env
     assert argv[argv.index("--model")+1] == "gpt-oss-120b-medium"
     assert model_for(AccountConfig(id="antigravity_gemini")) == "gemini-3.8-flash-low"
+
+
+def test_agy_final_environment_cannot_restore_credit_credentials():
+    banned = {"ANTHROPIC_API_KEY": "synthetic", "GEMINI_API_KEY": "synthetic",
+              "GOOGLE_API_KEY": "synthetic", "OPENAI_BASE_URL": "https://invalid.test",
+              "OPENAI_API_KEY": "synthetic", "CODEX_API_KEY": "synthetic"}
+    a = AccountConfig(id="antigravity_claude_b", macos_user="synthetic-user",
+        launch_wrapper="/synthetic/wrapper", identity_email="synthetic@example.test",
+        env={**banned, "AGY_MODEL": "claude"})
+    _, env = command_for(a, {**banned, "PATH": "/bin"}, "/tmp/synthetic")
+    assert not (env.keys() & banned.keys())
+    assert env["AGY_MODEL"] == "claude"

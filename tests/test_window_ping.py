@@ -215,3 +215,45 @@ def test_idle_marker_does_not_accept_a_clamped_negative_percentage():
     _, warnings = parse_usage_payload({"limits": [{"kind": "session", "percent": -3,
         "is_active": False, "resets_at": None}]}, observed_at_s=NOW, not_running=idle)
     assert not idle and warnings
+
+
+@pytest.mark.parametrize("field,value", [("available", "false"), ("available", 1),
+    ("confidence", "1"), ("confidence", True), ("provider", None), ("source", None)])
+def test_malformed_history_scalars_fail_closed(field, value):
+    record = rec(snap())
+    record["accounts"][0][field] = value
+    with pytest.raises(ValueError):
+        plan_pings(cfg("claude"), [record], [], NOW)
+
+
+@pytest.mark.parametrize("field,value", [("used_fraction", False), ("used_fraction", "0"),
+    ("length_s", "18000"), ("observed_at_s", True), ("applies_to", ""),
+    ("applies_to", [None])])
+def test_malformed_history_window_scalars_fail_closed(field, value):
+    record = rec(snap())
+    record["accounts"][0]["windows"][0][field] = value
+    with pytest.raises(ValueError):
+        plan_pings(cfg("claude"), [record], [], NOW)
+
+
+def test_verification_history_decode_cost_does_not_grow_with_completed_pings(monkeypatch):
+    from quota_router import window_ping
+    event = {"event": "result", "outcome": "succeeded", "pool": "claude",
+        "at_s": NOW, "started_at_s": NOW, "windows": [win().to_dict()]}
+    events = []
+    for i in range(100):
+        events.extend([{**event, "attempt_id": str(i)},
+            {"event": "verification", "attempt_id": str(i), "key": "5h"}])
+    records = [rec(snap(windows=(win(used=.01, reset=NOW+H5, observed=NOW+360),)))] * 5
+    calls = 0
+    decode = window_ping._decode
+    def count(raw):
+        nonlocal calls
+        calls += 1
+        return decode(raw)
+    monkeypatch.setattr(window_ping, "_decode", count)
+    assert window_ping._verification(records, events, NOW+360) == []
+    assert calls == 0
+    events.extend([{**event, "attempt_id": "pending-a"}, {**event, "attempt_id": "pending-b"}])
+    assert len(window_ping._verification(records, events, NOW+360)) == 2
+    assert calls == len(records)
