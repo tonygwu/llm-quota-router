@@ -31,7 +31,8 @@ MODEL = "claude-haiku-5-5"
 
 
 def _stream(*, model=MODEL, text="ok", structured=None, cost=0.0003, is_error=False,
-            api_key_source="none", subtype="success"):
+            api_key_source="none", subtype="success", **result_fields):
+    """``result_fields`` replace keys of the result event, e.g. ``usage=...``."""
     events = [
         {"type": "system", "subtype": "init", "apiKeySource": api_key_source, "model": model,
          "tools": [], "mcp_servers": []},
@@ -40,9 +41,22 @@ def _stream(*, model=MODEL, text="ok", structured=None, cost=0.0003, is_error=Fa
          "result": text, "structured_output": structured, "total_cost_usd": cost,
          "usage": {"input_tokens": 2, "cache_creation_input_tokens": 1140,
                    "cache_read_input_tokens": 0, "output_tokens": 5},
-         "modelUsage": {model: {"costUSD": cost}}},
+         "modelUsage": {model: {"costUSD": cost}}, **result_fields},
     ]
     return "".join(json.dumps(e) + "\n" for e in events)
+
+
+#: What a call refused before it reached the model reports: no tokens, no model.
+NOTHING_RAN = {
+    "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0, "output_tokens": 0},
+    "modelUsage": {},
+}
+
+
+def _refused(text, **kw):
+    return _stream(is_error=True, subtype="error_during_execution", cost=0.0, text=text,
+                   **{**NOTHING_RAN, **kw})
 
 
 class FakeRunner:
@@ -191,8 +205,7 @@ def test_an_api_key_on_a_subscription_run_is_an_auth_failure(env) -> None:
 def test_each_attempt_says_whether_it_was_billed(env) -> None:
     """``spent`` is what the router saw (BACKLOG #5): a positive reported cost is a bill
     and a reported zero is none, so a client can fall back on ``spent: false`` alone."""
-    exhausted = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
-                        text="Claude AI usage limit reached|1792030000")
+    exhausted = _refused("Claude AI usage limit reached|1792030000")
     runner = FakeRunner((1, exhausted, ""), (0, _stream(), ""))
     _code, payload, _err = _run(env, _request(), runner)
     assert [(a["outcome"], a["spent"]) for a in payload["attempts"]] == [
@@ -202,8 +215,7 @@ def test_each_attempt_says_whether_it_was_billed(env) -> None:
 def test_an_auth_failure_is_spent_only_when_the_call_ran(env) -> None:
     # Both attempts end `auth`. The first was refused before it ran; the second ran on
     # the wrong credential and billed it.
-    refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
-                      text="API Error: 401 authentication_error: invalid x-api-key")
+    refused = _refused("API Error: 401 authentication_error: invalid x-api-key")
     ran = _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02)
     runner = FakeRunner((1, refused, ""), (0, ran, ""))
     _code, payload, _err = _run(env, _request(), runner)
@@ -216,6 +228,18 @@ def test_an_auth_failure_is_spent_only_when_the_call_ran(env) -> None:
     pytest.param((0, _stream(cost=None), ""), None, id="result without a cost"),
     pytest.param((0, _stream(cost=-1.0), ""), None, id="negative cost"),
     pytest.param((0, _stream(cost=float("nan")), ""), None, id="NaN cost"),
+    pytest.param((1, _refused("boom", total_cost_usd=False), ""), None, id="boolean cost"),
+    # A zero cost is Claude Code's price estimate; a pricing override can zero it for a
+    # call that ran, so tokens must be zero too before the router says nothing billed.
+    pytest.param((0, _stream(model="claude-other", cost=0.0), ""), None,
+                 id="zero cost with tokens"),
+    pytest.param((1, _refused("boom", usage=None), ""), None, id="zero cost, no usage"),
+    pytest.param((1, _refused("boom", usage={}), ""), None, id="zero cost, empty usage"),
+    pytest.param((1, _refused("boom", modelUsage={MODEL: {"inputTokens": 9}}), ""), None,
+                 id="zero cost, a model used tokens"),
+    pytest.param((1, _refused("boom", modelUsage=[]), ""), None,
+                 id="zero cost, malformed modelUsage"),
+    pytest.param((1, _refused("boom"), ""), False, id="zero cost, zero tokens"),
     pytest.param(subprocess.TimeoutExpired(cmd="claude", timeout=5), None, id="timeout"),
     pytest.param(FileNotFoundError(2, "No such file or directory", "/opt/test/claude"), False,
                  id="binary missing"),

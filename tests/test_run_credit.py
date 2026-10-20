@@ -26,7 +26,7 @@ import pytest
 from quota_router import cli, credits, forecast
 from quota_router.secrets import Secret
 from tests.test_cli import FIVE_HOURS, NOW, _NO_CONFIG_FILES, account, run, window
-from tests.test_run import MODEL, FakeRunner, _stream
+from tests.test_run import NOTHING_RAN, MODEL, FakeRunner, _stream
 
 HOUR = 3600.0
 SENTINEL = "sk-ant-api03-SENTINEL-KEY-0123456789"
@@ -166,7 +166,7 @@ def test_exhaustion_empties_the_pool_and_the_job_moves_on(env) -> None:
     # A call refused for lack of credit costs nothing, so its hold is released.
     refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
                       text="Your credit balance is too low to access the Anthropic API.",
-                      api_key_source="ANTHROPIC_API_KEY")
+                      api_key_source="ANTHROPIC_API_KEY", **NOTHING_RAN)
     runner = FakeRunner((1, refused, ""), (0, _stream(), ""))
     _code, payload, _err = _run(env, _request(), runner)
     assert [a["outcome"] for a in payload["attempts"]] == ["exhausted", "ok"]

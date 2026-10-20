@@ -258,7 +258,8 @@ class Attempt:
     effort: str | None = None
     #: Whether this attempt was billed, as far as the router saw: ``True`` when the
     #: child reported a positive cost or the credit ledger booked a spend, ``False``
-    #: when it reported a zero cost or never started, ``None`` when nobody can tell.
+    #: when it reported zero cost and zero tokens or never started, ``None`` when
+    #: nobody can tell.
     #: A client may route elsewhere only when every attempt says ``False``.
     spent: bool | None = None
 
@@ -284,16 +285,37 @@ _NOT_STARTED: Final[tuple[type[OSError], ...]] = (
 )
 
 
-def _spent_from_cost(cost_usd: float | None) -> bool | None:
-    """What a finished child's reported ``total_cost_usd`` says about billing.
+def _zero_tokens(counts: Any) -> bool:
+    """True for a mapping that reports at least one token count, all of them zero."""
+    if not isinstance(counts, Mapping):
+        return False
+    tokens = [value for key, value in counts.items() if str(key).lower().endswith("tokens")]
+    return bool(tokens) and all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+        for value in tokens
+    )
 
-    Claude Code reports a positive cost on every call that reached the model, even a
-    $0.000125 subscription call, and zero on a call refused before it ran (exhausted,
-    logged out). A missing, negative or non-finite cost says nothing.
+
+def _spent_from_result(result: Mapping[str, Any], cost_usd: float | None) -> bool | None:
+    """What a finished child's result event says about billing.
+
+    Claude Code reports a positive ``total_cost_usd`` on every call that reached the
+    model, even a $0.000125 subscription call, and zero on a call refused before it ran
+    (exhausted, logged out). That cost is Claude Code's own price estimate, and a
+    pricing override can set it to zero for a call that ran, so a zero counts as
+    "nothing billed" only when ``usage`` and every ``modelUsage`` entry report zero
+    tokens as well. A missing, negative or non-finite cost says nothing.
     """
     if cost_usd is None or not math.isfinite(cost_usd) or cost_usd < 0:
         return None
-    return cost_usd > 0
+    if cost_usd > 0:
+        return True
+    models = result.get("modelUsage", {})
+    if not _zero_tokens(result.get("usage")) or not isinstance(models, Mapping):
+        return None
+    if not all(_zero_tokens(entry) for entry in models.values()):
+        return None
+    return False
 
 
 def judge(
@@ -700,7 +722,9 @@ def execute(
         )
         result = parsed.result or {}
         cost = result.get("total_cost_usd")
-        cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+        cost_usd = (
+            float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+        )
         attempt = Attempt(
             account=target.account,
             pool_kind=target.kind,
@@ -715,7 +739,7 @@ def execute(
             models_seen=tuple(sorted((result.get("modelUsage") or {}).keys())),
             auth=(parsed.init or {}).get("apiKeySource"),
             effort=target.effort,
-            spent=_spent_from_cost(cost_usd),
+            spent=_spent_from_result(result, cost_usd),
         )
         attempts.append(attempt)
         final = attempt
