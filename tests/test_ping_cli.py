@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -86,6 +88,39 @@ def test_launchd_binary_resolution_and_account_isolation(provider):
         assert env["CODEX_HOME"] == "/synthetic/.codex"
         assert argv[argv.index("--sandbox")+1] == "read-only"
         assert 'model_reasoning_effort="low"' in argv
+
+
+def test_codex_env_node_shim_runs_with_launchd_path(tmp_path):
+    # Execute a synthetic env-node shim, without a real Codex call or Node dependency.
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    node = vendor / "node"
+    node.write_text('#!/bin/sh\nexec /bin/sh "$@"\n')
+    node.chmod(0o755)
+    binary = vendor / "codex"
+    binary.write_text("#!/usr/bin/env node\nprintf 'synthetic-codex-shim\\n'\n")
+    binary.chmod(0o755)
+    launchd_path = f"{tmp_path}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    base = {"HOME": str(tmp_path), "PATH": launchd_path,
+            "QUOTA_ROUTER_CODEX_BIN": str(binary)}
+    account = AccountConfig(id="codex_b", config_dir=str(tmp_path / ".codex-b"))
+    argv, child = command_for(account, base, str(tmp_path))
+    result = subprocess.run(argv, env=child, capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "synthetic-codex-shim\n"
+    assert child["PATH"].split(os.pathsep) == [str(vendor), *launchd_path.split(os.pathsep)]
+    assert child["CODEX_HOME"] == account.config_dir
+    assert base["PATH"] == launchd_path
+
+
+@pytest.mark.parametrize("path", [None, "", "/usr/bin:/vendor:/bin:/vendor"])
+def test_codex_binary_directory_leads_path_once(path):
+    env = {"QUOTA_ROUTER_CODEX_BIN": "/vendor/codex"}
+    if path is not None:
+        env["PATH"] = path
+    _, child = command_for(AccountConfig(id="codex", config_dir="/synthetic/.codex"),
+                           env, "/tmp/synthetic")
+    assert child["PATH"] == ("/vendor:/usr/bin:/bin" if path else "/vendor")
 
 
 def test_agy_wrapper_and_separate_pool_models():

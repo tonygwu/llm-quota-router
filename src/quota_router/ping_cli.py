@@ -54,6 +54,12 @@ def command_for(account, env, workspace):
                 "--tools", "", "--no-session-persistence", "--safe-mode", "--strict-mcp-config"], child
     if account.provider == "codex":
         binary = os.path.expanduser(env.get(CODEX_BIN_ENV) or DEFAULT_CODEX_BIN)
+        # The Homebrew env-node shim needs its sibling node under launchd's PATH,
+        # just as the Codex usage adapter does. Preserve the remaining search order.
+        directory = os.path.dirname(binary)
+        rest = [part for part in (child.get("PATH") or "").split(os.pathsep)
+                if part and part != directory]
+        child["PATH"] = os.pathsep.join([directory, *rest])
         return [binary, "exec", "--model", model, "--sandbox", "read-only",
                 "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--ephemeral",
                 "-C", workspace, "-c", 'model_reasoning_effort="low"',

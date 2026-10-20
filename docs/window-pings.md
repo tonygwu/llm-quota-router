@@ -42,8 +42,11 @@ Each call asks exactly `1 + 1 = ?` in an empty workspace through the account's C
 | Antigravity Claude/GPT | `claude-sonnet-5-5-low` | same agy recipe; independent pool |
 
 Claude uses `CL_CLAUDE_BIN` or `~/.local/bin/claude`; Codex uses
-`QUOTA_ROUTER_CODEX_BIN` or `/opt/homebrew/bin/codex`. Antigravity uses the usage
-adapter's binary resolution, including the configured alternate-user wrapper.
+`QUOTA_ROUTER_CODEX_BIN` or `/opt/homebrew/bin/codex`. Codex's child PATH puts that
+binary's directory first so its `env node` shim finds the sibling Node executable
+under launchd's restricted PATH, then preserves the other search directories.
+Antigravity uses the usage adapter's binary resolution, including the configured
+alternate-user wrapper.
 API-key/provider override environment variables are stripped. Credential renewal
 inside the vendor's CLI is allowed; the router never performs it.
 
@@ -176,8 +179,13 @@ and `cursor` unsupported. This was a read of live history, not an installed job.
 covers planning, the durable pre-spawn attempt and the result. A malformed journal
 or history read fails closed. The next conclusive fresh observation after a success
 must show a reset within 240 seconds of the ping start plus the window length.
-An early zero reading within that tolerance is inconclusive (it could still be
-sliding), so verification waits for a later observation outside the tolerance.
+For Claude's five-hour window only, the allowed reset ranges from 840 seconds
+before that expected time through 240 seconds after it, inclusive. This adds
+Claude's ten-minute start flooring to the existing tolerance on the early side.
+Claude's weekly window and other providers keep the symmetric 240-second band.
+An early zero reading is inconclusive because it could still be sliding, so
+verification waits beyond 840 seconds after completion for Claude's five-hour
+window, or beyond 240 seconds for the others. A nonzero reading can verify earlier.
 Cached pre-ping observations and failed reads cannot count as verification.
 
 The verification record includes the actual reading and whether the boundary

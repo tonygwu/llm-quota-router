@@ -145,8 +145,78 @@ def test_cached_read_is_not_verification_and_rounded_zero_waits_for_anchor(tmp_p
     records = [rec(snap(windows=(win(reset=NOW+H5, observed=NOW+120),)), t=NOW+120)]
     assert not run_pings(config, records, path, now_s=NOW+120, env={})["verification"]
     records = [rec(snap(windows=(win(reset=NOW+H5, observed=NOW+360),)), t=NOW+360)]
-    r = run_pings(config, records, path, now_s=NOW+360, env={})
+    assert not run_pings(config, records, path, now_s=NOW+360, env={})["verification"]
+    records = [rec(snap(windows=(win(reset=NOW+H5, observed=NOW+841),)), t=NOW+841)]
+    r = run_pings(config, records, path, now_s=NOW+841, env={})
     assert r["verification"][0]["outcome"] == "verified"
+
+
+@pytest.mark.parametrize("provider,key,offset,outcome", [
+    ("claude", "5h", -840, "verified"),
+    ("claude", "5h", 240, "verified"),
+    ("claude", "5h", -841, "blocked"),
+    ("claude", "5h", 241, "blocked"),
+    ("claude", "7d", -241, "blocked"),
+    ("claude", "7d", -240, "verified"),
+    ("codex", "7d", -840, "blocked"),
+    ("codex", "7d", -240, "verified"),
+    ("codex", "7d", 240, "verified"),
+    ("codex", "7d", 241, "blocked"),
+    ("antigravity", "5h", -840, "blocked"),
+    ("antigravity", "5h", -240, "verified"),
+    ("antigravity", "5h", 240, "verified"),
+    ("antigravity", "5h", 241, "blocked"),
+])
+def test_verification_reset_band_is_provider_and_window_specific(tmp_path, provider, key, offset, outcome):
+    from quota_router.ping_cli import model_for
+    # A custom pool id makes the observation's provider, not its id prefix, decisive.
+    account = AccountConfig(id="subscription", provider=provider, config_dir="/synthetic")
+    config = Config(accounts={account.id: account})
+    path = tmp_path / "pings.jsonl"
+    initial = snap(account.id, windows=(), provider=provider,
+                   not_running=(NotRunningWindow(key, H5 if key == "5h" else D7, NOW),))
+    sent = run_pings(config, [rec(initial)], path, now_s=NOW, dry_run=False, env={},
+                    send=lambda *_: {**success(), "model_served": model_for(account)}, clock=lambda: NOW)
+    assert sent["succeeded"] == 1
+    expected = NOW + (H5 if key == "5h" else D7)
+    reading = win(key, used=.01, reset=expected + offset, observed=NOW+120)
+    records = [rec(snap(account.id, windows=(reading,), provider=provider), t=NOW+120)]
+    report = run_pings(config, records, path, now_s=NOW+120, dry_run=False, env={})
+    assert report["verification"][0]["outcome"] == outcome
+    assert report["verification"][0]["expected_reset_s"] == expected
+    assert report["verification"][0]["reading"]["resets_at_s"] == expected + offset
+    assert bool(report["warnings"]) == (outcome == "blocked")
+    # Re-reading the journal preserves the outcome and does not re-verify the ping.
+    again = run_pings(config, records, path, now_s=NOW+120, env={})
+    assert again["verification"] == []
+    assert again["warnings"] == report["warnings"]
+
+
+@pytest.mark.parametrize("provider,delay", [("claude", 840), ("codex", 240), ("antigravity", 240)])
+def test_rounded_zero_verification_waits_past_provider_band(provider, delay):
+    from quota_router.window_ping import _verification
+    event = {"event": "result", "outcome": "succeeded", "pool": "subscription",
+        "at_s": NOW, "started_at_s": NOW, "attempt_id": "synthetic", "windows": [win().to_dict()]}
+    def records(at):
+        return [rec(snap("subscription", provider=provider,
+            windows=(win(reset=NOW+H5, observed=at),)), t=at)]
+    assert _verification(records(NOW+delay), [event], NOW+delay) == []
+    result = _verification(records(NOW+delay+1), [event], NOW+delay+1)
+    assert result[0]["outcome"] == "verified"
+
+
+def test_claude_rounded_sliding_zero_is_not_verified():
+    from quota_router.window_ping import _verification
+    # The ping falls 500 seconds into a ten-minute block; the next block can
+    # still look anchored until the rounding allowance plus tolerance elapses.
+    started = NOW + 500
+    event = {"event": "result", "outcome": "succeeded", "pool": "claude",
+        "at_s": started, "started_at_s": started, "attempt_id": "synthetic",
+        "windows": [win(observed=started).to_dict()]}
+    records = [rec(snap(windows=(win(reset=NOW+600+H5, observed=started+360),)), t=started+360)]
+    assert _verification(records, [event], started+360) == []
+    records.append(rec(snap(windows=(win(reset=NOW+1200+H5, observed=started+841),)), t=started+841))
+    assert _verification(records, [event], started+841)[0]["outcome"] == "blocked"
 
 
 def test_bad_journal_and_concurrent_writer_fail_closed(tmp_path):

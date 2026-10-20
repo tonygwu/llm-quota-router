@@ -19,6 +19,7 @@ from .config import Config
 from .types import AccountSnapshot, NotRunningWindow, Window
 
 WAIT_TOLERANCE_S = 240.0  # 120s poll plus the measured offsets (rarely 97s).
+CLAUDE_START_FLOOR_S = 600.0  # Claude rounds its five-hour start down to ten minutes.
 MAX_READING_AGE_S = 600.0  # Five poll intervals; never wake from an hours-old cache.
 FAILURE_BACKOFF_S = 1800.0
 HISTORY_LOOKBACK_S = 8 * 86400.0  # One full weekly predecessor plus a day.
@@ -151,16 +152,18 @@ def _verification(records, events, now_s):
     checks = []
     for event, triggers in pending:
         for trigger in triggers:
-            readings = sorted((w for s in observations[event["pool"]] if s.available and s.confidence > 0 and s.source in {"live", "cache"}
+            readings = sorted(((s.provider, w) for s in observations[event["pool"]] if s.available and s.confidence > 0 and s.source in {"live", "cache"}
                                for w in (*s.windows, *s.not_running)
                                if w.key == trigger["key"] and event["at_s"] < w.observed_at_s <= now_s),
-                              key=lambda w: w.observed_at_s)
+                              key=lambda reading: reading[1].observed_at_s)
             expected = event["started_at_s"] + trigger["length_s"]
-            for current in readings:
-                matches = isinstance(current, Window) and abs(current.resets_at_s - expected) <= WAIT_TOLERANCE_S
-                # A rounded zero at the first poll can still be sliding. Wait beyond
-                # the tolerance to distinguish a fixed deadline from observation + length.
-                if matches and current.used_fraction == 0 and current.observed_at_s <= event["at_s"] + WAIT_TOLERANCE_S:
+            for provider, current in readings:
+                floor_s = CLAUDE_START_FLOOR_S if provider == "claude" and trigger["key"] == "5h" else 0.0
+                matches = (isinstance(current, Window) and
+                    expected - floor_s - WAIT_TOLERANCE_S <= current.resets_at_s <= expected + WAIT_TOLERANCE_S)
+                # A rounded zero can still be sliding. Wait beyond the provider's
+                # rounding allowance plus tolerance before treating it as anchored.
+                if matches and current.used_fraction == 0 and current.observed_at_s <= event["at_s"] + floor_s + WAIT_TOLERANCE_S:
                     continue
                 checks.append({"event": "verification", "pool": event["pool"],
                     "attempt_id": event["attempt_id"], "key": trigger["key"], "at_s": now_s,
