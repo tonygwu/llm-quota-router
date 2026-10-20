@@ -1501,7 +1501,7 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 40. Corrupt history or waste bytes break routing and status, or name no file  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 40. Corrupt history or waste bytes break routing and status, or name no file  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
 
 **Background:** reviews of #38 found these gaps beside the writers' live warnings.
 - A JSON decode error in strict history reading re-raises bare, so the live warning
