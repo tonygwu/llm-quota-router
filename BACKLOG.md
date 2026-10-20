@@ -404,7 +404,7 @@ stay byte-identical.
 
 ---
 
-### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`  `[claimed by: #9]`
+### 20. `quotapick run` cannot route to Antigravity  `[difficulty: xhigh]`  `[filed: 2026-10-19]`  `[BLOCKED: needs verified per-call tool prohibition and served-model evidence in agy]`
 
 **Background:** `run` narrows its candidates to Claude subscriptions and credit pools
 (`src/quota_router/run.py:443-446`). An `--only` that names anything else is refused.
@@ -432,6 +432,18 @@ plan`, `--sandbox` and `--disable-slash-commands` through the usage read's user 
 parses the JSON result and checks the sign-in identity. Reuse that for the output and
 identity bullets. The open question is still the first bullet: nobody has shown that
 plan mode plus the sandbox stops every tool.
+
+*Probe result 2026-10-20:* two reviewed CLI invocations on one Gemini pool
+completed with matching sign-in identity: 2 attempted, 2 succeeded, 0 execution
+failures. The file-access prohibition check failed (`tool_access`): agy completed
+`read_file` and returned a random token held only in a scratch file. Both calls
+warned that `--mode plan` has no effect with `--disable-slash-commands`. The stream
+also listed command and MCP tools, but their execution was not tested. Both calls
+confirmed the selected Argon label without a served-model stamp
+(`model_unverified`: 2). Implementation stopped; this item stays open and unclaimed.
+See [the probe record](docs/measurements/2026-10-20-antigravity-run-probe.md) for
+tokens, raw-response hashes, isolation limits and the remaining requirements.
+No Antigravity `run` target was added, and `run --dry-run` remains refused.
 
 *Risks and edge cases:* agy may offer no way to turn tools off in headless mode. Then this
 item stops at the probe and says so. agy's output format and failure taxonomy also differ
