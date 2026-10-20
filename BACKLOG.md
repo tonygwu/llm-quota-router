@@ -1176,36 +1176,37 @@ and say so in the README.
 
 ---
 
-### 44. Fifty tests still reach `load_config` with no `cwd` through `select_account` and the launchers  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
+### 47. The config-search guard can stop firing without a test noticing, and skips `QUOTA_ROUTER_CONFIG`  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** #18's guard (`tests/test_no_live_config_in_tests.py`) checks only calls
-written as `load_config(...)` or `cli.main(...)` in a test module. The review of #18
-found two gaps on 2026-10-20. First, `select_account` and `report_failure` default to no
-`cwd` (`src/quota_router/api.py:119` "def select_account("), and both launchers load
-the config with none (`src/quota_router/launcher.py:500` "config = deps.load_config(env=dict(env))"
-and `src/quota_router/codex_launcher.py:297` "config = deps.load_config(env=dict(env))").
-A wrapper around `config_search_paths` recorded 133 searches of the checkout's
-`.quota-router.toml` from 50 tests (`test_library_api` 97, `test_launcher` 35,
-`test_deprioritize` 1). With a hostile project file at the checkout root, 32 tests failed
-(16 `test_library_api`, 15 `test_launcher`, 1 `test_deprioritize`). Second, the guard
-misses shapes that still read the real home: `env=dict()`, an env with neither `HOME` nor
-`XDG_CONFIG_HOME`, `cwd=None`, a renamed import, a dotted call path and a helper module
-not named `test_*.py`. `config_search_paths` resolves the first two to
-`~/.config/quota-router/config.toml`.
+**Background:** #44 (2026-10-20) added a run-time guard,
+`tests/conftest.py:41` "def _no_config_search_reaches_the_real_machine(", that fails a test
+whose config search reaches the real home, working directory or process `XDG_CONFIG_HOME`.
+Its second review left two should-fix findings and three nits. First, the test that the
+guard works checks only that the patch is installed. Deleting the teardown assert, deleting
+the line that records a search, or making `load_config` call the search through a name
+bound at import each left the full suite at `1792 passed`. Second, `config_search_paths`
+adds the process `QUOTA_ROUTER_CONFIG` as a required layer
+(`src/quota_router/config.py:1414` "explicit = environ.get("), but
+the guard does not treat it as a real root: a probe with that variable set to a file
+outside the home loaded the file and passed. No test inherits it today; the suite with it
+set to invalid TOML gave `1792 passed`. The nits: the test for pytest's temp-folder
+exemption and the `XDG_CONFIG_HOME` root cannot fail in the normal layout; the docstring
+of `tests/test_no_live_config_in_tests.py` does not name either; and the network guard
+`tests/test_adapters.py:122` "def _no_real_network(" uses the test's own `monkeypatch`, so
+a `monkeypatch.undo()` in that module would reopen the network (no test calls it today).
 
-**Impact:** a `.quota-router.toml` in a checkout root, which `cl` reads from its working
-directory, turns 32 tests red in that checkout only. A partial env in a new test reads the
-operator's live config and passes the guard.
+**Impact:** a refactor of `load_config` can switch the guard off while the suite stays
+green, and an operator who exports `QUOTA_ROUTER_CONFIG` can have a new test read that
+file unnoticed.
 
-**Fix:** pass `cwd=_NO_CONFIG_FILES` at the `select_account` and `report_failure` calls in
-tests, and give both launchers a `cwd` they pass to `load_config`. Then replace or back the
-static guard with a runtime one: an autouse fixture in a new `tests/conftest.py` that wraps
-`config_search_paths` and, outside `-m live`, fails a test whose search falls under
-`Path.home()` or `Path.cwd()`.
+**Fix:** add one `pytester` test that loads this conftest, runs an inner test calling
+`load_config(env={}, cwd=<nonexistent>)`, and asserts one error; it catches all three
+mutations. Add the process `QUOTA_ROUTER_CONFIG` to the guard's real roots. Build the
+exemption test's layer under a real root so that it can fail, and update the docstring.
+Give `_no_real_network` its own `pytest.MonkeyPatch.context()`.
 
-**Touch points:** `src/quota_router/launcher.py`, `src/quota_router/codex_launcher.py`,
-`tests/test_library_api.py`, `tests/test_launcher.py`, `tests/test_deprioritize.py`, a new
-`tests/conftest.py`, and `tests/test_no_live_config_in_tests.py`.
+**Touch points:** `tests/conftest.py`, `tests/test_no_live_config_in_tests.py`,
+`tests/test_adapters.py`.
 
 ---
 
