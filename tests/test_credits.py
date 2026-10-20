@@ -437,6 +437,15 @@ def test_status_dry_run_records_nothing(env) -> None:
     assert {"history.jsonl", "forecast.json"} <= {Path(k).name for k in after}
     assert after["quota-router/credits.jsonl"] != before["quota-router/credits.jsonl"]
     assert after["quota-router/calibrations.jsonl"] != before["quota-router/calibrations.jsonl"]
+    # A dry run now shows the same unexplained-encoding warnings, and adds none.
+    recorded = [w for w in json.loads(_out)["warnings"] if w.startswith("unexplained calibration")]
+    assert recorded
+    code, out, err = run(["status", "--dry-run", "--json"], env, snapshots=real_capture(),
+                         now_s=expires + 2 * HOUR, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    shown = [w for w in json.loads(out)["warnings"] if w.startswith("unexplained calibration")]
+    assert shown == recorded
+    assert _state_bytes(env) == after
 
 
 def test_status_dry_run_still_reports_an_invalid_ledger(env) -> None:
@@ -451,6 +460,13 @@ def test_status_dry_run_still_reports_an_invalid_ledger(env) -> None:
     assert code == cli.EXIT_OK, err
     assert any("calibration ledger invalid" in w for w in json.loads(out)["warnings"])
     assert _state_bytes(env) == before
+
+
+def test_status_dry_run_says_when_encoding_detection_is_off(env) -> None:
+    code, out, err = run(["status", "--dry-run", "--json"], env, snapshots=real_capture(),
+                         cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    assert any("calibration reconstruction is absent" in w for w in json.loads(out)["warnings"])
 
 
 def test_waste_backfill_refuses_dry_run(env) -> None:

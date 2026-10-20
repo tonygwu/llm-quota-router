@@ -2661,12 +2661,18 @@ def _cmd_status(
     if dry_run:
         calibration_notes = ["dry run: recorded no history, resets, waiting stretches, "
                              "calibration encodings, credit expiries or forecast"]
+        # Read-only: detection would append a new encoding, but the ledger's existing
+        # warnings are the same news a recording run gives.
         try:
-            # Read-only: encoding detection would append, but a broken ledger is still news.
-            calibrations_mod.read_records(env=env)
+            if calibrations_mod.reconstruction_ready(env=env):
+                calibration_notes += calibrations_mod.unexplained_warnings(
+                    calibrations_mod.read_records(env=env))
+            else:
+                calibration_notes.append("calibration reconstruction is absent or incomplete; "
+                                         "encoding detection is disabled")
         except (calibrations_mod.LedgerError, OSError) as exc:
             calibration_notes.append(f"calibration ledger invalid: {exc}")
-        ledger_valid = False  # not checked: checking appends any new encoding
+        ledger_valid = False  # a dry run records no waste, whatever the ledger holds
     else:
         try:
             calibration_notes = calibrations_mod.detect_config_changes(

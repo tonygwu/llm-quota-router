@@ -494,9 +494,14 @@ def detect_config_changes(config: Any, *, now_s: float, env: Mapping[str, str] |
                                 effective_to=at, status="unexplained", evidence=[],
                                 reason="Loaded value or source differs from the latest encoding; evidence required", annotates=None))
         _append(stream, records, pending)
-        # Unexplained past changes remain warnings even after another change supersedes
-        # them. An annotation must address each unexplained event explicitly.
         records.extend(pending)
-        annotated = {r["annotates"] for r in records if r["kind"] == "encoding" and r["annotates"] is not None}
-        return [f"unexplained calibration encoding {r['id']}: {r['account'] or r['scope']} {r['key']}={r['value']!r} ({r['source']}); record evidence"
-                for r in records if r["kind"] == "encoding" and r["status"] == "unexplained" and r["id"] not in annotated]
+        return unexplained_warnings(records)
+
+
+def unexplained_warnings(records: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Unexplained past changes remain warnings even after another change supersedes
+    them. An annotation must address each unexplained event explicitly."""
+    records = list(records)
+    annotated = {r["annotates"] for r in records if r["kind"] == "encoding" and r["annotates"] is not None}
+    return [f"unexplained calibration encoding {r['id']}: {r['account'] or r['scope']} {r['key']}={r['value']!r} ({r['source']}); record evidence"
+            for r in records if r["kind"] == "encoding" and r["status"] == "unexplained" and r["id"] not in annotated]
