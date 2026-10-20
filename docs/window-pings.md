@@ -96,12 +96,14 @@ changes future calls to selection-only successes when the remaining checks pass.
 The diagnostic calls did not establish a waiting-window start: those accounts
 already had running windows.
 
-Keep recurring pings dry-run until deployment approval and ledger adoption in #26.
+Keep recurring pings dry-run until the coordinating session activates them under #29.
 The operator approved live pings and accepted the missing served-model stamps, the
 exact previous-reset-plus-length waiting test, and literal elapsed-time cooldowns.
-Installation is still held because it also installs the v3 waste writer. The
-coordinating session handles activation after ledger adoption; this implementation
-does not install or activate anything. Post-ping boundary verification remains
+The calibration ledger and v3 reset writer were adopted on October 20 at `7f87887`.
+That installation preserved the plist, which still has no ping invocation, and
+does not include the later ping changes or waiting-capacity writer. Before pulling
+and installing those changes, complete the separate raw-history adoption in #32.
+The coordinating session owns activation. Post-ping boundary verification remains
 necessary, including the Antigravity fixed stretch.
 
 ### Model-name probes, 2026-10-20

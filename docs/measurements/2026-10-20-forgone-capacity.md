@@ -149,7 +149,7 @@ non-temporary destination. Use scratch `XDG_STATE_HOME` for all development.
 ordinary `quotapick waste` is read-only and combines durable and retained evidence.
 
 Before any live write, the operator must approve this raw-stretch proposal and
-a backup. Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`,
+a backup under #32. Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`,
 after that adoption and deployment approval. The calibration reconstruction and
 belief appends are already complete; the additional waiting-history adoption
 remains pending. This document does not authorize live writes, installation,

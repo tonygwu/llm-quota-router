@@ -57,7 +57,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: #32 live adoption and one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -67,14 +67,16 @@ units") rather than empirical.
 with unrounded before/after readings, the weekly companion needed for Fable, and the
 original writer's immutable calibration basis. `calibrations.jsonl` keeps measurements,
 encodings and historical beliefs separately; `quotapick waste [--json]` derives current
-and logged figures with supporting ledger ids. Live adoption remains operator-gated
-in #26. `quotapick status` is the writer, so the existing launchd poller needs no
-new schedule; `--backfill` re-scans retained history for missing rows. Resets that
+and logged figures with supporting ledger ids. The approved calibration adoption
+completed on October 20 at revision `7f87887`; see the reconstruction measurement
+document for the observed v3 poll and appended Gemini beliefs. `quotapick status`
+is the writer, so the existing launchd poller needs no new schedule; `--backfill`
+re-scans retained history for missing rows. Resets that
 happened while nothing was watching have `observed: false` and no remainder, so totals
 remain lower bounds. `forgone.jsonl` now retains closed waiting stretches without
 PSE, and the report adds derived forgone capacity to the published total. Its shared
 temporal classifier suppresses false resets from waiting windows. The retained-history
-proposal and remaining live adoption are carried by #26.
+proposal and remaining live adoption are carried by #32.
 
 Rows carry `kind` since version 2: a provider's one-off early reset is reported as
 *forfeited*, apart from the waste total, because routing cannot plan for a boundary
@@ -106,14 +108,16 @@ nobody published. See the README section "An early reset is not waste".
 4. **Published totals must expose their assumptions.** Original Antigravity rows
    retain their placeholder-size basis. The derived report applies historical beliefs
    where evidence supports them and shows both logged and current figures. The primary
-   Claude/GPT pool has a measured size of 0.088; the second pool's identical configured
-   size is an encoding, without a measured size belief. The two October 16 Gemini rows
-   are early forfeits and remain unresolved, with both candidate figures shown and
-   excluded from current totals. Old Fable rows lacking coupled readings stay logged
-   with an explicit reason. Publish this report's basis and ledger ids, plus its
-   unresolved, unrecomputable and unmeasured-default counts. #26 carries the
-   operator's reconstruction/deployment approval and the decided Gemini belief; the
-   removed `totals_at_capacity` output is no longer the publication source.
+   Claude/GPT pool has a measured size of 0.088; the operator's October 20 belief
+   applies the same size to the second pool for all time, without claiming it was
+   measured independently. The two October 16 Gemini rows are early forfeits.
+   The October 20 belief append selects unchanged weekly pools
+   of 9.72 and 9.80 PSE, yielding current forfeits of 9.68172129 and 9.74596372 PSE
+   from recovered raw readings. The unresolved predecessors and both candidates
+   remain reproducible with a historical cutoff. Old Fable rows lacking coupled
+   readings stay logged with an explicit reason. Publish this report's basis and
+   ledger ids, plus its unresolved, unrecomputable and unmeasured-default counts.
+   The removed `totals_at_capacity` output is no longer the publication source.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
 and the absolute wasted-PSE figure is stated, including forgone capacity. If the number is unimpressive, that is the
@@ -1344,7 +1348,7 @@ side:
    served model from the call's own telemetry, and whether the output was used.
 2. Compare the Gemini pools' weekly use, their scheduled-reset rows in `waste.jsonl`
    and their forgone capacity with the weeks before 2026-10-19. Use the derived
-   `quotapick waste` report and #26's reconstructed raw stretches.
+   `quotapick waste` report and #32's reconstructed raw stretches.
 3. Report what Gemini Flash failed on, by failure kind, so a quality problem on standard
    work shows up as data.
 4. Write the result into `docs/measurements/2026-10-18-gemini-size.md`. If the pools
@@ -1373,87 +1377,67 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 26. Live waste adoption is approved and not yet done, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #11]`
+### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** #24 implemented raw v3 reset readings, an append-only assumption
-ledger and reports derived from current historical beliefs. Its reconstruction is
-still a private scratch proposal. `docs/measurements/2026-10-19-calibration-reconstruction.md:123` "Before live adoption, the operator must approve the concrete proposal and a backup"
-keeps the live write and installation gated. The October 16 Gemini rows remain
-unresolved, with candidate forfeits of 9.681723 / 9.745963 PSE if the weekly pools
-stayed unchanged, or 36.306460 / 36.547361 if the five-hour windows stayed unchanged.
-The read-only October 12 fine estimates are 16.216900 / 18.309661 weekly PSE versus
-October 18's 19.423512 / 19.562576; incomplete other-usage evidence and delayed meter
-settlement remain caveats, so the re-analysis does not choose a belief.
+**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:151` "Before any live write, the operator must approve this raw-stretch proposal"
+gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
+`forgone.jsonl` writer and retained-history reconstruction, then assigned its live
+adoption to #26 while that calibration deployment was already running. The approved
+calibration adoption finished at revision `7f87887`, before the waiting-capacity
+writer. The complete live ledger now contains 140 records, the decided Gemini
+beliefs and the second Claude/GPT pool's approved size belief. The original saved
+waiting-history proposal used an earlier report-only ledger:
+19 closed stretches, two bounded ends, 1.825242 PSE included, and both historical
+Gemini candidates excluded. A scratch recalculation with all approved beliefs
+includes 4.265024 PSE, with zero unresolved segments. Validate the complete proposal
+and its history coverage with the adopted ledger before approval.
 
-**Impact:** installing a v3 writer before the approved reconstruction would begin a
-new durable recording format without its historical assumption ledger. Choosing a
-Gemini interpretation without an operator decision would turn an unresolved
-assumption into a published figure.
+**Impact:** installing current main without this adoption would begin recording
+waiting stretches before the preserved historical proposal is adopted. Publishing
+the old proposal would also omit the decided Gemini capacity. #1's total and #29's
+installation need this ordered adoption.
 
-**Fix:** this item carries every operator-gated remainder of deleted #24.
-It also carries deleted #30's live waiting-stretch adoption. The approval and backup
-procedure in step 1 applies to that raw proposal too. Before installing the forgone
-writer, adopt its closed `forgone.jsonl` records from the operator-preserved history,
-keep `waste.jsonl` byte for byte, and record raw counts, validation and report figures
-in the private adoption record. The scratch proposal has 19 closed stretches, two
-bounded ends, and 1.825242 PSE included before appending the decided Gemini belief.
-Both Gemini candidates remain visible in that proposal. See
-`docs/measurements/2026-10-20-forgone-capacity.md` for reproduction and basis limits.
+**Fix:** carries all remaining live waiting-stretch adoption from deleted #30,
+temporarily carried by deleted #26. Keep raw evidence and backup details private;
+record sanitized results in the waiting-capacity measurement document.
 
+1. Reconstruct from the operator-preserved history with a copy of the complete
+   adopted calibration ledger. Use scratch XDG homes, retain every closed stretch,
+   and report attempted/succeeded/failed, bounded ends, unknown gaps, raw counts
+   and derived per-pool figures. Check the chosen Gemini beliefs and a cutoff
+   before their append; preserve both candidates in historical reports.
+   Update the reconstruction tool's help and `operator_gates` text to reference
+   this adoption and validation of the existing beliefs.
+2. Present the concrete private proposal and deployment plan for operator approval,
+   including the backup location, exact append commands and rollback. Obtain a
+   fresh adversarial review's ship verdict before any live write.
+3. Back up live state, then append the approved closed records without rewriting
+   `waste.jsonl`, `calibrations.jsonl` or existing waiting records. Validate duplicate
+   and overlap handling, unchanged original bytes and current/as-of report results.
+   Record backup identity, counts and full validation privately.
+4. Coordinate the approved deployment with #29: pull and install only from repo-prod
+   after adoption, verify receipt and installed symbols, then compare actual
+   scheduled poller records. This item does not authorize ping execution or a
+   schedule change. Preserve a rollback that retains new durable records.
+5. Run the full scratch test gate, review and push sanitized evidence. Delete this
+   item only after the adopted history and installed writer are verified; remove
+   its blocking references in the same separate backlog commit.
 
-**Operator decision 2026-10-20:** approved: back up live state, write the reconstructed
-ledger and its marker, then install from repo-prod (steps 1 and 2), and append the
-decided Gemini belief (step 3) after its scratch check. Live pings stay off until #29.
+*Risks and edge cases:* the saved history stops at 2026-10-20T05:19:28Z and cannot
+recover earlier missing stretches. Do not treat its report-only ledger as the
+complete reconstruction or replace later live records with that snapshot. Keep
+uncertain conversions and bounded intervals visible. Existing belief approval
+does not replace review of this additional raw-state write.
 
-1. Have the operator review the full private proposal and its evidence coverage,
-   authorize a backup, then authorize writing the reconstructed ledger and its
-   completion marker into live state. Preserve `waste.jsonl` byte for byte. Record
-   backup identity, ledger counts and validation output in the private adoption
-   record; summarize non-private evidence in the reconstruction document.
-2. Only after that reconstruction, and with the operator's deployment approval,
-   pull `repo-prod` and install from it as AGENTS.md specifies. Verify the installed
-   receipt and new symbols, then actual poller records from before and after the
-   install, including v3 basis/raw fields and calibration detection. Do not change
-   the schedule. This step can retain unresolved Gemini beliefs.
-3. **Operator decision 2026-10-20:** for the Gemini window ending October 16, the
-   weekly pool stayed the same (9.72 and 9.80 PSE a week; forfeits 9.681723 and
-   9.745963), on the recording agent's recommendation. The evidence it summarized: the
-   October 12 re-analysis implies weekly pools of 16.2 and 18.3 PSE by the fine method,
-   against 19.4 and 19.6 on October 18, close to the same size and far from the 3.75
-   times larger pool the other candidate needs; in the agent's judgment the stated
-   caveats cannot close that gap, and this candidate is the smaller figure. Earlier
-   wording of this step, kept for its procedure: obtain the operator's separate
-   belief decision for the Gemini window ending October 16. Append the new belief with its evidence, reasons and validity
-   interval; retain the unresolved predecessor and all measurement records.
-   Record the chosen basis in the measurement document and verify current versus
-   logged figures plus `--beliefs-as-of` in a scratch copy before appending that belief to live state.
-4. **Operator decision 2026-10-20:** `antigravity_claude_b` (the second Claude/GPT pool)
-   is the same size as the measured `antigravity_claude`, 0.088 PSE per five-hour window,
-   for all time, including history before its 2026-10-18 capacity encoding. Reason: the
-   same plan and the same model group, and the config has given both pools 0.088 since
-   2026-10-18. Append it as a belief whose reason is this decision and whose evidence
-   is the first pool's measurement; it is not a measurement of the second pool, so never
-   record it as one. It replaces the historical placeholder size 1.0 behind
-   `antigravity_claude_b`'s 1.003882 PSE in
-   `docs/measurements/2026-10-20-forgone-capacity.md`, about 0.088 at the new size.
-   Same scratch check as step 3 before the live append.
+*Why high not medium:* this adopts persistent historical data and changes a
+scheduled writer while preserving current and historical interpretations.
 
-*Risks and edge cases:* no live reconstruction or install is authorized by claiming
-this item. Never rewrite the reset log, record the secondary Claude/GPT pool's size as
-a measurement (step 4 is an operator belief, not a measurement), or invent missing historical Fable
-coupling readings. The ledger belongs in private state, not git.
-
-*Why high not medium:* this changes the live poller's durable output and requires
-an auditable historical belief decision and ordered deployment.
-
-**Closes when:** the approved reconstruction precedes the observed v3 poller run,
-the closed waiting stretches are adopted with their backup and validation evidence,
-and the separately approved Gemini belief is appended with reproducible reports.
-
-**Touch points:** `docs/measurements/2026-10-19-calibration-reconstruction.md:123` "Before live adoption, the operator must approve the concrete proposal and a backup";
-`docs/measurements/2026-10-19-gemini-reanalysis.md:149` "Neither candidate is selected by this script.";
-operator-private ledger and adoption evidence; `repo-prod` installation procedure
-in AGENTS.md.
+**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:151` "Before any live write, the operator must approve this raw-stretch proposal";
+`ops/reconstruct-forgone.py:4` "scratch state directory under temporary storage. Live adoption belongs to #26.";
+`AGENTS.md:149` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
+`docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
+operator-private retained history, ledger, waiting records and adoption evidence;
+repo-prod installation and actual poller records.
 
 ---
 
@@ -1543,7 +1527,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 ---
 
-### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 29. Window pings await waiting-capacity adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #22 shipped default-dry-run pings. The operator's model and evidence
 changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
@@ -1585,16 +1569,16 @@ are still required before this item closes.
   names a different model is still a failure.
 - The exact previous-reset-plus-length waiting test and literal five-hour/seven-day
   cooldown stay as built unless the operator changes them.
-- Live installation still waits for #26's live-install approval, because installing
-  from repo-prod also installs the v3 waste writer, which needs the reconstructed
-  ledger in place first.
+- The calibration ledger and v3 writer were adopted on October 20 at `7f87887`.
+  Pulling newer code also installs the waiting-capacity writer, so #32's raw-history
+  adoption must precede that installation. Pings remain off.
 
-**Fix:** carries #22's remaining deployment and post-ping qualification. #26 now
-records operator approval for live ledger adoption; that adoption must finish first.
-The coordinating session owns installation and activation. Keep this item open until
-those operations and their evidence are complete.
+**Fix:** carries #22's remaining deployment and post-ping qualification. The
+calibration adoption from deleted #26 is complete. The coordinating session owns
+installation and activation, after #32's separate waiting-history adoption. Keep
+this item open until those operations and their evidence are complete.
 
-1. After #26's backup and ledger adoption, pull and install only from repo-prod.
+1. After #32's approved backup and raw-history adoption, pull and install only from repo-prod.
    Re-run the launchd installer there in dry-run first, then enable
    `WINDOW_PING_MODE=execute` under the recorded operator decision. Verify the receipt,
    new installed symbols, actual poller records and ping journal. Preserve the default
@@ -1620,7 +1604,7 @@ that an installed recurring job ran or that the model's self-description is corr
 *Why high not medium:* activation crosses vendor telemetry, multiple account/pool
 launch paths, durable journal state and consequential recurring quota spend.
 
-**Touch points:** `docs/window-pings.md:96` "Keep recurring pings dry-run until deployment approval and ledger adoption in #26.";
+**Touch points:** `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
 `src/quota_router/ping_cli.py:81` "def parse_response(account, completed):";
 `src/quota_router/window_ping.py:132` "def _verification(records, events, now_s):";
 `tests/test_window_ping.py:121` "def test_failed_verification_blocks_only_one_window_and_survives_restart(tmp_path):";
