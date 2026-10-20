@@ -443,7 +443,7 @@ the README section on `run`.
 
 ---
 
-### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`
+### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
 
 **Background.** `_cmd_status` calls `_record_waste` (`cli.py:2639`; body at
 `cli.py:2566-2578`). It reads all retained history, rotated files included, and runs
