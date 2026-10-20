@@ -862,7 +862,6 @@ def detect_resets(
     # (account/window, kind, when the pair's later reading was taken, text), folded into
     # one warning per window at the end.
     notes: list[tuple[str, str, float, str]] = []
-    pair_at_s = 0.0
 
     def note(account_id: str, key: str, kind: str, text: str) -> None:
         notes.append((f"{account_id}/{key}", kind, pair_at_s, text))

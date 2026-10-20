@@ -471,15 +471,16 @@ def test_repeated_pair_warnings_fold_to_one_line_per_window(env):
     records = [weekly_reading(T0 + 100.0 * i, used=0.45, resets_at_s=reset_at + 600.0 * i)
                for i in range(1, 21)]
     records.insert(5, weekly_reading(T0 + 550.0, used=0.10, resets_at_s=reset_at + 3000.0))
+    records.insert(2, weekly_reading(T0 + 250.0, used=0.20, resets_at_s=reset_at + 1200.0))
 
     first = waste.detect_resets(records).warnings
     lines = [w for w in first if w.startswith("claude/7d: ")]
     assert len(lines) == 1, first
     line = lines[0]
-    assert line.startswith("claude/7d: 20 reset-scan notes in retained history "
-                           "(19 reset time moved forward, 1 incoherent pair); ")
+    assert line.startswith("claude/7d: 21 reset-scan notes in retained history "
+                           "(19 reset time moved forward, 2 incoherent pair); ")
     # The newest note, with the time its pair was read, and the rare kind's own newest
-    # example, so drift that follows it cannot hide it behind a bare count.
+    # example (the later of its two), so drift that follows cannot hide it.
     assert (f"; newest (pair read {waste._iso(T0 + 2000.0)}) reset time moved forward "
             f"0.00 of a window without rolling over ({waste._iso(reset_at + 600.0 * 19)} -> "
             f"{waste._iso(reset_at + 600.0 * 20)})") in line
@@ -488,7 +489,7 @@ def test_repeated_pair_warnings_fold_to_one_line_per_window(env):
 
     later = records + [weekly_reading(T0 + 2100.0, used=0.45, resets_at_s=reset_at + 12_900.0)]
     second = [w for w in waste.detect_resets(later).warnings if w.startswith("claude/7d: ")]
-    assert len(second) == 1 and "21 reset-scan notes" in second[0]
+    assert len(second) == 1 and "22 reset-scan notes" in second[0]
     assert f"newest (pair read {waste._iso(T0 + 2100.0)})" in second[0]
     assert f"-> {waste._iso(reset_at + 12_900.0)})" in second[0]
 
@@ -499,7 +500,9 @@ def test_each_account_and_window_keeps_its_own_folded_line(env):
         hrecord(
             T0 + 100.0 * i,
             account("claude", window("7d", 0.45, reset_at + 600.0 * i, T0 + 100.0 * i)),
-            account("claude_b", window("7d", 0.30, reset_at + 900.0 * i, T0 + 100.0 * i)),
+            account("claude_b", window("7d", 0.30, reset_at + 900.0 * i, T0 + 100.0 * i),
+                    window("7d_opus", 0.10, reset_at + 300.0 * i, T0 + 100.0 * i,
+                           applies_to=["opus"])),
             account("claude_c", window("7d", 0.20, reset_at + (600.0 if i == 5 else 0.0),
                                        T0 + 100.0 * i)),
         )
@@ -507,8 +510,9 @@ def test_each_account_and_window_keeps_its_own_folded_line(env):
     ]
     warnings = waste.detect_resets(records).warnings
     assert [w.split(": ", 1)[0] for w in warnings] == ["claude/7d", "claude_b/7d",
-                                                      "claude_c/7d"]
-    assert warnings[2].startswith("claude_c/7d: reset time moved forward")  # one note, as is
+                                                      "claude_b/7d_opus", "claude_c/7d"]
+    assert "4 reset-scan notes" in warnings[2]
+    assert warnings[3].startswith("claude_c/7d: reset time moved forward")  # one note, as is
     assert "4 reset-scan notes" in warnings[0] and "4 reset-scan notes" in warnings[1]
     assert f"({waste._iso(reset_at + 900.0 * 4)} -> {waste._iso(reset_at + 900.0 * 5)})" in (
         warnings[1])
