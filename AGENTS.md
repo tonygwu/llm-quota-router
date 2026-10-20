@@ -44,12 +44,19 @@ committed code, because it will be wrong in the other four checkouts.
 launcher, so installing work-in-progress code makes every new terminal session
 route on it. The failure mode is a wedged or mis-routed launch, not a red test.
 
-To test your own changes, use your checkout's venv, which is isolated:
+To test your own changes, use your checkout's venv, which is isolated from the
+installed binaries but not from live state:
 
 ```sh
 ./.venv/bin/python -m pytest -q          # ~980 tests, ~12s
-./.venv/bin/quotapick status             # your code, not the installed copy
+XDG_STATE_HOME=$(mktemp -d) ./.venv/bin/quotapick status   # your code, scratch state
 ```
+
+Never run a checkout's `quotapick status` or `waste --backfill` against live state.
+Without `XDG_STATE_HOME`, both write to `~/.local/state/quota-router`: history,
+reset rows and, from commit `e2cd00c`, waiting records in `forgone.jsonl`. That file
+only grows, so records from unfinished code stay there, and a record the installed
+writer disagrees with can make it refuse every later append.
 
 To ship a change to the live binaries, after it is pushed:
 
@@ -147,10 +154,11 @@ The historical calibration reconstruction is read-only by default:
 `PYTHONPATH=src ./.venv/bin/python ops/reconstruct-calibrations.py --help`.
 The waiting-stretch reconstruction is also read-only by default:
 `PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help`.
-See `docs/measurements/2026-10-20-forgone-capacity.md`; #32 carries its separate
-raw-log adoption after operator approval and a backup, before installing that
-writer. The calibration ledger and v3 reset writer were adopted under #26 at
-revision `7f87887`; that installation does not include the waiting-capacity writer.
+See `docs/measurements/2026-10-20-forgone-capacity.md`. Under #32, the closed historical
+stretches were adopted into live state on 2026-10-20, after operator approval and a
+backup. The calibration ledger and v3 reset writer were adopted under #26 at
+revision `7f87887`; that installation does not include the waiting-capacity writer,
+whose installation belongs to #29.
 The Gemini re-analysis uses saved responses only:
 `./.venv/bin/python ops/reanalyze-gemini-oct12.py --help`.
 See `docs/measurements/2026-10-19-calibration-reconstruction.md` for the required

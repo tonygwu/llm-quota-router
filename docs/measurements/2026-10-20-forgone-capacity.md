@@ -124,10 +124,10 @@ Gemini append retains both Gemini candidates as unresolved.
 | `antigravity_gemini_b` | 1.688853 |
 | Total | 4.265024 |
 
-This is a scratch recalculation of the preserved proposal, not live adoption of
-the waiting records. The calibration installation at `7f87887` does not contain
-the later waiting-capacity writer. The additional raw-history adoption and that
-writer's deployment remain pending.
+This was a scratch recalculation of the preserved proposal. The live adoption of
+these 19 records followed on October 20; see "Live adoption under #32" below. The
+calibration installation at `7f87887` does not contain the waiting-capacity writer,
+whose deployment belongs to #29.
 
 Stretches before retained history cannot be recovered. Preservation of the private
 copy prevents the September stretches in this proposal from aging out while the
@@ -173,6 +173,42 @@ failed 9 (`conflicting forgone record identity`, the same nine cutoffs) at `b3a3
 and attempted 31, succeeded 31, failed 0 with the fix. Both first runs pass, and every
 cutoff appends two stretches that closed after the proposal was saved.
 
+## Live adoption under #32
+
+The operator approved the live write on October 20. Approval followed three fresh
+adversarial reviews of the deployment plan and its helper. The first returned
+fix-first and the third returned ship. The helper ran from a frozen copy of revision
+`6ce043f`, and it refused to run if its own bytes, that source or the approved
+records differed from the reviewed hashes.
+
+At 08:22 UTC the helper first copied the whole live state directory, 197 files, and
+checked that before, copy and after agreed. It then appended the 19 records once,
+through the writer's own locked and validated append, into a new `forgone.jsonl`.
+Backup and append each attempted 1, succeeded 1 and failed 0. The new file is
+byte-identical to the approved records. No other live file was written: the reset log
+and the calibration ledger kept every earlier byte, and the reconstruction marker
+did not change.
+
+The checks that followed all passed:
+
+- On a temporary copy, re-appending the 19 records appended zero, and an overlapping
+  and a conflicting record were refused with the bytes unchanged.
+- Reports from the durable records equal the proposal at all three cutoffs: 4.265024
+  PSE current, 5.180564 before the second Claude/GPT pool belief, and 1.825242 before
+  the Gemini beliefs.
+- The source CLI's `waste --json` on a scratch state folder holding only the waiting
+  file, the ledger and the marker returned exactly the 19 rows with those figures.
+- Against live state, the same read also merges retained history and returned 21 rows:
+  the 19, plus two Codex stretches from 06:32 UTC that only retained history holds.
+
+The installed revision has no waiting-stretch writer and ignores the file. Before #29
+installs a later revision, the private hand-off replays that revision's writer
+against the adopted file and live history. Installation needs a first run that raises
+no append or merge error, changes no durable record, and detects again every record
+whose first waiting read is still retained. Until installation, rollback only moves
+the file aside, and it refuses bytes the adoption did not write. After installation,
+no record is moved or rewritten. Backup details, hashes and raw evidence stay private.
+
 ## Reproduction and adoption
 
 The tool reads explicit inputs and emits the raw closed records and complete
@@ -196,11 +232,12 @@ non-temporary destination. Use scratch `XDG_STATE_HOME` for all development.
 ordinary `quotapick waste` is read-only and combines durable and retained evidence.
 
 Before any live write, the operator must approve this raw-stretch proposal and
-a backup under #32. Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`,
-after that adoption and deployment approval. The calibration reconstruction and
-belief appends are already complete; the additional waiting-history adoption
-remains pending. This document does not authorize live writes, installation,
-a schedule change, or ping execution.
+a backup under #32. Both were approved and done on October 20, as described above.
+Preserve `waste.jsonl` byte for byte. Install only from `repo-prod`, under #29's
+deployment approval. Never point a working checkout's `quotapick status` or
+`waste --backfill` at live state: from `e2cd00c` both append waiting records there.
+This document does not authorize further live writes, installation, a schedule
+change, or ping execution.
 
 ## Regression evidence
 
