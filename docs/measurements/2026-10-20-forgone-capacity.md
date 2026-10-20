@@ -144,8 +144,10 @@ The tool's `--beliefs-as-of` option reproduces the earlier reports. A cutoff at 
 second Claude/GPT pool belief's append time gives 5.180564 PSE, with that pool at
 1.003882. A cutoff at the Gemini belief append time gives 1.825242 PSE. Both Gemini
 rows are then unresolved, with candidates 1.666469 or 6.249260 and 1.688853 or
-6.333198. Every row's figure equals the original proposal's. Only provenance labels
-differ, because the adopted ledger cites backup-derived encoding records.
+6.333198. Every row's figure equals the original proposal's. Only provenance differs:
+the adopted ledger cites backup-derived encoding records, and its encoding boundary
+at October 14 17:35:30 UTC splits one `antigravity_claude` row into two segments with
+the same 0.124515 total.
 
 The live history still held the same 120 rotated files byte for byte, and the saved
 active file is a prefix of its rotated successor. Detection over a copy of live
@@ -172,7 +174,10 @@ PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py \
   > "$FORGONE_PROPOSAL_JSON"
 ```
 
-If a ping journal exists, supply `--ping-journal "$PING_JOURNAL"`. Add
+Add `--beliefs-as-of <UTC instant>` to report only ledger records recorded before
+that instant. `2026-10-20T05:42:21.199671Z` reproduces the report before the Gemini
+beliefs, and `2026-10-20T06:01:36.625472Z` the report before the second Claude/GPT
+pool belief. If a ping journal exists, supply `--ping-journal "$PING_JOURNAL"`. Add
 `--output-state-home "$NEW_SCRATCH_STATE_HOME"` to append the closed records into
 a fresh directory under temporary storage. The tool refuses an existing or
 non-temporary destination. Use scratch `XDG_STATE_HOME` for all development.
