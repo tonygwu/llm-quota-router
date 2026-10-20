@@ -270,6 +270,93 @@ def test_a_pool_whose_key_cannot_be_read_falls_back_and_records_the_subscription
     assert [r.account for r in _routing_state(env).reservations] == [served]
 
 
+def _failing_append(kind, error):
+    real = credits.append
+
+    def append(env, record):
+        if record.get("type") == kind:
+            raise error
+        return real(env, record)
+    return append
+
+
+def test_a_ledger_failure_after_a_billed_call_still_returns_the_answer(env, monkeypatch):
+    """BACKLOG #41: the child ran and billed, then booking its spend failed. The router
+    used to exit 127 with nothing on stdout, so the client lost the answer it paid for
+    and could not tell the call was billed."""
+    monkeypatch.setattr(credits, "append",
+                        _failing_append("spend", OSError(28, "No space left on device")))
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    code, payload, err = _run(env, _request(), runner)
+    assert code == cli.EXIT_OK, err
+    assert payload["ok"] is True and payload["text"] == "ok"
+    attempt, = payload["attempts"]
+    assert (attempt["pool_kind"], attempt["spent"]) == ("credit", True)
+    assert any("router failed after the child ran" in w and "No space left on device" in w
+               for w in payload["warnings"])
+    history = Path(env["XDG_STATE_HOME"]) / "quota-router" / "history.jsonl"
+    assert json.loads(history.read_text().splitlines()[-1])["run"]["outcome"] == "ok"
+
+
+@pytest.mark.parametrize("allow_credit, account, spent, ledger", [
+    # A credit call is booked at its hold as an estimated spend, as a timeout is.
+    (True, "anthropic_api_d", True, ["hold", "spend"]),
+    # A subscription call may or may not have reached the model.
+    (False, "claude_b", None, []),
+])
+def test_a_failure_before_the_attempt_is_recorded_still_reports_the_attempt(
+    env, monkeypatch, allow_credit, account, spent, ledger
+):
+    from quota_router import run as run_mod
+
+    def broken_judge(*args, **kwargs):
+        raise RuntimeError(f"parser broke on {SENTINEL}")
+    monkeypatch.setattr(run_mod, "judge", broken_judge)
+    runner = FakeRunner((0, _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02), ""))
+    code, payload, err = _run(env, _request(allow_credit=allow_credit), runner)
+    assert code == cli.EXIT_OK, err
+    assert len(runner.calls) == 1  # a router failure is not retried
+    attempt, = payload["attempts"]
+    assert (attempt["account"], attempt["outcome"], attempt["spent"]) == (
+        account, "cli_error", spent)
+    assert payload["outcome"] == "cli_error" and payload["ok"] is False
+    assert [line["type"] for line in _ledger(env)] == ledger
+    if ledger:
+        assert _ledger(env)[1].get("estimated") is True
+    if allow_credit:  # the pool's key, read for this call, never reaches the response
+        assert SENTINEL not in json.dumps(payload) and "<redacted>" in attempt["detail"]
+
+
+def test_a_config_error_on_a_retry_returns_what_ran_instead_of_exit_2(env, monkeypatch):
+    # Exit 2 means "refused before anything was spent"; a retry's config failure is not.
+    refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
+                      text="Your credit balance is too low to access the Anthropic API.",
+                      api_key_source="ANTHROPIC_API_KEY", **NOTHING_RAN)
+    real_prepare, calls = cli._prepare, []
+
+    def prepare(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise cli.ConfigError("config.toml changed under the run")
+        return real_prepare(*args, **kwargs)
+    monkeypatch.setattr(cli, "_prepare", prepare)
+    code, payload, err = _run(env, _request(), FakeRunner((1, refused, "")))
+    assert code == cli.EXIT_OK, err
+    assert [(a["outcome"], a["spent"]) for a in payload["attempts"]] == [("exhausted", False)]
+    assert any("ConfigError" in w for w in payload["warnings"])
+
+
+def test_a_failure_before_any_child_started_still_fails_the_command(env, monkeypatch):
+    def prepare(*args, **kwargs):
+        raise RuntimeError("broken before anything ran")
+    monkeypatch.setattr(cli, "_prepare", prepare)
+    runner = FakeRunner()
+    code, _payload, err = run(["run"], env, deps=cli.Deps(run=runner),
+                              cwd=_NO_CONFIG_FILES, stdin=json.dumps(_request()))
+    assert code == cli.EXIT_ROUTER_FAILURE and "broken before anything ran" in err
+    assert runner.calls == []
+
+
 def test_a_deferred_record_writes_once_and_only_on_the_chosen_account(env) -> None:
     deps = cli.Deps(load_snapshots=lambda **kw: (list(_drained_subscriptions()), []))
     args = SimpleNamespace(

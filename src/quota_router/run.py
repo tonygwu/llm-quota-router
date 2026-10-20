@@ -42,7 +42,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Final
@@ -514,257 +514,301 @@ def execute(
     binary = _claude_binary(env, config.exec.commands.get("claude"))
     state_dir = credits_mod.ledger_path(env).parent
 
-    for index in range(request.max_attempts):
-        remaining_s = request.timeout_s - (time.monotonic() - started)
-        if remaining_s <= 1.0:
-            outcome = "timeout"
-            break
-        sub_ids = [a for a in claude_ids if a not in excluded]
-        args = SimpleNamespace(
-            capability=request.capability,
-            effort=request.effort if request.capability else None,
-            model=request.model,
-            only=sub_ids or claude_ids,
-            exclude=None,
-            min_remaining=None,
-            no_sticky=False,
-            timeout_ms=None,
-            config=config_path,
-            dry_run=False,
-            json=True,
-            explain=False,
-            now=None,
-            # A positive expected cost is the job's size; otherwise the engine default.
-            job_pse=(
-                request.expected_cost_usd / usd_per_pse
-                if request.expected_cost_usd
-                else None
-            ),
-        )
-        # The subscription pick is recorded only once the target is known (below): a
-        # credit pool may win, and a pick that never ran must leave no history pick,
-        # reservation or sticky entry. With no subscription allowed, the pick only
-        # builds the joint projection the pools are ranked by, so it records nothing.
-        prepared = cli_mod._prepare(
-            args, env, now_s, deps, cwd, event="run", write_state=bool(sub_ids),
-            objective="joint", job_stream=joint_mod.STREAM_RUN, record_later=True,
-        )
-        warnings.extend(w for w in prepared.warnings if w not in warnings)
-        report = prepared.objective or {}
-        decision = prepared.decision
-        sub_choice = decision.chosen
-        if sub_choice is None or prepared.from_fallback or sub_choice in excluded:
-            sub_choice = None
-        decision_info = {
-            "reason": decision.reason,
-            "objective": report.get("used"),
-            "fallback": report.get("fallback"),
-        }
+    # Once a child may have run, a router failure must still return what ran (BACKLOG
+    # #41): the attempts recorded so far, and the running one if it was not recorded yet.
+    # Before any child starts, a failure is the command's failure, as it always was.
+    running: _Target | None = None
+    running_t0, running_run_id, recorded_before = 0.0, "", 0
+    scrubbers: list[Callable[[str], str]] = []
+    try:
+        for index in range(request.max_attempts):
+            remaining_s = request.timeout_s - (time.monotonic() - started)
+            if remaining_s <= 1.0:
+                outcome = "timeout"
+                break
+            sub_ids = [a for a in claude_ids if a not in excluded]
+            args = SimpleNamespace(
+                capability=request.capability,
+                effort=request.effort if request.capability else None,
+                model=request.model,
+                only=sub_ids or claude_ids,
+                exclude=None,
+                min_remaining=None,
+                no_sticky=False,
+                timeout_ms=None,
+                config=config_path,
+                dry_run=False,
+                json=True,
+                explain=False,
+                now=None,
+                # A positive expected cost is the job's size; otherwise the engine default.
+                job_pse=(
+                    request.expected_cost_usd / usd_per_pse
+                    if request.expected_cost_usd
+                    else None
+                ),
+            )
+            # The subscription pick is recorded only once the target is known (below): a
+            # credit pool may win, and a pick that never ran must leave no history pick,
+            # reservation or sticky entry. With no subscription allowed, the pick only
+            # builds the joint projection the pools are ranked by, so it records nothing.
+            prepared = cli_mod._prepare(
+                args, env, now_s, deps, cwd, event="run", write_state=bool(sub_ids),
+                objective="joint", job_stream=joint_mod.STREAM_RUN, record_later=True,
+            )
+            warnings.extend(w for w in prepared.warnings if w not in warnings)
+            report = prepared.objective or {}
+            decision = prepared.decision
+            sub_choice = decision.chosen
+            if sub_choice is None or prepared.from_fallback or sub_choice in excluded:
+                sub_choice = None
+            decision_info = {
+                "reason": decision.reason,
+                "objective": report.get("used"),
+                "fallback": report.get("fallback"),
+            }
 
-        def model_for(account_id: str | None) -> tuple[str, str | None]:
-            choices = prepared.capability.choices if prepared.capability else {}
-            choice = choices.get(account_id or "") or next(iter(choices.values()), None)
-            if request.model and not request.capability:
-                return request.model, request.effort
-            if choice is None:
-                return request.model or "", None
-            effort = choice.effort.get("applied") if choice.effort else None
-            return choice.id, effort
+            def model_for(account_id: str | None) -> tuple[str, str | None]:
+                choices = prepared.capability.choices if prepared.capability else {}
+                choice = choices.get(account_id or "") or next(iter(choices.values()), None)
+                if request.model and not request.capability:
+                    return request.model, request.effort
+                if choice is None:
+                    return request.model or "", None
+                effort = choice.effort.get("applied") if choice.effort else None
+                return choice.id, effort
 
-        target: _Target | None = None
-        if sub_choice is not None:
-            account = prepared.config.account(sub_choice)
-            overlay = account.exec_env() if account is not None else {}
-            var = account.config_dir_env_var if account is not None else "CLAUDE_CONFIG_DIR"
-            model_id, effort = model_for(sub_choice)
-            target = _Target("subscription", sub_choice, model_id, effort,
-                             child_env(env, overlay, var), [], "none")
+            target: _Target | None = None
+            if sub_choice is not None:
+                account = prepared.config.account(sub_choice)
+                overlay = account.exec_env() if account is not None else {}
+                var = account.config_dir_env_var if account is not None else "CLAUDE_CONFIG_DIR"
+                model_id, effort = model_for(sub_choice)
+                target = _Target("subscription", sub_choice, model_id, effort,
+                                 child_env(env, overlay, var), [], "none")
 
-        if request.allow_credit and config.credit_pools:
-            if report.get("used") != "joint" or prepared.joint is None:
-                note = (
-                    "credit pools are ranked only by the joint projection, which this run "
-                    f"could not use ({report.get('fallback') or 'no forecast'}); they sat out"
-                )
-                if note not in warnings:
-                    warnings.append(note)
-            else:
-                pools = _pool_targets(request, config=config, env=env, now_s=now_s,
-                                      excluded=excluded, warnings=warnings)
-                if pools:
-                    base = prepared.joint
-                    context = joint_mod.JointContext(
-                        stocks=list(base.stocks) + [
-                            joint_mod.credit_stock(
-                                pool.id,
-                                remaining_pse=bal.remaining_usd / usd_per_pse,
-                                expires_s=bal.expires_s,
-                                now_s=now_s,
-                            )
-                            for pool, bal, _ in pools
-                        ],
-                        streams=base.streams,
-                        now_s=now_s,
-                        horizon_s=base.horizon_s,
-                        step_s=base.step_s,
-                        job_pse=base.job_pse,
-                        stream=joint_mod.STREAM_RUN,
-                        fable_ids=base.fable_ids,
-                        tie_fraction=base.tie_fraction,
+            if request.allow_credit and config.credit_pools:
+                if report.get("used") != "joint" or prepared.joint is None:
+                    note = (
+                        "credit pools are ranked only by the joint projection, which this run "
+                        f"could not use ({report.get('fallback') or 'no forecast'}); they sat out"
                     )
-                    best_id, tied = choose_credit_or_subscription(
-                        context, sub_choice, [pool.id for pool, _, _ in pools]
-                    )
-                    chosen_pool = next(
-                        ((pool, bal, expected) for pool, bal, expected in pools
-                         if pool.id == best_id),
-                        None,
-                    )
-                    if chosen_pool is not None:
-                        pool, bal, expected = chosen_pool
-                        result = context.score(pool.id)
-                        decision_info["reason"] = (
-                            f"{pool.id} wins: {result.avoided:.4f} of {result.job_pse:.4f} PSE "
-                            f"projected fleet waste avoided (API credit, ${bal.remaining_usd:.2f} "
-                            f"left, expires {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(bal.expires_s))})"
-                        )
-                        if tied is not None:
-                            decision_info["reason"] += (
-                                f"; ties {tied} on waste, and a credit pool goes first "
-                                f"because only `run` can spend it"
-                            )
-                        try:
-                            secret = read_secret(pool.keychain_service)
-                        except SecretError as exc:
-                            warnings.append(f"{pool.id}: {exc}")
-                            excluded.append(pool.id)
-                            secret = None
-                        if secret is not None:
-                            home = state_dir / "credit-homes" / pool.id
-                            home.mkdir(parents=True, exist_ok=True, mode=0o700)
-                            overlay = {"CLAUDE_CONFIG_DIR": str(home),
-                                       "ANTHROPIC_API_KEY": secret.reveal()}
-                            child = child_env(env, {}, "CLAUDE_CONFIG_DIR")
-                            child.update(overlay)
-                            model_id, effort = model_for(pool.linked_account)
-                            budget = min(bal.remaining_usd, pool.max_usd_per_call)
-                            target = _Target(
-                                "credit", pool.id, model_id, effort, child,
-                                ["--bare", "--max-budget-usd", f"{budget:.2f}"],
-                                "ANTHROPIC_API_KEY", pool=pool, secret=secret,
-                                hold_usd=expected,
-                            )
-
-        if prepared.record is None:
-            raise RuntimeError("_prepare(record_later=True) left no recorder")
-        runs = target is not None and bool(target.model)
-        ran = target.account if runs and target.kind == "subscription" else None
-        warnings.extend(w for w in prepared.record(ran) if w not in warnings)
-        if target is None:
-            outcome = "no_candidate"
-            break
-        if not target.model:
-            warnings.append(f"{target.account}: no model resolved for this request")
-            outcome = "no_candidate"
-            break
-
-        run_id = f"{request_id}.{index}"
-        scrub = target.secret.scrub if target.secret is not None else (lambda text: text)
-        if target.kind == "credit":
-            credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "hold",
-                                     "run_id": run_id, "usd": target.hold_usd})
-        argv = build_argv(binary, model=target.model, effort=target.effort,
-                          system=request.system, json_schema=request.json_schema)
-        argv += target.argv_extra
-        t0 = time.monotonic()
-        with tempfile.TemporaryDirectory(prefix="quota-router-run-") as scratch:
-            try:
-                completed = deps.run(
-                    argv,
-                    input=request.prompt,
-                    capture_output=True,
-                    text=True,
-                    env=target.env,
-                    cwd=scratch,
-                    timeout=remaining_s,
-                )
-            except Exception as exc:  # noqa: BLE001 - classified below, never raised
-                elapsed = int((time.monotonic() - t0) * 1000)
-                is_timeout = type(exc).__name__ == "TimeoutExpired"
-                if is_timeout:
-                    # A credit timeout is booked as spent below; a subscription one
-                    # may or may not have reached the model.
-                    spent = True if target.kind == "credit" else None
+                    if note not in warnings:
+                        warnings.append(note)
                 else:
-                    spent = False if isinstance(exc, _NOT_STARTED) else None
-                attempt = Attempt(
-                    target.account, target.kind, target.model,
-                    "timeout" if is_timeout else "cli_error", elapsed, None,
-                    scrub(f"{type(exc).__name__}: {exc}")[:300],
-                    effort=target.effort,
-                    spent=spent,
-                )
-                attempts.append(attempt)
-                final = attempt
-                outcome = attempt.outcome
-                if target.kind == "credit":
-                    # A timed-out call may still have spent: book the hold as spent.
+                    pools = _pool_targets(request, config=config, env=env, now_s=now_s,
+                                          excluded=excluded, warnings=warnings)
+                    if pools:
+                        base = prepared.joint
+                        context = joint_mod.JointContext(
+                            stocks=list(base.stocks) + [
+                                joint_mod.credit_stock(
+                                    pool.id,
+                                    remaining_pse=bal.remaining_usd / usd_per_pse,
+                                    expires_s=bal.expires_s,
+                                    now_s=now_s,
+                                )
+                                for pool, bal, _ in pools
+                            ],
+                            streams=base.streams,
+                            now_s=now_s,
+                            horizon_s=base.horizon_s,
+                            step_s=base.step_s,
+                            job_pse=base.job_pse,
+                            stream=joint_mod.STREAM_RUN,
+                            fable_ids=base.fable_ids,
+                            tie_fraction=base.tie_fraction,
+                        )
+                        best_id, tied = choose_credit_or_subscription(
+                            context, sub_choice, [pool.id for pool, _, _ in pools]
+                        )
+                        chosen_pool = next(
+                            ((pool, bal, expected) for pool, bal, expected in pools
+                             if pool.id == best_id),
+                            None,
+                        )
+                        if chosen_pool is not None:
+                            pool, bal, expected = chosen_pool
+                            result = context.score(pool.id)
+                            decision_info["reason"] = (
+                                f"{pool.id} wins: {result.avoided:.4f} of {result.job_pse:.4f} PSE "
+                                f"projected fleet waste avoided (API credit, ${bal.remaining_usd:.2f} "
+                                f"left, expires {time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(bal.expires_s))})"
+                            )
+                            if tied is not None:
+                                decision_info["reason"] += (
+                                    f"; ties {tied} on waste, and a credit pool goes first "
+                                    f"because only `run` can spend it"
+                                )
+                            try:
+                                secret = read_secret(pool.keychain_service)
+                            except SecretError as exc:
+                                warnings.append(f"{pool.id}: {exc}")
+                                excluded.append(pool.id)
+                                secret = None
+                            if secret is not None:
+                                home = state_dir / "credit-homes" / pool.id
+                                home.mkdir(parents=True, exist_ok=True, mode=0o700)
+                                overlay = {"CLAUDE_CONFIG_DIR": str(home),
+                                           "ANTHROPIC_API_KEY": secret.reveal()}
+                                child = child_env(env, {}, "CLAUDE_CONFIG_DIR")
+                                child.update(overlay)
+                                model_id, effort = model_for(pool.linked_account)
+                                budget = min(bal.remaining_usd, pool.max_usd_per_call)
+                                target = _Target(
+                                    "credit", pool.id, model_id, effort, child,
+                                    ["--bare", "--max-budget-usd", f"{budget:.2f}"],
+                                    "ANTHROPIC_API_KEY", pool=pool, secret=secret,
+                                    hold_usd=expected,
+                                )
+
+            if prepared.record is None:
+                raise RuntimeError("_prepare(record_later=True) left no recorder")
+            runs = target is not None and bool(target.model)
+            ran = target.account if runs and target.kind == "subscription" else None
+            warnings.extend(w for w in prepared.record(ran) if w not in warnings)
+            if target is None:
+                outcome = "no_candidate"
+                break
+            if not target.model:
+                warnings.append(f"{target.account}: no model resolved for this request")
+                outcome = "no_candidate"
+                break
+
+            run_id = f"{request_id}.{index}"
+            scrub = target.secret.scrub if target.secret is not None else (lambda text: text)
+            if target.kind == "credit":
+                credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "hold",
+                                         "run_id": run_id, "usd": target.hold_usd})
+            argv = build_argv(binary, model=target.model, effort=target.effort,
+                              system=request.system, json_schema=request.json_schema)
+            argv += target.argv_extra
+            t0 = time.monotonic()
+            with tempfile.TemporaryDirectory(prefix="quota-router-run-") as scratch:
+                if target.secret is not None:
+                    scrubbers.append(target.secret.scrub)
+                running, running_t0, recorded_before = target, t0, len(attempts)
+                running_run_id = run_id
+                try:
+                    completed = deps.run(
+                        argv,
+                        input=request.prompt,
+                        capture_output=True,
+                        text=True,
+                        env=target.env,
+                        cwd=scratch,
+                        timeout=remaining_s,
+                    )
+                except Exception as exc:  # noqa: BLE001 - classified below, never raised
+                    elapsed = int((time.monotonic() - t0) * 1000)
+                    is_timeout = type(exc).__name__ == "TimeoutExpired"
+                    if is_timeout:
+                        # A credit timeout is booked as spent below; a subscription one
+                        # may or may not have reached the model.
+                        spent = True if target.kind == "credit" else None
+                    else:
+                        spent = False if isinstance(exc, _NOT_STARTED) else None
+                    attempt = Attempt(
+                        target.account, target.kind, target.model,
+                        "timeout" if is_timeout else "cli_error", elapsed, None,
+                        scrub(f"{type(exc).__name__}: {exc}")[:300],
+                        effort=target.effort,
+                        spent=spent,
+                    )
+                    attempts.append(attempt)
+                    final = attempt
+                    outcome = attempt.outcome
+                    if target.kind == "credit":
+                        # A timed-out call may still have spent: book the hold as spent.
+                        credits_mod.append(env, {
+                            "t": now_s, "pool": target.account,
+                            "type": "spend" if is_timeout else "release", "run_id": run_id,
+                            **({"usd": target.hold_usd, "estimated": True} if is_timeout else {}),
+                        })
+                    if is_timeout:
+                        break
+                    excluded.append(target.account)
+                    continue
+            elapsed = int((time.monotonic() - t0) * 1000)
+            outcome, detail, parsed = judge(
+                completed.returncode,
+                scrub(completed.stdout or ""),
+                scrub(completed.stderr or ""),
+                requested_model=target.model,
+                want_structured=request.json_schema is not None,
+                want_auth=target.want_auth,
+                now_s=now_s,
+            )
+            result = parsed.result or {}
+            cost = result.get("total_cost_usd")
+            cost_usd = (
+                float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+            )
+            attempt = Attempt(
+                account=target.account,
+                pool_kind=target.kind,
+                model=target.model,
+                outcome=outcome,
+                duration_ms=elapsed,
+                cost_usd=cost_usd,
+                detail=detail,
+                text=result.get("result") if isinstance(result.get("result"), str) else None,
+                structured=result.get("structured_output"),
+                usage=result.get("usage") or {},
+                models_seen=tuple(sorted((result.get("modelUsage") or {}).keys())),
+                auth=(parsed.init or {}).get("apiKeySource"),
+                effort=target.effort,
+                spent=_spent_from_result(result, cost_usd),
+            )
+            attempts.append(attempt)
+            final = attempt
+            if target.kind == "credit":
+                if cost_usd is not None and cost_usd > 0:
+                    credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "spend",
+                                             "run_id": run_id, "usd": cost_usd,
+                                             "model": target.model, "outcome": outcome})
+                else:
+                    credits_mod.append(env, {"t": now_s, "pool": target.account,
+                                             "type": "release", "run_id": run_id})
+                if outcome == "exhausted":
+                    credits_mod.append(env, {"t": now_s, "pool": target.account,
+                                             "type": "exhausted", "signal": detail[:200]})
+            if outcome == "ok" or outcome not in RETRYABLE:
+                break
+            excluded.append(target.account)
+    except Exception as exc:  # noqa: BLE001 - reported in the response, see above
+        if running is None:
+            raise
+        error = f"{type(exc).__name__}: {exc}"
+        for scrub_text in scrubbers:
+            error = scrub_text(error)
+        warnings.append(
+            f"router failed after the child ran; this response carries only what was "
+            f"recorded before the failure: {error[:300]}"
+        )
+        if len(attempts) == recorded_before:
+            spent: bool | None = None
+            if running.kind == "credit":
+                # As for a timeout: the call may have spent, so book the hold as spent.
+                try:
                     credits_mod.append(env, {
-                        "t": now_s, "pool": target.account,
-                        "type": "spend" if is_timeout else "release", "run_id": run_id,
-                        **({"usd": target.hold_usd, "estimated": True} if is_timeout else {}),
+                        "t": now_s, "pool": running.account, "type": "spend",
+                        "run_id": running_run_id, "usd": running.hold_usd, "estimated": True,
                     })
-                if is_timeout:
-                    break
-                excluded.append(target.account)
-                continue
-        elapsed = int((time.monotonic() - t0) * 1000)
-        outcome, detail, parsed = judge(
-            completed.returncode,
-            scrub(completed.stdout or ""),
-            scrub(completed.stderr or ""),
-            requested_model=target.model,
-            want_structured=request.json_schema is not None,
-            want_auth=target.want_auth,
-            now_s=now_s,
-        )
-        result = parsed.result or {}
-        cost = result.get("total_cost_usd")
-        cost_usd = (
-            float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
-        )
-        attempt = Attempt(
-            account=target.account,
-            pool_kind=target.kind,
-            model=target.model,
-            outcome=outcome,
-            duration_ms=elapsed,
-            cost_usd=cost_usd,
-            detail=detail,
-            text=result.get("result") if isinstance(result.get("result"), str) else None,
-            structured=result.get("structured_output"),
-            usage=result.get("usage") or {},
-            models_seen=tuple(sorted((result.get("modelUsage") or {}).keys())),
-            auth=(parsed.init or {}).get("apiKeySource"),
-            effort=target.effort,
-            spent=_spent_from_result(result, cost_usd),
-        )
-        attempts.append(attempt)
-        final = attempt
-        if target.kind == "credit":
-            if cost_usd is not None and cost_usd > 0:
-                credits_mod.append(env, {"t": now_s, "pool": target.account, "type": "spend",
-                                         "run_id": run_id, "usd": cost_usd,
-                                         "model": target.model, "outcome": outcome})
-            else:
-                credits_mod.append(env, {"t": now_s, "pool": target.account,
-                                         "type": "release", "run_id": run_id})
-            if outcome == "exhausted":
-                credits_mod.append(env, {"t": now_s, "pool": target.account,
-                                         "type": "exhausted", "signal": detail[:200]})
-        if outcome == "ok" or outcome not in RETRYABLE:
-            break
-        excluded.append(target.account)
+                    spent = True
+                except Exception as book_exc:  # noqa: BLE001 - said, never raised
+                    warnings.append(
+                        f"{running.account}: could not book the estimated spend: "
+                        f"{type(book_exc).__name__}"
+                    )
+            final = Attempt(
+                running.account, running.kind, running.model, "cli_error",
+                int((time.monotonic() - running_t0) * 1000), None,
+                f"router failed after the child ran: {error}"[:300],
+                effort=running.effort, spent=spent,
+            )
+            attempts.append(final)
+        outcome = final.outcome if final is not None else "cli_error"
 
     ok = final is not None and final.outcome == "ok"
     cost_usd = final.cost_usd if final is not None else None
