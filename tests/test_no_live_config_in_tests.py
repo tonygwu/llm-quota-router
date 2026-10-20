@@ -157,7 +157,13 @@ def test_a_search_of_the_real_machine_fails_the_test(pytester, monkeypatch, tmp_
 
         def test_a_search_kept_off_the_machine():
             load_config(env={{"HOME": NOWHERE, "XDG_CONFIG_HOME": NOWHERE}}, cwd=NOWHERE)
+
+        def test_a_search_of_pytest_temp_folder(tmp_path):
+            # The inner temp folder sits under the inner working directory, a real root,
+            # so this passes only while the fixture allows pytest's base temp.
+            load_config(env={{"HOME": str(tmp_path), "XDG_CONFIG_HOME": str(tmp_path)}},
+                        cwd=tmp_path)
         """
     )
     result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
-    result.assert_outcomes(passed=4, errors=3)
+    result.assert_outcomes(passed=5, errors=3)

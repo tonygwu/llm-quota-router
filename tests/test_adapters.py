@@ -134,6 +134,16 @@ def _no_real_network() -> Iterator[None]:
         yield
 
 
+def test_monkeypatch_undo_cannot_reopen_the_network(monkeypatch) -> None:
+    def fake(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    monkeypatch.undo()
+    with pytest.raises(NetworkAttempted):
+        urllib.request.urlopen("http://example.invalid")
+
+
 # ======================================================================================
 # Helpers
 # ======================================================================================
