@@ -1469,9 +1469,9 @@ repo-prod installation and actual poller records.
 **Background:** `_record_waste` turns a refused waiting-stretch append into
 `src/quota_router/cli.py:2594` "forgone recording stopped: {exc}",
 and `status` classifies everything that function returns as a history note:
-`src/quota_router/cli.py:2697` "history_notes = tuple(dict.fromkeys(notes))".
+`src/quota_router/cli.py:2703` "history_notes = tuple(dict.fromkeys(notes))".
 The default view prints only a count of history notes:
-`src/quota_router/cli.py:2762` "note(s) about past window transitions in retained".
+`src/quota_router/cli.py:2768` "note(s) about past window transitions in retained".
 The stop note has been a history note since the writer arrived in `e2cd00c`, among
 many reset-scan notes (#11 is about their number). Commit `e979c1a` adds one routine
 note to the same count when pruning shifts a waiting start. A stopped waiting-stretch
@@ -1498,9 +1498,9 @@ stale read and moves a stretch's end, which the writer refuses as an overlap; th
 changes.
 
 **Touch points:** `src/quota_router/cli.py:2594` "forgone recording stopped";
-`src/quota_router/cli.py:2697` "history_notes = tuple(dict.fromkeys(notes))";
-`src/quota_router/cli.py:2762` "note(s) about past window transitions in retained";
-`src/quota_router/cli.py:3183` "warnings.extend(_record_waste(config, env))";
+`src/quota_router/cli.py:2703` "history_notes = tuple(dict.fromkeys(notes))";
+`src/quota_router/cli.py:2768` "note(s) about past window transitions in retained";
+`src/quota_router/cli.py:3189` "warnings.extend(_record_waste(config, env))";
 `tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):".
 
 ---
@@ -1509,19 +1509,19 @@ changes.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3457` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3463` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3390` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4053` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4602` "def _cmd_credits("),
+(`src/quota_router/cli.py:3396` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4059` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4608` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3397` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4355` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:3992` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3807` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3403` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4361` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:3998` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3813` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3713` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3719` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1538,9 +1538,16 @@ passed the shared `--dry-run`. Test: for each writer, `<command> --dry-run` exit
 with argparse's usage error or leaves a scratch state folder unchanged; it must fail
 on today's code.
 
-**Touch points:** `src/quota_router/cli.py:3457` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3713` "# --dry-run was accepted, ignored, and a real call ran.";
-`tests/test_credits.py:456` "def test_waste_backfill_refuses_dry_run(env) -> None:".
+Two smaller gaps in `status --dry-run` itself, left by #35's fix: it shows the ledger's
+existing unexplained encodings but not the encodings a recording run would add for a
+changed config or code default, and the "calibration reconstruction is absent" text now
+exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split the
+pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
+and keep that text in one constant.
+
+**Touch points:** `src/quota_router/cli.py:3463` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3719` "# --dry-run was accepted, ignored, and a real call ran.";
+`tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
 
