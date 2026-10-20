@@ -2,7 +2,9 @@
 """Report retained waiting stretches without writing live state.
 
 All inputs are explicit private copies. Optional output is restricted to a fresh
-scratch state directory under temporary storage. Live adoption belongs to #26.
+scratch state directory under temporary storage. Live adoption belongs to #32 and
+validates against the calibration ledger already adopted under #26;
+--beliefs-as-of reproduces the report before a later belief append.
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import tempfile
 from quota_router import calibrations, forgone
 
 
-def reconstruct(history_home, ledger, ping_events=()):
+def reconstruct(history_home, ledger, ping_events=(), beliefs_as_of=None):
     records=[]
     inputs=[]
     paths=sorted(history_home.glob('history*.jsonl'))
@@ -38,13 +40,13 @@ def reconstruct(history_home, ledger, ping_events=()):
             item['succeeded']+=1
         inputs.append(item)
     rows=forgone.detect(records)
-    summary=forgone.summarize(rows,ledger=ledger,ping_events=ping_events)
+    summary=forgone.summarize(rows,ledger=ledger,beliefs_as_of=beliefs_as_of,ping_events=ping_events)
     return dict(inputs=inputs,progress={key:sum(i[key] for i in inputs) for key in ('attempted','succeeded','failed')},
         failed_by_kind={},history_first_record_s=min(r['t'] for r in records),
         history_last_record_s=max(r['t'] for r in records),
-        finished_records=[r for r in rows if r['status']!='accruing'],report=summary,
-        operator_gates=['Approve backup and live raw-stretch adoption together with the #26 calibration ledger',
-                        'Choose the historical Gemini belief separately; unresolved segments stay excluded'])
+        finished_records=[r for r in rows if r['status']!='accruing'],report=summary,beliefs_as_of=beliefs_as_of,
+        operator_gates=['Approve the backup and live raw-stretch adoption under #32; the calibration ledger adopted under #26 is not rewritten',
+                        'Validate the adopted beliefs: a cutoff before their append keeps both historical Gemini candidates unresolved and excluded'])
 
 
 def main():
@@ -52,6 +54,7 @@ def main():
     parser.add_argument('--history-home',type=Path,required=True)
     parser.add_argument('--ledger-file',type=Path,required=True)
     parser.add_argument('--ping-journal',type=Path)
+    parser.add_argument('--beliefs-as-of',help='UTC instant; report only ledger records recorded before it')
     parser.add_argument('--output-state-home',type=Path)
     args=parser.parse_args()
     # The existing strict ledger loader validates references and every raw record.
@@ -60,7 +63,7 @@ def main():
     if args.ping_journal is not None:
         from quota_router.window_ping import _journal
         events=_journal(args.ping_journal)
-    result=reconstruct(args.history_home,ledger,events)
+    result=reconstruct(args.history_home,ledger,events,args.beliefs_as_of)
     if args.output_state_home is not None:
         from importlib.util import spec_from_file_location,module_from_spec
         spec=spec_from_file_location('reconstruction',Path(__file__).with_name('reconstruct-calibrations.py'))

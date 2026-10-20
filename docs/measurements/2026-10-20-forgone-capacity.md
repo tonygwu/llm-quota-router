@@ -129,6 +129,37 @@ Stretches before retained history cannot be recovered. Preservation of the priva
 copy prevents the September stretches in this proposal from aging out while the
 operator reviews adoption. It does not recover earlier losses.
 
+## Validation before adoption under #32
+
+On October 20 at 06:44 UTC, the reconstruction was repeated from the preserved
+history with a hash-checked copy of the complete live ledger: 140 records, with 16
+measurements, 109 encodings and 15 beliefs. It attempted 30,648 history records,
+succeeded on 30,648 and failed on zero. The 19 closed raw records are byte-identical
+to the original proposal's. Two stretches have bounded ends, with 1.1 and 16.1
+unobserved minutes that stay excluded. Forty-nine gaps, 34.6 hours in all, are
+bracketed by waiting reads and counted. No stretch is open, unresolved or
+unrecomputable, and the per-pool figures match the table above.
+
+The tool's `--beliefs-as-of` option reproduces the earlier reports. A cutoff at the
+second Claude/GPT pool belief's append time gives 5.180564 PSE, with that pool at
+1.003882. A cutoff at the Gemini belief append time gives 1.825242 PSE. Both Gemini
+rows are then unresolved, with candidates 1.666469 or 6.249260 and 1.688853 or
+6.333198. Every row's figure equals the original proposal's. Only provenance labels
+differ, because the adopted ledger cites backup-derived encoding records.
+
+The live history still held the same 120 rotated files byte for byte, and the saved
+active file is a prefix of its rotated successor. Detection over a copy of live
+history through 06:45 UTC reproduces the same 19 records exactly. It also finds two
+open stretches that began after the saved history ends; the installed writer, not
+this adoption, records those.
+
+A replay of the writer over that copy at each daily 30-day pruning cutoff found a
+defect. Cutoffs from October 2 to 7 and from October 14 to 16 re-detect an adopted
+identity with later waiting starts for a window that was already waiting, and the
+writer then refuses every append. The first of these cutoffs arrives on November 1
+UTC. The report reader is unaffected. The writer's own first run would append the
+same 19 records, so the defect does not depend on this adoption. #33 carries the fix.
+
 ## Reproduction and adoption
 
 The tool reads explicit inputs and emits the raw closed records and complete

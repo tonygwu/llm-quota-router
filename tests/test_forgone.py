@@ -1,5 +1,7 @@
 """Waiting capacity uses temporal evidence, never the ping eligibility heuristic."""
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 
@@ -176,6 +178,33 @@ def test_belief_change_splits_stretch_and_as_of_reproduces_old_rate():
     old=forgone.summarize(rows,ledger=ledger,beliefs_as_of='2026-10-20T00:00:00Z')
     assert new['totals']['forgone_pse']==pytest.approx(500*8/WEEK+500*16/WEEK)
     assert old['totals']['forgone_pse']==pytest.approx(1000*8/WEEK)
+
+
+def test_reconstruction_tool_reproduces_report_before_a_later_belief(tmp_path,monkeypatch,capsys):
+    history=tmp_path/'history'
+    history.mkdir()
+    (history/'history.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in
+        [reading(1000),reading(1400),reading(2000),reading(2200,used=.01,start=2100)]))
+    ledger=tmp_path/'calibrations.jsonl'
+    ledger.write_text(''.join(json.dumps(r)+'\n' for r in
+        [belief(),dict(belief(identifier='b2',k=8,start='1970-01-01T00:25:00Z'),recorded_at='2026-10-20T00:00:00Z')]))
+    spec=importlib.util.spec_from_file_location('forgone_reconstruction',
+        Path(__file__).resolve().parents[1]/'ops/reconstruct-forgone.py')
+    tool=importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    def run(*extra):
+        monkeypatch.setattr('sys.argv',['reconstruct-forgone.py','--history-home',str(history),
+                                        '--ledger-file',str(ledger),*extra])
+        tool.main()
+        return json.loads(capsys.readouterr().out)
+    current=run()
+    old=run('--beliefs-as-of','2026-10-20T00:00:00Z')
+    assert current['report']['totals']['forgone_pse']==pytest.approx(500*8/WEEK+600*16/WEEK)
+    assert old['report']['totals']['forgone_pse']==pytest.approx(1100*8/WEEK)
+    assert (current['beliefs_as_of'],old['beliefs_as_of'])==(None,'2026-10-20T00:00:00Z')
+    assert old['finished_records']==current['finished_records'] and len(old['finished_records'])==1
+    assert any('#32' in gate for gate in old['operator_gates'])
+    assert not any('together with the #26' in gate for gate in old['operator_gates'])
 
 
 def test_missing_conversion_is_exposed_and_never_guessed():
