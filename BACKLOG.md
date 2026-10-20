@@ -1543,7 +1543,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 ---
 
-### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #8]`
+### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** #22 shipped default-dry-run pings. The operator's model and evidence
 changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
@@ -1559,6 +1559,14 @@ The next ordinary poller reading showed nonzero five-hour usage in all four
 Antigravity pools, with resets within four seconds of each probe start plus five
 hours. This did not exercise the production journal or the ambiguous fixed stretch
 after a scheduled reset. No installation or recurring activation was performed.
+
+The activation review's two code blockers are fixed. Codex pings prepend the CLI's
+directory to PATH so its Node shim works under launchd. Claude five-hour verification
+accepts reset offsets from -840 through +240 seconds around ping start plus five
+hours, allowing ten-minute start flooring. A zero-use reading remains inconclusive
+until 840 seconds after completion; other windows retain 240 seconds. Regression
+tests cover launchd-shaped PATH execution, both reset-band endpoints and outside
+values, unchanged provider/window limits, and journal persistence.
 
 **Impact:** the approved pings are still off. The code no longer retries successful
 selection-only calls as model-unverified failures, and GPT-OSS retirement no longer
