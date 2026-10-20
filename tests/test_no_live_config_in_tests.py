@@ -97,6 +97,20 @@ def test_the_run_time_guard_sees_a_search_of_the_real_machine(env, cwd) -> None:
     assert real_paths_searched(config_search_paths(env, cwd))
 
 
+def test_the_run_time_guard_is_installed_for_this_test(monkeypatch) -> None:
+    """Without this, dropping ``autouse`` or the patch would leave the suite green."""
+    from quota_router import config as config_mod
+
+    assert config_mod.config_search_paths.__name__ == "guarded"
+    monkeypatch.undo()
+    assert config_mod.config_search_paths.__name__ == "guarded"
+
+
+def test_the_run_time_guard_allows_pytest_temp_folders(tmp_path) -> None:
+    layers = [(tmp_path / "config.toml", False)]
+    assert real_paths_searched(layers, allowed=(tmp_path.resolve(),)) == []
+
+
 def test_the_run_time_guard_passes_a_search_kept_off_the_machine(tmp_path) -> None:
     rooted = {"HOME": str(tmp_path), "XDG_CONFIG_HOME": test_cli._NO_CONFIG_FILES}
     assert real_paths_searched(config_search_paths(rooted, test_cli._NO_CONFIG_FILES)) == []
