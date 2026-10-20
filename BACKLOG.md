@@ -1264,7 +1264,7 @@ of the operator config.
 
 ---
 
-### 23. Nobody has checked that Antigravity now serves real work  `[difficulty: medium]`  `[filed: 2026-10-19]`  `[BLOCKED: results of the controlled digital-twin workload run]`
+### 23. Nobody has checked that Antigravity now serves real work  `[difficulty: medium]`  `[filed: 2026-10-19]`  `[BLOCKED: #20, or a digital-twin consumer change the operator approves]`
 
 **Background:** until 2026-10-19, `pick` credited a provider whose accounts are all
 `unmetered = "fallback"` with the metered providers' demand, capped at 0.2 PSE/h. That
@@ -1298,6 +1298,26 @@ quotapick by capability only ("standard", "premium" or "frontier"), for example 
 contact-enrichment or thread-intelligence agent, runs it, and reports which account and
 model each call landed on, with the served model from the call's own telemetry. The
 week-long measurement below stays as the follow-up.
+
+**Result 2026-10-20 (code inspection; the run itself was stopped by the operator):** no
+real digital-twin work can reach Antigravity today, whatever `pick` ranks first.
+- `quotapick pick --capability standard --effort medium --dry-run --json` at
+  2026-10-20T05:11:28Z chose `antigravity_gemini_b` on Gemini 3.8 Flash (Medium), "9.615
+  PSE at risk of expiring".
+- The source-extraction workload calls `quotapick run` when run mode is on and no
+  provider or model is set (digital-twin `lib/llm-cli.ts:1300` at `a982cb88b`), and
+  `run` routes only Claude accounts and credit pools (`src/quota_router/run.py:443-446`,
+  #20).
+- Contact enrichment sets `preferredProvider: 'claude'` (digital-twin
+  `lib/agent-capabilities.ts:311`), applied after ranking (`lib/llm-cli.ts:2394`).
+- Both production agents ask for "premium" by default, which stays on Claude.
+
+The digital-twin agent stopped before any model call: attempted 0, succeeded 0, failed
+0. Its capture scripts failed review twice, and the operator chose to stop with these
+findings. What would let real work reach Antigravity, each an operator decision: #20
+(`run` reaches Antigravity); dropping or relaxing enrichment's Claude preference; or
+having suitable agents ask for "standard". The last two move work to Gemini Flash, so
+check output quality per agent first.
 
 **Fix:** after one week of routing on the installed change, measure from the consumer
 side:
