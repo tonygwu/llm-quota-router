@@ -1457,7 +1457,7 @@ scheduled writer while preserving current and historical interpretations.
 
 **Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal";
 `ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
-`AGENTS.md:167` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
+`AGENTS.md:168` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
 `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
 operator-private retained history, ledger, waiting records and adoption evidence;
 repo-prod installation and actual poller records.
@@ -1467,11 +1467,11 @@ repo-prod installation and actual poller records.
 ### 34. A stopped waiting-stretch writer looks like a harmless history note in status  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `_record_waste` turns a refused waiting-stretch append into
-`src/quota_router/cli.py:2592` "forgone recording stopped: {exc}",
+`src/quota_router/cli.py:2594` "forgone recording stopped: {exc}",
 and `status` classifies everything that function returns as a history note:
-`src/quota_router/cli.py:2679` "history_notes = tuple(dict.fromkeys(notes))".
+`src/quota_router/cli.py:2691` "history_notes = tuple(dict.fromkeys(notes))".
 The default view prints only a count of history notes:
-`src/quota_router/cli.py:2742` "note(s) about past window transitions in retained".
+`src/quota_router/cli.py:2755` "note(s) about past window transitions in retained".
 The stop note has been a history note since the writer arrived in `e2cd00c`, among
 many reset-scan notes (#11 is about their number). Commit `e979c1a` adds one routine
 note to the same count when pruning shifts a waiting start. A stopped waiting-stretch
@@ -1497,53 +1497,44 @@ stale read and moves a stretch's end, which the writer refuses as an overlap; th
 *Why medium:* a display classification change with one focused test; no stored data
 changes.
 
-**Touch points:** `src/quota_router/cli.py:2592` "forgone recording stopped";
-`src/quota_router/cli.py:2679` "history_notes = tuple(dict.fromkeys(notes))";
-`src/quota_router/cli.py:2742` "note(s) about past window transitions in retained";
-`src/quota_router/cli.py:3157` "warnings.extend(_record_waste(config, env))";
+**Touch points:** `src/quota_router/cli.py:2594` "forgone recording stopped";
+`src/quota_router/cli.py:2691` "history_notes = tuple(dict.fromkeys(notes))";
+`src/quota_router/cli.py:2755` "note(s) about past window transitions in retained";
+`src/quota_router/cli.py:3176` "warnings.extend(_record_waste(config, env))";
 `tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):".
 
 ---
 
-### 35. `status --dry-run` writes the same live state as `status`, though the flag promises no writes  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
+### 36. Most commands accept the shared `--dry-run` and ignore it, including commands that write  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** the shared flag's help says `src/quota_router/cli.py:3429` "decide, but write no state and spawn nothing".
-`_cmd_status` never reads the flag. It appends encodings through
-`src/quota_router/cli.py:2654` "calibration_notes = calibrations_mod.detect_config_changes(",
-reset rows and waiting records through
-`src/quota_router/cli.py:2672` "notes = _record_waste(prepared.config, env) if ledger_valid else []",
-a forecast through `src/quota_router/cli.py:2673` "forecast_notes = _refresh_forecast(prepared.config, env, now_s)",
-and credit-pool expiries through
-`src/quota_router/cli.py:4488` "``record_expiries`` (``status`` only, the poller's command) writes one ``expired``".
-Every command that prepares a decision also appends one history record:
-`src/quota_router/cli.py:2092` "# Exactly one history record per invocation, written after the decision so the".
-That history record is deliberate for the launcher, which runs the in-process
-equivalent of `pick --dry-run` on every `cl` launch. On 2026-10-20, `XDG_STATE_HOME=<empty scratch> ./.venv/bin/quotapick status --dry-run`
-exited 0 and created `history.jsonl`, `waste.jsonl`, `forgone.jsonl`,
-`forecast.json`, `credits.jsonl`, eight usage cache files and a lock file there.
-Encoding detection was skipped only because the scratch folder had no reconstructed
-ledger.
+**Background:** every subcommand built with the shared parser accepts `--dry-run`.
+Only `pick`, `exec`, `status` and `waste --backfill` read it, and the help now says
+so: `src/quota_router/cli.py:3450` "refuses it; other commands ignore it. Provider reads still refresh usage caches".
+Commands that write accept the flag and write anyway: `calibrations --append`
+(`src/quota_router/cli.py:3383` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4045` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4591` "def _cmd_credits("),
+and `doctor`, which appends a history record through the shared prepare step.
+`run` already dropped the shared flag for this reason:
+`src/quota_router/cli.py:3705` "# --dry-run was accepted, ignored, and a real call ran.".
 
-**Impact:** a person or agent who adds `--dry-run` to keep a checkout's `status` off
-live state still writes the live reset log, waiting records, credit expiries,
-forecast and, with the operator's reconstructed ledger present, new encodings. The ledger and the waiting
-records only grow, so records from unfinished code stay. AGENTS.md now says to set
-`XDG_STATE_HOME` instead, but the flag's own help still says the opposite.
+**Impact:** `calibrations --append --dry-run` appends to the operator-approved
+ledger, `credits set --dry-run` records a balance, and `capabilities --refresh
+--dry-run` rewrites the table that `pick --capability` reads. Each says nothing,
+because argparse accepts the flag. The help text now warns, but a flag that is
+accepted and ignored is the trap #35 fixed for `status`.
 
-**Fix:** make `status --dry-run` skip the encoding append, `_record_waste`,
-`_refresh_forecast`, the credit expiry append and the history append, or reject
-`--dry-run` on `status` with a message that names `XDG_STATE_HOME`. Correct the help
-text to say what a dry run of `pick` still writes: one history record, and the usage
-cache files that every provider read rewrites. Add a test in `tests/test_cli.py` that
-runs `status --dry-run` with fake providers and a credit pool whose period has ended,
-against a scratch state folder, and asserts the folder is unchanged or the command
-refuses. It must fail on today's code.
+**Fix:** give `--dry-run` only to the commands that honour it (`pick`, `exec`,
+`explain`, `status`, and `waste`, which refuses it with `--backfill`), as `run`
+already does, so argparse rejects it elsewhere. Alternatively, make each writer
+honour it. Before removing it, check callers: on 2026-10-20 nothing under `ops/`
+passed the shared `--dry-run`. Test: for each writer, `<command> --dry-run` exits
+with argparse's usage error or leaves a scratch state folder unchanged; it must fail
+on today's code.
 
-**Touch points:** `src/quota_router/cli.py:3429` "decide, but write no state and spawn nothing";
-`src/quota_router/cli.py:2672` "notes = _record_waste(prepared.config, env) if ledger_valid else []";
-`src/quota_router/cli.py:4488` "``record_expiries`` (``status`` only, the poller's command) writes one ``expired``";
-`tests/test_cli.py:1031` "def test_status_reports_every_window(env):";
-`AGENTS.md:63` "- `--dry-run` does not stop these writes.".
+**Touch points:** `src/quota_router/cli.py:3450` "refuses it; other commands ignore it. Provider reads still refresh usage caches";
+`src/quota_router/cli.py:3705` "# --dry-run was accepted, ignored, and a real call ran.";
+`tests/test_credits.py:439` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
 
@@ -1580,7 +1571,7 @@ re-appending an old occurrence; do not rewrite the raw log or invent its old sou
 
 **Background:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks."
 uses published reset times as deadlines. The state-free recipe in
-`docs/window-pings.md:249` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
+`docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
 reproduces 3.000 PSE at risk with both account-wide windows waiting, capacity 2.43,
 weekly/session ratio 4 and demand 0.04 PSE/h. Before the waiting-capacity change,
 its two waiting readings 310000 seconds apart also fabricated an early forfeit of
@@ -1626,10 +1617,10 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 
 **Touch points:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks.";
 `src/quota_router/waste.py:841` "Find every window reset the history can attest to.";
-`src/quota_router/window_ping.py:27` "def waiting_reason(window, previous):";
+`src/quota_router/window_ping.py:28` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
 `tests/test_waste.py:579` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
-`docs/window-pings.md:249` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
+`docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
 
@@ -1639,7 +1630,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
 calls without a served-model stamp record selection-only evidence and count toward
 the full success cooldown. Wrong stamps, wrong arithmetic answers, missing tokens
-and account mismatches remain failures. `docs/window-pings.md:104` "Model-name probes, 2026-10-20"
+and account mismatches remain failures. `docs/window-pings.md:112` "Model-name probes, 2026-10-20"
 records nine one-shot probes with nine successes, zero failures and no retries;
 `claude_b` was skipped for exhausted quota. Three Claude responses carry matching
 served stamps; two Codex and four Antigravity responses carry selection evidence
@@ -1711,10 +1702,10 @@ that an installed recurring job ran or that the model's self-description is corr
 launch paths, durable journal state and consequential recurring quota spend.
 
 **Touch points:** `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
-`src/quota_router/ping_cli.py:81` "def parse_response(account, completed):";
-`src/quota_router/window_ping.py:132` "def _verification(records, events, now_s):";
+`src/quota_router/ping_cli.py:87` "def parse_response(account, completed):";
+`src/quota_router/window_ping.py:133` "def _verification(records, events, now_s):";
 `tests/test_window_ping.py:121` "def test_failed_verification_blocks_only_one_window_and_survives_restart(tmp_path):";
-`docs/window-pings.md:198` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
+`docs/window-pings.md:211` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
 private native-response and poller evidence.
 
 ---
