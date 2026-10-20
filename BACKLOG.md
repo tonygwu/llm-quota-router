@@ -1391,7 +1391,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ### 32. Waiting-capacity history has not been adopted into live state  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
-**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:223` "Before any live write, the operator must approve this raw-stretch proposal"
+**Background:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal"
 gates adoption of closed waiting stretches. Deleted #30 implemented the append-only
 `forgone.jsonl` writer and retained-history reconstruction, then assigned its live
 adoption to #26 while that calibration deployment was already running. The approved
@@ -1455,9 +1455,9 @@ history must raise nothing and change no durable record.
 *Why high not medium:* this adopts persistent historical data and changes a
 scheduled writer while preserving current and historical interpretations.
 
-**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:223` "Before any live write, the operator must approve this raw-stretch proposal";
+**Touch points:** `docs/measurements/2026-10-20-forgone-capacity.md:236` "Before any live write, the operator must approve this raw-stretch proposal";
 `ops/reconstruct-forgone.py:5` "scratch state directory under temporary storage. Live adoption belongs to #32 and";
-`AGENTS.md:156` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
+`AGENTS.md:166` "PYTHONPATH=src ./.venv/bin/python ops/reconstruct-forgone.py --help";
 `docs/window-pings.md:99` "Keep recurring pings dry-run until the coordinating session activates them under #29.";
 operator-private retained history, ledger, waiting records and adoption evidence;
 repo-prod installation and actual poller records.
@@ -1502,6 +1502,42 @@ changes.
 `src/quota_router/cli.py:2742` "note(s) about past window transitions in retained";
 `src/quota_router/cli.py:3157` "warnings.extend(_record_waste(config, env))";
 `tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):".
+
+---
+
+### 35. `status --dry-run` writes the same live state as `status`, though the flag promises no writes  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+
+**Background:** the shared flag's help says `src/quota_router/cli.py:3429` "decide, but write no state and spawn nothing".
+`_cmd_status` never reads the flag. It appends encodings through
+`src/quota_router/cli.py:2654` "calibration_notes = calibrations_mod.detect_config_changes(",
+reset rows and waiting records through
+`src/quota_router/cli.py:2672` "notes = _record_waste(prepared.config, env) if ledger_valid else []",
+and a forecast through `src/quota_router/cli.py:2673` "forecast_notes = _refresh_forecast(prepared.config, env, now_s)".
+Every command that prepares a decision also appends one history record:
+`src/quota_router/cli.py:2092` "# Exactly one history record per invocation, written after the decision so the".
+That history record is deliberate for `pick --dry-run`, which the launcher runs on
+every shell start. On 2026-10-20, `XDG_STATE_HOME=<empty scratch> ./.venv/bin/quotapick status --dry-run`
+exited 0 and created `history.jsonl`, `waste.jsonl`, `forgone.jsonl`,
+`forecast.json`, `credits.jsonl`, eight usage cache files and a lock file there.
+Encoding detection was skipped only because the scratch folder had no reconstructed
+ledger.
+
+**Impact:** a person or agent who adds `--dry-run` to keep a checkout's `status` off
+live state still writes the live reset log, waiting records, forecast and, with the
+operator's reconstructed ledger present, new encodings. The ledger and the waiting
+records only grow, so records from unfinished code stay. AGENTS.md now says to set
+`XDG_STATE_HOME` instead, but the flag's own help still says the opposite.
+
+**Fix:** make `status --dry-run` skip the encoding append, `_record_waste`,
+`_refresh_forecast` and the history append, or reject `--dry-run` on `status` with a
+message that names `XDG_STATE_HOME`. Correct the help text to say what a dry run of
+`pick` still writes: one history record. Add a test that runs `status --dry-run` with
+fake providers against a scratch state folder and asserts the folder is unchanged,
+or that the command refuses. It must fail on today's code.
+
+**Touch points:** `src/quota_router/cli.py:3429` "decide, but write no state and spawn nothing";
+`src/quota_router/cli.py:2672` "notes = _record_waste(prepared.config, env) if ledger_valid else []";
+`AGENTS.md:62` "- `--dry-run` does not stop these writes.".
 
 ---
 
