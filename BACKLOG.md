@@ -132,7 +132,7 @@ covers one full weekly cycle.
 
 ---
 
-### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`  `[claimed by: #0]`
+### 2. Small, but each one costs trust  `[difficulty: high]`  `[filed: 2026-08-16]`
 
 Workable bullets come first. The last one waits on an operator decision and is marked
 so; do not start it. One bullet was closed by the operator on 2026-10-18:
@@ -189,17 +189,24 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
   why the poller's log is that short.
 
-- **The `home=` injection seam is only half honoured.** `claude_configs_from_policy`
-  expands a config-supplied `config_dir` with `os.path.expanduser`, which reads the
-  *process* `HOME`, so an injected `home=` is ignored for exactly the accounts that
-  come from configuration. Only `_default_config_dir` respects it. This is why four
-  tests passed for three weeks by reading the author's real `~/.claude*` directories,
-  and CI caught it the first time it ran on a machine with none. The tests are now
-  hermetic; the seam itself is not fixed. Closing it means expanding `~` against the
-  injected base everywhere, and it is a behaviour change in a published library, so
-  it wants a deliberate decision rather than a drive-by.
-  **Operator decision 2026-10-18:** fix it. Expand `~` against the injected base
-  everywhere, with a test that injects a `home=` and reads a config-supplied `config_dir`.
+- **Three paths still ignore an injected `home=`, and one docstring overstates the rule.**
+  Since 2026-10-20 a leading `~` in a configured or environment data path expands against
+  an injected `home=` (`expand_user` in `providers/base.py`). Three places sit outside that:
+  `build_default_adapters` hands the user home to Cursor,
+  `src/quota_router/providers/__init__.py:320` "CursorAdapter(env=env, home=home, account_ids=cursor_accounts)",
+  whose `home` means the Cursor directory itself,
+  `src/quota_router/providers/cursor.py:96` "home: Cursor home directory, overriding",
+  so under an injected home it reads `<home>/cli-config.json` and ignores
+  `QUOTA_ROUTER_CURSOR_HOME`. `forensics._state_root` lets `XDG_STATE_HOME` win over an
+  injected home and never expands `~` in it,
+  `src/quota_router/forensics.py:134` "base = Path(xdg) if xdg else",
+  the reverse of both provider caches. Binary-path overrides (`QUOTA_ROUTER_CODEX_BIN`,
+  `CL_CLAUDE_BIN`) stay on the process `HOME` on purpose, but the `load_snapshots`
+  docstring says every configured or environment path follows `home`,
+  `src/quota_router/providers/__init__.py:470` "a leading ``~`` expands against in configured or environment paths".
+  None of these reads the real home under an injected one; production never injects
+  `home`. Fix: pass Cursor `<home>/.cursor` (or let it take a user home), decide the XDG
+  precedence in `_state_root` to match the caches, and narrow the docstring to data paths.
 
 - **agy's Gemini 4 Argon is classified as neither flash nor pro.** On 2026-10-18 both
   Gemini pools list `Gemini 4 Argon (Low)`, `(Medium)` and `(High)` beside Gemini 3.8
@@ -1244,6 +1251,36 @@ any checkout today.
 
 ---
 
+### 39. Ten tests still read or spawn under the process `HOME` without injecting one  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
+
+**Background:** #18 covers the `load_config(env={})` calls that read the live config. A
+traced suite run on 2026-10-20 (scratch `HOME`, every vendor binary blocked) found three
+more kinds of leak that #18 does not name. Four tests read `~/.claude*.json` and
+`~/.claude*/.claude.json`: `tests/test_cli.py:1966` "def test_the_cli_hands_cursor_its_configured_accounts",
+`tests/test_cli.py:2008` "def test_antigravity_pools_come_from_the_operator_config",
+`tests/test_cli.py:2039` "def test_a_second_antigravity_account_reaches_the_adapter" and
+`tests/test_adapters.py:448` "def test_every_adapter_satisfies_the_protocol".
+Three read the statusline caches under `~/Library/Caches/twin-networking`:
+`tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it",
+`tests/test_antigravity_usage.py:653` "def test_pick_never_spawns_agy_and_status_does" and
+`tests/test_adapters.py:1785` "def test_an_operator_declared_fifth_account_reaches_the_live_adapter".
+Three start the real `codex app-server` binary, now only against empty temp homes:
+that last test, `tests/test_cli.py:2121` "def test_an_opt_in_adapter_is_built_when_the_operator_declares_it"
+and `tests/test_adapters.py:1739` "def test_load_snapshots_is_the_one_call_the_cli_needs".
+
+**Impact:** each passes today because what it asserts does not depend on what the real
+files hold. A statusline cache or a Claude config that changes the asserted field turns
+the gate red on this machine only, as #18 describes for the config. Spawning `codex`
+costs a process per run and makes the result depend on the installed binary.
+
+**Fix:** point `HOME` (or the adapter's `home=`) at the test's temp dir in each, set
+`QUOTA_ROUTER_USAGE_OFFLINE` or inject a runner where a test does not need a
+live Codex read, and extend #18's guard to fail on a test that reaches the process `HOME`.
+
+**Touch points:** the eight tests above; the guard test #18 adds.
+
+---
+
 ### 21. The Gemini meter charges provisional 1% jumps and settles later, and nobody knows its rules  `[difficulty: high]`  `[filed: 2026-10-19]`
 
 **Background:** the 2026-10-18 measurement (`docs/measurements/2026-10-18-gemini-size.md`)
@@ -1524,19 +1561,19 @@ no stored data changes.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3470` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3499` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3403` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4066` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4615` "def _cmd_credits("),
+(`src/quota_router/cli.py:3432` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4095` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4644` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3410` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4368` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:4005` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3820` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3439` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4397` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:4034` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3849` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3726` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3755` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1560,8 +1597,8 @@ exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split 
 pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
 and keep that text in one constant.
 
-**Touch points:** `src/quota_router/cli.py:3470` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3726` "# --dry-run was accepted, ignored, and a real call ran.";
+**Touch points:** `src/quota_router/cli.py:3499` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3755` "# --dry-run was accepted, ignored, and a real call ran.";
 `tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
@@ -1569,10 +1606,10 @@ and keep that text in one constant.
 ### 37. A status run that cannot read an account's tier writes tier encodings that blind the waiting report  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `status` passes every snapshot that has windows as an observed tier:
-`src/quota_router/cli.py:2685` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
+`src/quota_router/cli.py:2710` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
 A Claude snapshot takes its tier from the local Claude config, so it is unknown when
 that config cannot be read:
-`src/quota_router/providers/claude_statusline.py:233` "tier = config.tier if config is not None else TIER_UNKNOWN".
+`src/quota_router/providers/claude_statusline.py:234` "tier = config.tier if config is not None else TIER_UNKNOWN".
 The encoding detector prefers the observed tier and otherwise uses the configured one:
 `src/quota_router/calibrations.py:466` "tier = observed_tiers[account] if observed else cfg.tier",
 and appends an `unexplained` encoding for any change in value or source:
@@ -1630,7 +1667,7 @@ change seen only through a cache snapshot must still be recorded.
 
 *Why high not medium:* it changes what the calibration ledger records as evidence.
 
-**Touch points:** `src/quota_router/cli.py:2685` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
+**Touch points:** `src/quota_router/cli.py:2710` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
 `src/quota_router/calibrations.py:485` "for item in loaded_values(config, observed_tiers=observed_tiers):";
 `src/quota_router/waste.py:625` "else capacity_for_tier(tier)";
 `tests/test_calibrations.py:207` "def test_observed_tier_tracks_actual_writer_and_missing_observation_does_not_revert".
