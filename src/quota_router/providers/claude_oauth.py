@@ -68,6 +68,7 @@ from .base import (
     WINDOW_KEY_7D,
     ProviderAdapter,
     Runner,
+    expand_user,
     make_window,
     parse_timestamp,
     pct_to_fraction,
@@ -183,7 +184,7 @@ def keychain_service_for(config_dir: Path | str, *, home: Path | str | None = No
     and reported A's usage as D's. A slot with no entry is not logged in, and
     saying so is the only correct answer.
     """
-    resolved = Path(os.path.expanduser(str(config_dir)))
+    resolved = expand_user(config_dir, home)
     digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:8]
     suffixed = f"{KEYCHAIN_SERVICE_BASE}-{digest}"
     base = Path(home) if home is not None else Path(os.path.expanduser("~"))

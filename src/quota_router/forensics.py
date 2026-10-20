@@ -66,7 +66,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Final, Mapping, Sequence
 
-from .providers.base import Runner, run_command
+from .providers.base import Runner, expand_user, run_command
 from .providers.claude_oauth import _OAUTH_KEY as OAUTH_CONTAINER_KEY
 from .providers.claude_oauth import keychain_service_for
 
@@ -301,7 +301,7 @@ def read_credential(
     timeout_s: float = 10.0,
 ) -> CredentialSample:
     """Measure one account's Keychain entry. Pure read, never raises."""
-    resolved = str(Path(os.path.expanduser(str(config_dir))))
+    resolved = str(expand_user(config_dir, home))
     hard_problem: str | None = None
     for service in keychain_service_for(config_dir, home=home):
         outcome = run_command(

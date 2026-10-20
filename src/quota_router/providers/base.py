@@ -51,6 +51,8 @@ __all__ = [
     "WINDOW_KEY_7D",
     "FIVE_HOUR_S",
     "SEVEN_DAY_S",
+    # paths
+    "expand_user",
     # parsing helpers
     "coerce_epoch_seconds",
     "parse_iso8601",
@@ -280,6 +282,20 @@ def pct_to_fraction(value: Any) -> float | None:
     if fraction > 1.0:
         return 1.0
     return fraction
+
+
+def expand_user(path: Path | str, home: Path | str | None = None) -> Path:
+    """Expand a leading ``~`` against ``home`` when one is injected.
+
+    ``os.path.expanduser`` reads the process ``HOME``, so a function that accepts
+    ``home=`` and expands a configured ``~/.claude-x`` with it would still read the
+    operator's real directories. Without ``home`` this is ``os.path.expanduser``.
+    ``~user`` forms always name another user and are left to the operating system.
+    """
+    text = str(path)
+    if home is not None and (text == "~" or text.startswith("~/")):
+        return Path(home) / text[1:].lstrip("/")
+    return Path(os.path.expanduser(text))
 
 
 def read_json_file(path: Path | str) -> Any | None:

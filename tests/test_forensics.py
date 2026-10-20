@@ -147,6 +147,7 @@ def test_read_credential_reports_blank_with_field_lengths() -> None:
     service = keychain_service_for("~/.claude-b", home=home)[0]
     runner = _keychain_runner({service: _blob(access="")})
     sample = read_credential("claude_b", "~/.claude-b", now_s=NOW, runner=runner, home=home)
+    assert sample.config_dir == "/Users/somebody/.claude-b"
     assert sample.state == STATE_BLANK
     assert sample.lost is True
     assert sample.field_lengths["accessToken"] == 0

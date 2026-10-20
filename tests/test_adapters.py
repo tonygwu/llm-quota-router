@@ -42,6 +42,7 @@ from quota_router.providers import (
     ProviderAdapter,
     account_ids_for_provider,
     claude_configs_from_policy,
+    codex_accounts_from_policy,
     collect_snapshots,
     load_snapshots,
 )
@@ -53,6 +54,7 @@ from quota_router.providers.base import (
     read_tail_lines,
 )
 from quota_router.providers.claude_cli_config import (
+    CLAUDE_CONFIG_DIRS_ENV,
     ClaudeAccountConfig,
     discover_claude_configs,
 )
@@ -67,6 +69,7 @@ from quota_router.providers.claude_oauth import (
     read_access_token,
     usage_cache_path,
 )
+from quota_router.providers.claude_statusline import STATUSLINE_DIR_ENV
 from quota_router.providers.codex_sessions import window_key_for_minutes
 from quota_router.types import (
     ACCOUNT_ANTIGRAVITY_CLAUDE,
@@ -1633,6 +1636,56 @@ def test_the_policy_tier_reaches_the_snapshot_as_capacity(tmp_path: Path) -> Non
         ACCOUNT_CLAUDE: TIER_UNKNOWN,
         ACCOUNT_CLAUDE_C: TIER_MAX_5X,
     }
+
+
+def test_an_injected_home_expands_every_tilde(tmp_path: Path, monkeypatch) -> None:
+    """``home=`` stands in for the operator's home directory. A ``~`` from config or
+    the environment used to expand against the process ``HOME`` instead, so tests that
+    injected a home still read the real ``~/.claude*`` directories (BACKLOG #2)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "process-home"))
+    home = tmp_path / "injected"
+    write_claude_config(home, ".claude-x", email=IDENTITIES[2][0], uuid=IDENTITIES[2][1],
+                        tier=None)
+    policy = FakePolicy(
+        FakePolicyAccount(ACCOUNT_CLAUDE_C, config_dir="~/.claude-x"),
+        FakePolicyAccount("codex_b", provider="codex", config_dir="~/.codex-b"),
+        FakePolicyAccount(ACCOUNT_CODEX, provider="codex"),
+    )
+
+    config, = claude_configs_from_policy(policy, env={}, home=home)
+    assert config.config_dir == home / ".claude-x"
+    assert config.identity is not None and config.identity.email == IDENTITIES[2][0]
+
+    codex = {c.account_id: c.codex_home
+             for c in codex_accounts_from_policy(policy, env={"CODEX_HOME": "~/.codex-z"},
+                                                 home=home)}
+    assert codex == {"codex_b": home / ".codex-b", ACCOUNT_CODEX: home / ".codex-z"}
+
+    explicit, = discover_claude_configs(home=home, config_dirs={ACCOUNT_CLAUDE_C: "~/.claude-x"})
+    from_env, = discover_claude_configs(
+        home=home, env={CLAUDE_CONFIG_DIRS_ENV: json.dumps({ACCOUNT_CLAUDE_C: "~/.claude-x"})})
+    assert explicit.config_dir == from_env.config_dir == home / ".claude-x"
+
+    statusline = ClaudeStatuslineAdapter(
+        paths={ACCOUNT_CLAUDE_C: "~/cache/c.json"}, home=home, env={}).paths()
+    assert statusline == {ACCOUNT_CLAUDE_C: home / "cache" / "c.json"}
+    from_dir_env = ClaudeStatuslineAdapter(
+        home=home, env={STATUSLINE_DIR_ENV: "~/cache"}, configs=()).paths()
+    assert from_dir_env and {path.parent for path in from_dir_env.values()} == {home / "cache"}
+
+    # The default directory keeps its unsuffixed Keychain name when written with ``~``.
+    assert keychain_service_for("~/.claude", home=home) == keychain_service_for(
+        home / ".claude", home=home)
+    assert keychain_service_for("~/.claude", home=home)[0] == KEYCHAIN_SERVICE_BASE
+
+
+def test_without_an_injected_home_a_tilde_still_means_the_process_home(
+        tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    policy = FakePolicy(FakePolicyAccount(ACCOUNT_CLAUDE_C, config_dir="~/.claude-x"))
+    config, = claude_configs_from_policy(policy, env={})
+    assert config.config_dir == tmp_path / ".claude-x"
+    assert keychain_service_for("~/.claude")[0] == KEYCHAIN_SERVICE_BASE
 
 
 def test_load_snapshots_is_the_one_call_the_cli_needs(tmp_path: Path) -> None:

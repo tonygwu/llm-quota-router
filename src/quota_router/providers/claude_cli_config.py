@@ -28,7 +28,7 @@ from ..types import (
     Identity,
     normalize_tier,
 )
-from .base import read_json_file
+from .base import expand_user, read_json_file
 
 __all__ = [
     "DEFAULT_CLAUDE_CONFIG_DIR_NAMES",
@@ -131,7 +131,9 @@ def _identity_and_tier(config_dir: Path) -> tuple[Identity | None, str, Path | N
     return None, TIER_UNKNOWN, None
 
 
-def _config_dirs_from_env(env: Mapping[str, str]) -> dict[str, Path] | None:
+def _config_dirs_from_env(
+    env: Mapping[str, str], home: Path | str | None = None
+) -> dict[str, Path] | None:
     """Parse :data:`CLAUDE_CONFIG_DIRS_ENV`, or ``None`` when unset/unusable."""
     raw = env.get(CLAUDE_CONFIG_DIRS_ENV)
     if not raw or not raw.strip():
@@ -145,7 +147,7 @@ def _config_dirs_from_env(env: Mapping[str, str]) -> dict[str, Path] | None:
     out: dict[str, Path] = {}
     for account_id, path in parsed.items():
         if isinstance(account_id, str) and isinstance(path, str) and path.strip():
-            out[account_id] = Path(os.path.expanduser(path.strip()))
+            out[account_id] = expand_user(path.strip(), home)
     return out or None
 
 
@@ -167,9 +169,9 @@ def discover_claude_configs(
     """
     environ = env if env is not None else os.environ
     if config_dirs is not None:
-        dirs = {str(key): Path(os.path.expanduser(str(value))) for key, value in config_dirs.items()}
+        dirs = {str(key): expand_user(value, home) for key, value in config_dirs.items()}
     else:
-        dirs = _config_dirs_from_env(environ) or {}
+        dirs = _config_dirs_from_env(environ, home) or {}
         if not dirs:
             base = Path(home) if home is not None else Path(os.path.expanduser("~"))
             dirs = {

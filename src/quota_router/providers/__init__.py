@@ -52,6 +52,7 @@ from .base import (
     ProviderAdapter,
     Runner,
     default_runner,
+    expand_user,
     run_command,
 )
 from .claude_cli_config import (
@@ -160,7 +161,7 @@ def claude_configs_from_policy(
             continue
         raw_dir = getattr(account, "config_dir", None)
         dirs[account_id] = (
-            Path(os.path.expanduser(str(raw_dir)))
+            expand_user(raw_dir, home)
             if raw_dir
             else _default_config_dir(account_id, base)
         )
@@ -170,7 +171,7 @@ def claude_configs_from_policy(
         return ()
 
     resolved: list[ClaudeAccountConfig] = []
-    for discovered in discover_claude_configs(config_dirs=dirs, env=env):
+    for discovered in discover_claude_configs(home=home, config_dirs=dirs, env=env):
         account = policy.get(discovered.account_id)
         declared_tier = normalize_tier(getattr(account, "tier", None))
         email = getattr(account, "identity_email", None)
@@ -263,11 +264,11 @@ def codex_accounts_from_policy(
             continue
         raw_dir = getattr(account, "config_dir", None)
         if raw_dir:
-            codex_home = Path(os.path.expanduser(str(raw_dir)))
+            codex_home = expand_user(raw_dir, home)
         elif account_id == ACCOUNT_CODEX:
             declared = environment.get(CODEX_HOME_ENV)
             codex_home = (
-                Path(os.path.expanduser(declared))
+                expand_user(declared, home)
                 if declared
                 else base / DEFAULT_CODEX_HOME.removeprefix("~/")
             )

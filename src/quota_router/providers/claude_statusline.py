@@ -55,6 +55,7 @@ from .base import (
     make_window,
     parse_timestamp,
     pct_to_fraction,
+    expand_user,
     read_json_file,
 )
 from .claude_cli_config import ClaudeAccountConfig, discover_claude_configs
@@ -290,7 +291,7 @@ class ClaudeStatuslineAdapter(ProviderAdapter):
         """Resolve ``account_id -> cache file`` from arguments, env, then defaults."""
         if self._explicit_paths is not None:
             return {
-                str(key): Path(os.path.expanduser(str(value)))
+                str(key): expand_user(value, self._home)
                 for key, value in self._explicit_paths.items()
             }
 
@@ -303,7 +304,7 @@ class ClaudeStatuslineAdapter(ProviderAdapter):
                 parsed = None
             if isinstance(parsed, Mapping):
                 resolved = {
-                    str(key): Path(os.path.expanduser(str(value)))
+                    str(key): expand_user(value, self._home)
                     for key, value in parsed.items()
                     if isinstance(value, str) and value.strip()
                 }
@@ -311,9 +312,9 @@ class ClaudeStatuslineAdapter(ProviderAdapter):
                     return resolved
 
         if self._directory is not None:
-            directory = Path(os.path.expanduser(str(self._directory)))
+            directory = expand_user(self._directory, self._home)
         elif env.get(STATUSLINE_DIR_ENV):
-            directory = Path(os.path.expanduser(env[STATUSLINE_DIR_ENV]))
+            directory = expand_user(env[STATUSLINE_DIR_ENV], self._home)
         else:
             base = Path(self._home) if self._home is not None else Path(os.path.expanduser("~"))
             directory = base / DEFAULT_STATUSLINE_DIR
