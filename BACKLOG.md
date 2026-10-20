@@ -1512,7 +1512,7 @@ with unreadable lines, and record the choice. The ping journal must stay strict.
 
 ---
 
-### 36. Most commands accept the shared `--dry-run` and ignore it, including commands that write  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 36. Most commands accept the shared `--dry-run` and ignore it, including commands that write  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
