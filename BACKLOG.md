@@ -1266,43 +1266,170 @@ of the operator config.
 
 ---
 
-### 22. An idle Antigravity pool's weekly reset slides or stays fixed, and nobody knows why  `[difficulty: medium]`  `[filed: 2026-10-19]`
+### 22. Subscription windows that start on first use sit idle, and nothing starts them  `[difficulty: high]`  `[filed: 2026-10-19]`
 
-**Background:** carried from #9 through #10 (both closed). `detect_resets`
-(`src/quota_router/waste.py:730`) records a reset from the reset times each reading
-reports, so which behavior applies changes what it writes. Two behaviors were seen:
+**Background:** some quota windows do not run on a clock. They start at the first call
+after a reset, and until then the provider reports that no window is running. The poller
+history on the operator's machine (status records from 2026-09-20 to 2026-10-19;
+Antigravity from about 2026-10-12), the providers' own pages and community reports agree
+on which windows behave this way. A waiting stretch below is 3 or more reads in a row of
+the waiting reading; for a sliding window, each reset moved forward by the time between
+reads, within 20%. The counts move with that choice (a reviewer counted Claude 29 to 84
+and Codex 16 and 12 with a 300 s tolerance), so treat them as sizes, not exact figures:
 
-- *Sliding.* Every poller record from 2026-10-18T01:24:21Z to 01:40:09Z shows all four
-  pools at `used 0.000`, with the weekly reset exactly 168.00 hours after the reading, so
-  the reset moves with the clock. The Gemini pools slid like this straight after their
-  early resets on 2026-10-16.
-- *Fixed.* After `antigravity_claude`'s scheduled reset at 2026-10-13T16:01:20Z, the next
-  reset stayed fixed at 2026-10-20T16:01:20Z with `used 0.0` until about
-  2026-10-14T09:00Z. Then, still with no use, it jumped to 168 hours ahead
-  (`2026-10-21T09:01:36Z` at 09:01:29Z) and slid from then on. `antigravity_claude_b`
-  did the same for about 17 hours after its reset on 2026-10-15.
+| Window | Starts on first use? | How a waiting window reads | Waiting stretches in 30 days |
+|---|---|---|---|
+| Claude 5h | yes | no window: the usage endpoint answers `is_active: false`, percent 0, no `resets_at`, and the adapter drops the row (`src/quota_router/providers/claude_oauth.py:473-481`) | 25 to 71 per account |
+| Claude 7d and Fable | no: a fixed weekly time per account | – | none |
+| Codex 7d | yes | used 0, reset = read time + 7 days, moving with each read ("sliding") | 8 to 16 per account |
+| Codex 5h | – | these Pro accounts report no five-hour window | – |
+| Antigravity 5h and 7d, both pools | yes | sliding, reset = read time + window + 3 to 14 s (mostly 5 s) | 4 to 102 per pool and window |
+| Codex `base_model_inference` (model-scoped) | – | slid at used 0 in every read from 2026-09-20 to 2026-10-10; a call to the fast model does not use it | – |
 
-The five-hour window shows the same pattern, and it is cheaper to study, because it
-repeats every few hours. After a scheduled five-hour reset with no use, the next window's
-reset stays fixed for 33 to 50 minutes, then slides; the first call fixes it again. Both
-Gemini pools did this twice on 2026-10-18/19 (`docs/measurements/2026-10-18-gemini-size.md`,
-"Reset behavior seen"). The 2026-10-18 measurement could not answer the weekly version,
-because both Gemini pools had been used earlier that week.
+- **What ends a waiting stretch is the first call.** `claude`'s 5h window reset at
+  09:09:59Z on 2026-10-19, read as no window for 71 reads, and came back at 11:56:00Z with
+  used 0.01 and a reset at 16:50:00Z. `codex` reset at 23:06Z on 2026-09-23, slid for
+  about 20 minutes, and a first use at about 23:28Z fixed the next reset at
+  2026-09-30T23:28Z. The first Gemini call of the 2026-10-18 run fixed that pool's 5h
+  reset at 04:02:36Z (`docs/measurements/2026-10-18-gemini-size.md`, "Reset behavior
+  seen").
+- **The providers say so.** OpenAI's help article "Paid weekly Work and Codex rate limit
+  resets" says the new weekly period "starts with your first request in Work or Codex
+  after the reset is applied" and the next reset falls 7 days after that request.
+  Anthropic's Max-plan help article said a session "begins with your first message to
+  Claude and lasts 5 hours"; its current usage article says only that the session limit
+  "resets every five hours", and that weekly limits reset at a fixed time per account.
+  For Antigravity, Google forum posts say the 5h window starts at the first request;
+  nothing official covers the weekly window.
+- **Why Antigravity shows it most.** Something uses the Claude and Codex accounts almost
+  all the time, so their waits are short: Codex usually waits minutes after a reset, and
+  up to about 5 hours after an early reset (`codex_b`, 2026-10-02T21:13Z to
+  10-03T02:05Z).
+  Nothing calls the Antigravity pools on a schedule, so they wait for days.
+- **Prior art.** `cwarm` (github.com/wonderbyte/cwarm) sends Claude a "Hi" on Haiku at
+  cron times of day, so the 5h window starts before work begins. Its only check is
+  `skip_if_warm`, which skips the ping when the 5h window already has a reset time. It
+  reads usage through `cswap list --json`, the call this repo removed because it
+  redeemed refresh tokens (README, "The single-writer rule"). Do not adopt it.
+- **What starting a window buys.** A ping adds no quota. It moves the next refill
+  earlier: an idle Claude account pinged at 08:00 has a fresh window at 13:00 for a heavy
+  session that starts at 12:30, not at 17:30. It helps when work comes in bursts larger
+  than one window or uses a pool up. A waiting window wastes nothing on its own, because
+  a window that has not started cannot expire.
+- **An open detail.** After a scheduled Antigravity reset with no use, the next reset
+  stays fixed for a while (33 to 50 minutes for 5h, about 17 hours for 7d) before it
+  slides, while Codex slides from the first read after its reset and Antigravity slides
+  at once after an early reset. Start-on-first-use explains the sliding; it does not by
+  itself explain the fixed stretch. Pinging right after a reset makes the difference
+  irrelevant in operation, and the pings can measure it (Fix, step 5).
 
-**Impact:** a sliding pool never reaches its reset, so it loses nothing while it slides.
-If the waste report or the scorer treats a sliding pool as one whose quota expires at the
-reported reset, it counts waste that never happens. Both scheduled Antigravity rows in
-`waste.jsonl` come from pools that the 2026-10-12 measurement used part-way and then left.
+**Impact:**
 
-**Fix:** read the poller's retained history (`usage-poll.log` and the history store) for
-every Antigravity five-hour and weekly window since 2026-10-12. Classify each idle stretch as sliding
-or fixed, and find what switches it: a scheduled reset, an early reset, the first use, or
-time since the last use. Write down the rule and the evidence. If the waste report or the
-scorer handles a sliding pool wrongly, file that as its own item.
+- An Antigravity pool waits for days between uses, so when routed work does arrive (#23),
+  each burst gets one window and then a full window's wait.
+- A pool's windows wait independently. At 21:14Z on 2026-10-19 both Gemini pools had a
+  running weekly window (fixed reset 2026-10-25T03:03Z, used 0.013 and 0.016) and a
+  waiting 5h window. `pick` gave `antigravity_gemini_b` 9.4 PSE at risk, and that is real:
+  the weekly quota expires on 2026-10-25 if nobody uses it. But when both windows wait,
+  as from 2026-10-13 to 10-18 when the Gemini pools sat at used 0 for 113 to 134 hours,
+  nothing can expire, and nobody has checked what `pick` and the waste report do then.
+- Each sliding read adds a "reset time moved forward" note to the poller output (#11).
 
-**Touch points:** `src/quota_router/waste.py:730` (`detect_resets`, how a reset is
-recorded), and `src/quota_router/history.py:413` (`iter_records`, the reader that
-`--backfill` uses).
+**Fix:**
+
+1. **Waiting test, the same for every provider.** An account-wide window (no
+   `applies_to`; model-scoped caps such as Fable and Codex's `base_model_inference` are
+   out, since the ping's model may not use them) of a subscription account is waiting
+   when its latest reading shows (1) 100% left (`used_fraction` 0) and (2) a reset within
+   a tolerance of the reading's own `observed_at_s` + the window's length, or the
+   provider says outright that no window is running. Measure against `observed_at_s`,
+   not the record time, because some readings are cached. API credit pools are out of
+   scope.
+   - Claude's idle answer above is the "says outright" case. Keep it as an explicit
+     "not running" marker per window key on the account's reading, not a fake window:
+     `make_window` refuses a window with no reset
+     (`src/quota_router/providers/base.py:348`), and the status JSON and its readers
+     (pick, waste, statusline) must keep working. A failed read must never look like
+     this marker.
+   - Also count a window that shows used 0 with its reset at exactly the previous reset
+     + the window's length: a fresh window nobody has used. Without this, the fixed
+     stretch after a scheduled Antigravity reset hides a waiting window for up to 50
+     minutes (5h) or about 17 hours (7d) whenever the first read after the reset misses
+     the tolerance.
+   - Choose the tolerance from the poll interval and the 3 to 14 s Antigravity offset,
+     and say what it is.
+2. **Ping rule.** Send one ping to a pool when one of its windows is waiting and the pool
+   has had no successful ping within the last window length of that window: 5 hours for
+   a 5h window, 7 days for a 7d window. A ping starts every window of its pool, so it
+   counts for all of them. A failed ping does not count; retry it on a later poll with a
+   backoff, and say what the backoff is. As written, a ping within the last 7 days also
+   blocks a ping after an early weekly reset; counting from the later of the last ping
+   and the window's latest reset would not. Report which you built, so the operator can
+   confirm. **Operator decision 2026-10-19:** this rule, not
+   a schedule and not a per-window flag; a check for recent `quotapick run` usage was
+   dropped as an optimisation not worth its complexity.
+   - The rule also fires once right after a scheduled reset of a window that runs on a
+     clock (Claude 7d, Fable), and once after a use too small to show as 1%. Both are
+     single cheap calls, so accept them.
+   - Each Antigravity account has two pools with separate bars, Gemini and Claude/GPT,
+     and a call to one does not start the other. Each needs its own ping.
+3. **The ping.** "1 + 1 = ?" to the cheapest model of the pool, through the provider's
+   own command-line tool, so the router never uses a credential itself:
+   - Claude: `claude -p` with the account's `CLAUDE_CONFIG_DIR`, model
+     `claude-haiku-5-5` (the `fast` capability). The system prompt is cached, so the cost
+     is close to nothing.
+   - Codex: `codex exec` with the account's `CODEX_HOME`, read-only sandbox, the `fast`
+     model (`gpt-6-luna`) at low effort.
+   - Antigravity: `agy` through the same argv and user switch the usage reads use
+     (`agy_argv_env`, `src/quota_router/providers/antigravity.py:266`;
+     `default_run_agy`, `:336`). Gemini 3.8 Flash (Low) for the Gemini pool; for the
+     Claude/GPT pool, find the cheapest model in that group and say which.
+
+   Check the served model in the call's own telemetry, and record the tokens. Resolve
+   each binary the way the router already does for launchd, whose PATH holds only the
+   `quotapick` folder: `codex` through `QUOTA_ROUTER_CODEX_BIN` or its default
+   (README.md:717). `claude -p` may renew the account's token on an idle account; that is
+   allowed only because the vendor's own CLI does it (README, "The single-writer rule").
+   The router itself never reads or uses a credential for this.
+4. **Where it runs.** A new subcommand that the poller runs after `status`, the way it
+   runs `capabilities --refresh` (`ops/install-launchd.sh:110`), with a `--dry-run` that
+   lists what it would ping and why. Ship it dry-run first; the operator turns pings on.
+   Re-running the launchd installer from repo-prod is the live switch.
+5. **Record and verify.** Append each ping to a log in the state directory: time,
+   account, pool, the reading that triggered it, model asked for and served, tokens,
+   outcome. Report attempted, succeeded and failed with failure kinds. On the next
+   reading, check that the window now runs, with a reset close to ping time + window
+   length. If it does not, warn and stop pinging for that window until the operator
+   looks; the pool's other windows keep their pings.
+   The first pings after a scheduled Antigravity reset also answer the open detail: a
+   reset that moves to the ping time + window length means no window was running during
+   the fixed stretch; one that stays at the old boundary + window length means one was.
+6. **Router model.** A window that is waiting has nothing at risk. Check how `pick` and
+   the waste report (`detect_resets`, `src/quota_router/waste.py:730`) treat it, and
+   file what they get wrong as its own item. Pinging makes waiting rare but not
+   impossible, for example while pings are off or failing.
+
+*Risks and edge cases:*
+
+- A ping that lands just before a real call wastes nothing: the call would have started
+  the window anyway.
+- If a provider ever makes a window run on a clock, the rule still fires only right after
+  that window's reset, once per window length.
+- Tests: each provider's waiting reading is detected and a failed read is not; a fresh
+  window at the previous reset + its length counts as waiting; a model-scoped window
+  never triggers a ping; the pool-level once-per-window-length limit across its 5h and
+  7d windows; a failed ping retries and a successful one blocks; a failed verification
+  stops that window only; the two Antigravity pools are pinged separately; an API credit
+  pool is never pinged; dry-run sends nothing.
+
+**Touch points:** `src/quota_router/providers/claude_oauth.py:473-481`,
+`src/quota_router/providers/base.py:348`, `src/quota_router/types.py` (the reading's
+shape), the status JSON and its readers,
+`src/quota_router/providers/antigravity.py:266`, `:336`, the Codex and Claude launchers
+(`src/quota_router/codex_launcher.py`, `src/quota_router/launcher.py`),
+`src/quota_router/cli.py` (a new subcommand), `ops/install-launchd.sh:110`,
+`src/quota_router/waste.py:730`, `src/quota_router/history.py:413`, README (the poller
+section), and the measurement docs that cite this item.
 
 ---
 
