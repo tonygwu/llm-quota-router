@@ -1548,7 +1548,7 @@ private native-response and poller evidence.
 
 ---
 
-### 30. The waste report counts nothing while a start-on-use window waits, though that capacity is lost  `[difficulty: high]`  `[filed: 2026-10-20]`
+### 30. The waste report counts nothing while a start-on-use window waits, though that capacity is lost  `[difficulty: high]`  `[filed: 2026-10-20]`  `[claimed by: #9]`
 
 **Background:** Claude 5h, Codex 7d and both Antigravity windows start only at the first
 call after a reset (`docs/window-pings.md`; `waiting_reason`,
