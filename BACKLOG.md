@@ -1176,7 +1176,7 @@ and say so in the README.
 
 ---
 
-### 44. Fifty tests still reach `load_config` with no `cwd` through `select_account` and the launchers  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 44. Fifty tests still reach `load_config` with no `cwd` through `select_account` and the launchers  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
 
 **Background:** #18's guard (`tests/test_no_live_config_in_tests.py`) checks only calls
 written as `load_config(...)` or `cli.main(...)` in a test module. The review of #18
