@@ -156,8 +156,8 @@ the same 0.124515 total.
 The live history still held the same 120 rotated files byte for byte, and the saved
 active file is a prefix of its rotated successor. Detection over a copy of live
 history through 06:45 UTC reproduces the same 19 records exactly. It also finds two
-open stretches that began after the saved history ends; the installed writer, not
-this adoption, records those.
+open stretches that began after the saved history ends; the writer that #29 installs,
+not this adoption, records those.
 
 A replay of the writer over that copy at each daily 30-day pruning cutoff found a
 defect. Cutoffs from October 2 to 7 and from October 14 to 16 re-detect an adopted
@@ -175,14 +175,16 @@ cutoff appends two stretches that closed after the proposal was saved.
 
 ## Live adoption under #32
 
-The operator approved the live write on October 20. Approval followed three fresh
-adversarial reviews of the deployment plan and its helper. The first returned
-fix-first and the third returned ship. The helper ran from a frozen copy of revision
+The operator approved the live write at about 07:55 UTC on October 20, on condition
+that a fresh review of the plan returned ship. Three fresh adversarial reviews of the
+deployment plan and its helper ran in all: the first returned fix-first, the second
+ship-with-notes, and the third, after one more helper change, ship before the write.
+The operator confirmed the approval again after the write. The helper ran from a frozen copy of revision
 `6ce043f`, and it refused to run if its own bytes, that source or the approved
 records differed from the reviewed hashes.
 
-At 08:22 UTC the helper first copied the whole live state directory, 197 files, and
-checked that before, copy and after agreed. It then appended the 19 records once,
+At 08:22 UTC the helper first copied the whole live state directory and checked that
+before, copy and after agreed. It then appended the 19 records once,
 through the writer's own locked and validated append, into a new `forgone.jsonl`.
 Backup and append each attempted 1, succeeded 1 and failed 0. The new file is
 byte-identical to the approved records. No other live file was written: the reset log

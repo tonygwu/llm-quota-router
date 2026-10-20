@@ -48,15 +48,25 @@ To test your own changes, use your checkout's venv, which is isolated from the
 installed binaries but not from live state:
 
 ```sh
-./.venv/bin/python -m pytest -q          # ~980 tests, ~12s
+./.venv/bin/python -m pytest -q          # ~1670 tests, ~30s
 XDG_STATE_HOME=$(mktemp -d) ./.venv/bin/quotapick status   # your code, scratch state
 ```
 
-Never run a checkout's `quotapick status` or `waste --backfill` against live state.
-Without `XDG_STATE_HOME`, both write to `~/.local/state/quota-router`: history,
-reset rows and, from commit `e2cd00c`, waiting records in `forgone.jsonl`. That file
-only grows, so records from unfinished code stay there, and a record the installed
-writer disagrees with can make it refuse every later append.
+Set `XDG_STATE_HOME` to a scratch folder for every `quotapick` command you run from
+a checkout. Without it, the checkout writes to `~/.local/state/quota-router`:
+
+- `pick`, `explain`, `exec` and `run` append history.
+- `status` also appends reset rows and new encodings to the calibration ledger.
+- From commit `e2cd00c`, `status` and `waste --backfill` also append waiting records
+  to `forgone.jsonl`.
+- `--dry-run` does not stop these writes.
+
+The ledger and the waiting records only grow, so records from unfinished code stay
+there. A waiting record that the installed writer disagrees with can make it refuse
+later appends. An empty scratch folder skips the paths that need real history and a
+reconstructed ledger. To exercise them, copy live state into the scratch folder
+first: `S=$(mktemp -d); cp -Rp ~/.local/state/quota-router "$S/"`, then
+`XDG_STATE_HOME=$S`.
 
 To ship a change to the live binaries, after it is pushed:
 
