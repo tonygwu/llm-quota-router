@@ -1464,44 +1464,59 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 34. A stopped waiting-stretch writer looks like a harmless history note in status  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
+### 38. A stopped reset writer, or an invalid ledger, stops recording without a live status warning  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** `_record_waste` turns a refused waiting-stretch append into
-`src/quota_router/cli.py:2594` "forgone recording stopped: {exc}",
-and `status` classifies everything that function returns as a history note:
-`src/quota_router/cli.py:2703` "history_notes = tuple(dict.fromkeys(notes))".
-The default view prints only a count of history notes:
-`src/quota_router/cli.py:2768` "note(s) about past window transitions in retained".
-The stop note has been a history note since the writer arrived in `e2cd00c`, among
-many reset-scan notes (#11 is about their number). Commit `e979c1a` adds one routine
-note to the same count when pruning shifts a waiting start. A stopped waiting-stretch
-writer therefore looks the same as routine notes in the default view. A stopped reset
-writer, by contrast, already prints as a live warning ("waste recording stopped").
+**Background:** #34 made a stopped waiting-stretch writer a live `status` warning, with
+the prefix constant `src/quota_router/cli.py:2578` "_FORGONE_STOPPED: Final[str]".
+The reset writer refuses every append when `waste.jsonl` holds an unreadable row,
+`src/quota_router/waste.py:1176` "refusing to append behind unreadable waste rows; preserve and inspect the file",
+when the write itself fails,
+`src/quota_router/waste.py:1206` "cannot append to waste file",
+or when its lock times out,
+`src/quota_router/waste.py:1171` "waste lock timed out after".
+All reach `status` through `_record_waste`, which status counts as history notes. A
+review of #34 reproduced it in test folders: with an unreadable `waste.jsonl` row the
+default view printed only "2 note(s) about past window transitions in retained
+history", and the refusal appeared only with `-v`; a write failure behaved the same.
+The refusal line names no file; the path is only in the companion line
+`src/quota_router/waste.py:1114` "unreadable line(s) in".
 
-**Impact:** while the writer is stopped, no waiting stretch is recorded on any poll.
-Recording resumes only when the cause clears; a stretch is lost if the stop lasts
-longer than the 30-day history retention. Nothing in the default view tells the
-operator to look. One possible cause is a later read that reclassifies an earlier
-stale read and moves a stretch's end, which the writer refuses as an overlap; the
-2026-10-20 pruning replay found no such case.
+Separately, when the calibration ledger is invalid `status` skips `_record_waste`
+entirely, `src/quota_router/cli.py:2689` "calibration ledger invalid; waste recording stopped".
+The waiting-stretch writer then does not run either, although it takes no ledger
+input; it sits behind the check only because it was added inside `_record_waste`.
+
+**Impact:** a stopped reset writer records no reset on any poll, and nothing in the
+default view prompts a look. Recording resumes only after someone repairs the
+unreadable row or the write error clears; resets not recorded before their history
+ages out are lost, and a crash mid-append leaves a partial line that stops the writer
+until repaired. With an invalid ledger, waiting stretches are also not recorded, and
+the live warning does not say so. Placed early because item 1's total depends on
+`waste.jsonl`.
 
 **Fix:**
-1. Return "forgone recording stopped" from `_record_waste` in a form that `status`
-   prints as a live warning, while the retention note stays a history note.
-2. Test in `tests/test_cli.py` next to
-   `tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):":
-   a stopped writer prints its warning in the default view; the retention note does not.
-3. Keep `waste --backfill` unchanged: it already prints every warning in full. Do
-   not add a doctor check: the stop does not change which account gets spent.
+1. Classify the three reset-writer refusals as live warnings and keep the routine
+   reset-scan notes as history notes. Carry the signal as data from `waste.py` (for
+   example, return the append's own warnings separately from the scan notes; today
+   `update_from_history` merges them), not as string prefixes matched in `cli.py`.
+   Include the file path in the live warning.
+2. For an invalid ledger, choose one and record the choice: (a) run the waiting-stretch
+   writer whatever the ledger's state, which stops the loss (recommended: it needs no
+   ledger); or (b) keep skipping it and say in the live warning that waiting stretches
+   are not recorded either.
+3. Tests in `tests/test_cli.py` next to
+   `tests/test_cli.py:1262` "def test_record_waste_stop_note_reaches_the_default_status_view":
+   each refusal prints in the default view with its file; routine notes do not; the
+   invalid-ledger case behaves as chosen in step 2.
 
-*Why medium:* a display classification change with one focused test; no stored data
-changes.
+*Why medium:* a display classification change and one guard move, with focused tests;
+no stored data changes.
 
-**Touch points:** `src/quota_router/cli.py:2594` "forgone recording stopped";
-`src/quota_router/cli.py:2703` "history_notes = tuple(dict.fromkeys(notes))";
-`src/quota_router/cli.py:2768` "note(s) about past window transitions in retained";
-`src/quota_router/cli.py:3189` "warnings.extend(_record_waste(config, env))";
-`tests/test_cli.py:1215` "def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypatch):".
+**Touch points:** `src/quota_router/waste.py:1176` "refusing to append behind unreadable waste rows";
+`src/quota_router/waste.py:1206` "cannot append to waste file";
+`src/quota_router/cli.py:2689` "calibration ledger invalid; waste recording stopped";
+`src/quota_router/cli.py:2709` "stopped = tuple(note for note in notes if note.startswith(_FORGONE_STOPPED))";
+`tests/test_cli.py:1262` "def test_record_waste_stop_note_reaches_the_default_status_view".
 
 ---
 
@@ -1509,19 +1524,19 @@ changes.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3463` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3470` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3396` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4059` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4608` "def _cmd_credits("),
+(`src/quota_router/cli.py:3403` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4066` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4615` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3403` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4361` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:3998` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3813` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3410` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4368` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:4005` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3820` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3719` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3726` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1545,8 +1560,8 @@ exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split 
 pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
 and keep that text in one constant.
 
-**Touch points:** `src/quota_router/cli.py:3463` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3719` "# --dry-run was accepted, ignored, and a real call ran.";
+**Touch points:** `src/quota_router/cli.py:3470` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3726` "# --dry-run was accepted, ignored, and a real call ran.";
 `tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
@@ -1554,7 +1569,7 @@ and keep that text in one constant.
 ### 37. A status run that cannot read an account's tier writes tier encodings that blind the waiting report  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `status` passes every snapshot that has windows as an observed tier:
-`src/quota_router/cli.py:2680` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
+`src/quota_router/cli.py:2685` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
 A Claude snapshot takes its tier from the local Claude config, so it is unknown when
 that config cannot be read:
 `src/quota_router/providers/claude_statusline.py:233` "tier = config.tier if config is not None else TIER_UNKNOWN".
@@ -1615,7 +1630,7 @@ change seen only through a cache snapshot must still be recorded.
 
 *Why high not medium:* it changes what the calibration ledger records as evidence.
 
-**Touch points:** `src/quota_router/cli.py:2680` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
+**Touch points:** `src/quota_router/cli.py:2685` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
 `src/quota_router/calibrations.py:485` "for item in loaded_values(config, observed_tiers=observed_tiers):";
 `src/quota_router/waste.py:625` "else capacity_for_tier(tier)";
 `tests/test_calibrations.py:207` "def test_observed_tier_tracks_actual_writer_and_missing_observation_does_not_revert".
