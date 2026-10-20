@@ -1235,6 +1235,45 @@ def test_status_summarizes_history_notes_but_prints_live_warnings(env, monkeypat
     assert "cursor: snapshot carries no usage windows" in verbose_err
 
 
+def test_status_prints_a_stopped_forgone_writer_as_a_live_warning(env, monkeypatch):
+    """A stopped waiting-stretch writer records nothing on every poll until it clears.
+
+    It is about this run, not a past transition, so the default view prints it. The
+    routine note that pruning shifted a waiting start stays a counted history note.
+    """
+    stopped = "forgone recording stopped: conflicting forgone record identity"
+    kept = ("forgone kept 1 durable stretch(es) whose re-detection names a later window "
+            "waiting start after history pruning")
+    notes = [kept, "codex/7d: incoherent pair -- observation 0", stopped]
+    monkeypatch.setattr(cli, "_record_waste", lambda config, env: list(notes))
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert f"! {stopped}" in err, err
+    assert kept not in err, "the routine pruning note must stay a history note"
+    assert "2 note(s) about past window transitions" in err, err
+
+    _, out, _ = run(["status", "--json"], env, snapshots=real_capture())
+    warnings = json.loads(out)["warnings"]
+    assert warnings.count(stopped) == 1 and kept in warnings
+    assert warnings.index(stopped) < warnings.index(kept), "live warnings come first"
+
+
+def test_record_waste_stop_note_reaches_the_default_status_view(env, monkeypatch):
+    """The real writer's refusal, not a hand-written note, is what status must surface."""
+    from quota_router import forgone
+
+    def refuse(rows, path=None, *, env=None, counts=None):
+        counts["retention_shifted"] = 1
+        raise ValueError("conflicting forgone record identity")
+
+    monkeypatch.setattr(forgone, "append_records", refuse)
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK
+    assert "! forgone recording stopped: conflicting forgone record identity" in err, err
+    assert "forgone kept" not in err
+
+
 def test_status_json_still_carries_every_warning(env, monkeypatch):
     """The compact view is a rendering choice; the machine-readable contract loses nothing."""
     notes = ["codex/7d: incoherent pair -- observation 0"]

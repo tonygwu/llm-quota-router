@@ -2573,6 +2573,11 @@ def _plans_for(config: Config) -> tuple[dict[str, pse.Plan], list[str]]:
     return plans, warnings
 
 
+#: A stopped waiting-stretch writer records nothing until the cause clears, so ``status``
+#: prints this note as a live warning rather than counting it with past transitions.
+_FORGONE_STOPPED: Final[str] = "forgone recording stopped"
+
+
 def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     """Append any window reset the retained history can attest to.
 
@@ -2591,7 +2596,7 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     try:
         forgone.append_records(forgone.detect(records), env=env, counts=counts)
     except (ValueError, KeyError, OSError) as exc:
-        warnings.append(f"forgone recording stopped: {exc}")
+        warnings.append(f"{_FORGONE_STOPPED}: {exc}")
     if counts.get("retention_shifted"):
         # Expected for weeks after pruning, so it is a history note, not a live warning.
         warnings.append(
@@ -2688,7 +2693,8 @@ def _cmd_status(
 
     # Two populations of warning, and only one of them is about this reading. The waste
     # scan re-walks every retained history record on every run, so its notes describe
-    # window transitions observed days ago and their count only grows. Printing them
+    # window transitions observed days ago and their count only grows. A stopped
+    # waiting-stretch writer is the exception: it is about this run, so it is live. Printing them
     # beside a warning about the snapshot just taken buries the second in the first --
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
@@ -2700,9 +2706,10 @@ def _cmd_status(
     engine = prepared.config.engine
     if engine.objective != "own_waste" or engine.shadow:
         notes = notes + forecast_notes
-    history_notes = tuple(dict.fromkeys(notes))
+    stopped = tuple(note for note in notes if note.startswith(_FORGONE_STOPPED))
+    history_notes = tuple(note for note in dict.fromkeys(notes) if note not in stopped)
     live_warnings = tuple(
-        note for note in dict.fromkeys(prepared.warnings + tuple(calibration_notes))
+        note for note in dict.fromkeys(prepared.warnings + tuple(calibration_notes) + stopped)
         if note not in set(history_notes)
     )
     prepared.warnings = live_warnings + history_notes
