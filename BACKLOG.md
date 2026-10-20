@@ -177,8 +177,11 @@ dropped by the author because it asked for no work; `pse.py:59-64` carries it.
   `status` warnings, and the poller's log rotates within about 30 minutes because of the
   window-transition notes. The snapshot note, which history keeps for days, says only
   that the latest read failed. Closes when the note carries the failure's cause, so an
-  attempted / succeeded / failed-by-cause count can be read back out of history. #11 is
-  why the poller's log is that short.
+  attempted / succeeded / failed-by-cause count can be read back out of history. The
+  poller's log is that short because every status record repeated every reset-scan
+  note in retained history. That was fixed on 2026-10-20 (one line per account and
+  window), but the live install predates it, so the log stays short until repo-prod is
+  reinstalled.
   Since 2026-10-20 the capability refresher's `agy models` read has the same gap, and
   slightly worse: it now passes `--log-file /dev/stderr` too, so agy writes no per-run log
   file for it either. A timeout drops the captured stderr,
@@ -440,44 +443,6 @@ agy behavior that nobody has verified.
 **Touch points:** `src/quota_router/run.py` (candidate narrowing at 443-446, target
 construction, `judge`), the Antigravity provider's launch recipe, `tests/test_run.py`, and
 the README section on `run`.
-
----
-
-### 11. Every status record repeats every reset-scan warning in retained history  `[difficulty: medium]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
-
-**Background.** `_cmd_status` calls `_record_waste` (`cli.py:2639`; body at
-`cli.py:2566-2578`). It reads all retained history, rotated files included, and runs
-`detect_resets` (`waste.py:730`) over every pair of readings. The pair warnings
-(`waste.py:781-797`) have no cursor and no dedup, so each call emits again every warning
-the retained history can produce. The default `status` view already prints only a count
-of these history notes (`cli.py:2703-2710`), so the harm is in `--json`, `--verbose` and
-the poller's log. The last record in the rotated poller log at 2026-10-18T01:21:53Z held
-12,203 warnings and was 3.04 MB as compact JSON:
-
-- 7,347 came from `codex_b/base_model_inference`, such as `reset time moved forward 0.00
-  of a window without rolling over (2026-09-25T00:02:05Z -> 2026-09-25T00:03:52Z)`. That
-  window's boundary slides about two minutes per poll, and the pairs run from 2026-09-25
-  to 2026-10-17.
-- 4,442 came from the four Antigravity `7d` windows. Only 10 of them are `incoherent pair`
-  warnings, from the `/usage` replica flips (see
-  `docs/measurements/2026-10-18-gemini-size.md`). The rest are `reset time moved
-  forward`. At that time every pool's weekly reset sat 168 hours ahead and slid with the
-  clock (see docs/window-pings.md).
-
-**Impact.** Each poller log file holds about 7 records: the rotated file ran from
-01:04:32Z to 01:21:53Z, and the live file from 01:24:21Z to 01:37:47Z. The two together
-keep 17 to 35 minutes, depending on how full the live file is. The durable-cause bullet
-in #2 depends on that log. A new warning is lost among thousands of old ones, and the
-count grows with history.
-
-**Fix:** emit a pair warning only for pairs newer than the previous scan, or fold the
-warnings into one line per account and window, with a count and the newest example.
-Write a test that builds a history with many drift pairs and checks two things: a status
-run emits at most one line per window, and a drift pair that arrives after the first run
-still appears. The separate stock-classification question has moved to #28.
-
-**Touch points:** `cli.py:2566-2578`, `cli.py:2639`, `waste.py:730-800`, `waste.py:1060`
-(`update_from_history`), and the waste tests.
 
 ---
 
@@ -1558,19 +1523,19 @@ uses, across several commands.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3551` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3552` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3484` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4147` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4696` "def _cmd_credits("),
+(`src/quota_router/cli.py:3485` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4148` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4697` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3491` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4449` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:4086` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3901` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3492` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4450` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:4087` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3902` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3807` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3808` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1594,8 +1559,8 @@ exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split 
 pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
 and keep that text in one constant.
 
-**Touch points:** `src/quota_router/cli.py:3551` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3807` "# --dry-run was accepted, ignored, and a real call ran.";
+**Touch points:** `src/quota_router/cli.py:3552` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3808` "# --dry-run was accepted, ignored, and a real call ran.";
 `tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
@@ -1673,7 +1638,7 @@ change seen only through a cache snapshot must still be recorded.
 
 ### 27. Fresh Fable rows lose default-source provenance without a ledger  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** `src/quota_router/waste.py:793` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None"
+**Background:** `src/quota_router/waste.py:794` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None"
 writes the fraction but no `fable_fraction_source`. The writer adds `k_source`
 separately. A fresh Fable row written without ledger records, with explicit k=4,
 capacity=2 and the built-in fraction 0.5, reports the correct 3.6 PSE but classifies
@@ -1694,7 +1659,7 @@ through the writer and report: the default count becomes one, the unknown-source
 count becomes zero and PSE remains 3.6. Keep original missing provenance null when
 re-appending an old occurrence; do not rewrite the raw log or invent its old source.
 
-**Touch points:** `src/quota_router/waste.py:793` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None";
+**Touch points:** `src/quota_router/waste.py:794` "plan.fable_fraction if MODEL_CLASS_FABLE in window.applies_to else None";
 `src/quota_router/waste_report.py:179` "def source_for(key, expected, explicit):";
 `tests/test_waste_v3.py:23` "def test_v3_preserves_unrounded_readings_and_explicit_basis():".
 
@@ -1749,10 +1714,10 @@ so a fix in only one reader leaves inconsistent answers.
 classification and scoped constraints; the ping heuristic alone cannot classify it.
 
 **Touch points:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks.";
-`src/quota_router/waste.py:841` "Find every window reset the history can attest to.";
+`src/quota_router/waste.py:842` "Find every window reset the history can attest to.";
 `src/quota_router/window_ping.py:28` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
-`tests/test_waste.py:579` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
+`tests/test_waste.py:645` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
 `docs/window-pings.md:262` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
