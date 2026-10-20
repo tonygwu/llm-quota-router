@@ -1454,7 +1454,7 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 33. History pruning makes the waiting-stretch writer refuse every append for days  `[difficulty: high]`  `[priority: P1]`  `[filed: 2026-10-20]`
+### 33. History pruning makes the waiting-stretch writer refuse every append for days  `[difficulty: high]`  `[priority: P1]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
 
 **Background:** a durable waiting record's identity hashes only account, pool, start
 and end: `src/quota_router/forgone.py:80` "identity = json.dumps([row['account'],row['pool'],row['start_s'],row['end_s']]".
