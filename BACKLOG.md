@@ -1735,11 +1735,35 @@ pruning fix is on main at `e979c1a`. The concrete install-and-activate plan went
 fix-first in two fresh review rounds, so activation stopped for the operator; nothing
 was installed (the live tool is still `7f87887`) and pings stay off. Round 2 found that
 agy tool use is invisible in ping data: `num_turns` counts user turns, and #20's probe
-reported one turn for a run that completed `read_file`. The primary agy home
-loads an MCP server with an SQL execution tool, so a ping that calls it and then
-answers 2 records a success. *Operator decision pending:* all pools as approved, or
-Claude and Codex only until agy tool use can be seen or disabled. A third-revision
-plan that answers every review finding is kept privately with both reports.
+reported one turn for a run that completed `read_file`. At that time the primary agy
+home loaded an MCP server with an SQL execution tool, so a ping that called it and then
+answered 2 would record a success. A third-revision plan that answers every review
+finding is kept privately with both reports.
+
+**Operator decision 2026-10-20, after the overnight run:** "Yes turn on live pools,
+after we remove that SQL MCP server from my agy setup." Read as: turn on live pings
+for all pools, but only after the SQL-capable MCP server is gone from agy. Pings are
+still off.
+- The server was removed at 17:44Z the same day with `agy mcp remove`, after a backup
+  of agy's global MCP config. `agy mcp list` now reports no servers in either macOS
+  user's agy home. The Antigravity desktop app uses the same file through a link, so
+  it loses the server when it next reads that file.
+- One probe built like a ping ran at 17:45Z on the primary agy home's Gemini pool. It
+  asked "1 + 1 = ?" in plan mode with the sandbox on, answered 2, and started no child
+  process. This
+  is weak support only: it had no positive control and did not cover the Claude/GPT
+  pools or the second macOS user. That pool's five-hour window was already running,
+  so the probe started no new window.
+- The removal does not make agy tool use visible. Built-in tools such as `read_file`
+  stay available, and a ping that uses one still records a success.
+- Another tool may write the MCP config again. Re-run `agy mcp list` in both agy homes
+  just before activation and at each post-activation check, at most 15 minutes apart.
+  If a server is back, re-run the installer from the production checkout without
+  `WINDOW_PING_MODE=execute`. That is the rollback in Fix step 1, and no code checks
+  for a returned server.
+- Before activation: re-pin the plan to current main, re-run the test suite and the
+  replay of that revision's writer against the adopted records, and get a fresh ship
+  verdict on the plan.
 
 *Risks and edge cases:* the nine model-name probes ran once each; do not retry them.
 The exhausted Claude pool was not called. Missing served stamps are accepted under
