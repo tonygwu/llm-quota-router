@@ -1477,23 +1477,32 @@ Two triggers:
   second when it reads again);
 - an account whose snapshot has windows but an unknown tier records tier "unknown".
 
-On 2026-10-20 at 08:54:50Z a `status` run used the live config and state, but its
-history record holds 5 accounts instead of the usual 11. One Claude account came from
-the statusline cache with tier "unknown" (capacity 1.0, real tier scale 0.25), and a
-configured-tier Claude account was missing. It appended three unexplained encodings;
-the next normal `status`, 98 seconds later, appended three more that switched both
-back. The writer of the first run is unidentified. Every `status` record since at least
-2026-10-18 has `degraded: true`, because one account can never be read, so that flag
-does not mark such a run.
+On 2026-10-20 at 08:54:50Z an agent session ran
+`quotapick status --json --only codex,codex_b,claude` against the live config and
+state. `--only` disables the other accounts but keeps them in the config:
+`src/quota_router/config.py:1215` "and (not only_set or account_id in only_set)",
+while the adapters receive configs only for enabled accounts:
+`src/quota_router/providers/__init__.py:143` "accounts_fn = getattr(config, "enabled_accounts", None)",
+and the detector's `loaded_values` still iterates every account:
+`src/quota_router/calibrations.py:460` "for account, cfg in sorted(config.accounts.items()):".
+So `claude_c` came only from the statusline cache, which then has no config for it and
+reports tier "unknown" (capacity 1.0, real tier scale 0.25), and `claude_e`, whose tier
+is configured, had no snapshot. The run appended three unexplained encodings. The same
+session's unfiltered `status`, 98 seconds later, appended three more that switched both
+back; the poller's own runs at 08:54:07Z and 08:56:29Z added none. Every `status`
+record since 2026-10-19T20:40Z has `degraded: true`, because one account can never be
+read, so that flag does not mark such a run. Retained history holds 279 earlier
+`claude_c` rows read only from the statusline cache, with tier "unknown", 168 of them
+in `status` records, all from before the ledger existed.
 
 **Impact:** the waiting-capacity report treats any tier record whose effective interval
 covers a moment as making the tier uncertain there, whatever its status and even when
 only the source changed, so it gives no figure. The span runs back to the account's
 previous recorded change, however old: here the reconstruction baseline, effective
 from 2026-10-19T22:29:52Z, to 2026-10-20T08:56:28Z, about 10.4 hours for both accounts.
-Annotation clears the six standing `status` warnings but not the span, because the
-reports still count the original records. These two accounts lose nothing, because a
-Claude weekly window always runs and Claude pools never wait:
+Annotating the records cleared the six `status` warnings but not the span (Fix
+step 4), because the reports still count the original records. These two accounts
+lose nothing, because a Claude weekly window always runs and Claude pools never wait:
 `src/quota_router/window_state.py:98` "state, reason = 'running', 'claude_weekly_runs_on_clock'".
 The same failure on a pool that does wait and takes its window size from its tier,
 today the Codex accounts, would drop real waiting figures, and one bad read a week
@@ -1501,22 +1510,26 @@ after a change would blind the whole week.
 
 **Fix:**
 1. In `status` or `detect_config_changes`, any account without a usable observation in
-   this run (snapshot missing, no windows, or unknown tier) keeps its previous tier
-   encoding: record no observed tier for it and no switch from `snapshot` to `config`.
+   this run (snapshot missing, no windows, unknown tier, or disabled by `--only` or
+   `--exclude`) keeps its previous tier encoding: record no observed tier for it and no
+   switch from `snapshot` to `config`.
 2. Tests: in `tests/test_calibrations.py` next to
    `tests/test_calibrations.py:207` "def test_observed_tier_tracks_actual_writer_and_missing_observation_does_not_revert",
    a missing configured-tier account, an unknown-tier snapshot with no configured tier,
-   and an unknown-tier snapshot with a configured tier each append no encoding, while a
-   real config change still appends one; plus one `status --json` test in
-   `tests/test_calibration_cli.py` against a scratch ledger. The new tests fail on
-   today's code.
+   an unknown-tier snapshot with a configured tier, and an account disabled by `--only`
+   each append no encoding, while a real config change still appends one; plus one
+   `status --json --only` test in `tests/test_calibration_cli.py` against a scratch
+   ledger. The new tests fail on today's code.
 3. The waste writer takes each reset's scale from the history snapshot's capacity, or
    else its tier, cached or not: `src/quota_router/waste.py:625` "else capacity_for_tier(tier)".
    The 08:54:50Z entry carries capacity 1.0 for a 0.25 account. Decide whether a cached
    snapshot with an unknown tier should be skipped there, and record the choice.
-4. Do not edit or annotate existing live records; that is the operator's decision. The
-   operator may also choose a resolved `tier` belief for the span (the reports appear to
-   use one; untested).
+4. On 2026-10-20 the operator annotated the six records: `annotation-<target id>` for
+   each, appended at 2026-10-20T19:06:16.766810Z, with the evidence in the private
+   adoption record. That cleared the six `status` warnings. The reports still count the
+   original records, so the waiting-report span above remains. Do not edit or annotate
+   other live records; that is the operator's decision. The operator may also choose a
+   resolved `tier` belief for the span (the reports appear to use one; untested).
 
 *Risks and edge cases:* the fixed code's first `status` against the current live ledger
 must append nothing; check it on a scratch copy before any install. A genuine tier
