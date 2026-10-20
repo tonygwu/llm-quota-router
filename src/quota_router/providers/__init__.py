@@ -70,7 +70,7 @@ from .codex_sessions import (
     CodexAccountConfig,
     CodexSessionsAdapter,
 )
-from .cursor import CursorAdapter
+from .cursor import CURSOR_HOME_ENV, CursorAdapter
 
 __all__ = [
     "ProviderAdapter",
@@ -297,10 +297,16 @@ def build_default_adapters(
     # With no Codex account in the policy, each Codex adapter falls back to its own
     # default home, which it expands against the process HOME. An injected home must
     # move that default too, or a test that injects one reads the real ~/.codex.
+    environment = env if env is not None else os.environ
     codex_home = None
     if codex_accounts is None and home is not None:
-        environment = env if env is not None else os.environ
         codex_home = expand_user(environment.get(CODEX_HOME_ENV) or DEFAULT_CODEX_HOME, home)
+    # Cursor's ``home`` is its own directory (``~/.cursor``), not the user's home, so an
+    # injected home becomes ``<home>/.cursor`` or the override expanded against it.
+    cursor_home = None
+    if home is not None:
+        override = (environment.get(CURSOR_HOME_ENV) or "").strip()
+        cursor_home = expand_user(override or "~/.cursor", home)
     cursor_accounts = account_ids_for_provider(config, PROVIDER_CURSOR) or (ACCOUNT_CURSOR,)
     # Antigravity is opt-in, unlike every other adapter here. Until 2026-10-12 it
     # published nothing at all, so an unconditional adapter only manufactured rows that
@@ -317,7 +323,7 @@ def build_default_adapters(
         # snapshot in either order; the order states the intent.
         CodexAppServerAdapter(env=env, codex_accounts=codex_accounts, codex_home=codex_home),
         CodexSessionsAdapter(env=env, codex_accounts=codex_accounts, codex_home=codex_home),
-        CursorAdapter(env=env, home=home, account_ids=cursor_accounts),
+        CursorAdapter(env=env, home=cursor_home, account_ids=cursor_accounts),
     ]
     if antigravity_accounts:
         adapters.append(
@@ -467,7 +473,9 @@ def load_snapshots(
         accounts: Restrict the result to these accounts -- either ids or objects with an
             ``id``. Defaults to whatever the adapters found.
         home: ``$HOME`` override for the default config/cache locations, and the base
-            a leading ``~`` expands against in configured or environment paths.
+            a leading ``~`` expands against in configured or environment data paths.
+            Binary-path overrides such as ``QUOTA_ROUTER_CODEX_BIN`` name an installed
+            program and still expand against the process ``HOME``.
         allow_slow_reads: Let a source that takes seconds read live (``agy -p /usage``).
             Off by default, so a library caller with a deadline never waits on one.
     """

@@ -1696,6 +1696,14 @@ def test_an_injected_home_expands_every_tilde(tmp_path: Path, monkeypatch) -> No
         assert len(codex_adapters) == 2
         assert all([c.codex_home for c in a.accounts()] == [expected] for a in codex_adapters)
 
+    # Cursor's own directory moves with the injected home, and so does its override.
+    for cursor_env, expected in (({}, home / ".cursor"),
+                                 ({"QUOTA_ROUTER_CURSOR_HOME": "~/cur"}, home / "cur")):
+        cursor, = [a for a in build_default_adapters(config=FakePolicy(), env=cursor_env,
+                                                     home=home)
+                   if isinstance(a, CursorAdapter)]
+        assert cursor._home_dir() == expected
+
     # A declared Antigravity pool caches under the injected home, and its state file
     # override expands against it.
     adapters = build_default_adapters(

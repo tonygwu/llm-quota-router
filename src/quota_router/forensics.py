@@ -128,10 +128,16 @@ _NOT_A_CLI: Final[tuple[str, ...]] = ("Claude.app", "Claude Helper", "claudeford
 
 
 def _state_root(environ: Mapping[str, str] | None = None, home: Path | str | None = None) -> Path:
-    """State directory, following the same XDG rule as the rest of the package."""
+    """State directory: an injected ``home`` first, as the usage caches do, then
+    ``$XDG_STATE_HOME`` with a leading ``~`` expanded, then ``~/.local/state``."""
     env = os.environ if environ is None else environ
     xdg = (env.get("XDG_STATE_HOME") or "").strip()
-    base = Path(xdg) if xdg else Path(os.path.expanduser(str(home) if home else "~")) / ".local" / "state"
+    if home is not None:
+        base = Path(home) / ".local" / "state"
+    elif xdg:
+        base = expand_user(xdg)
+    else:
+        base = Path(os.path.expanduser("~")) / ".local" / "state"
     return base / "quota-router"
 
 

@@ -154,6 +154,23 @@ def test_read_credential_reports_blank_with_field_lengths() -> None:
     assert sample.field_lengths["refreshToken"] == 108
 
 
+def test_the_forensics_state_follows_an_injected_home_like_the_caches(tmp_path, monkeypatch):
+    # An injected home wins over XDG_STATE_HOME, as it does for both usage caches.
+    home = tmp_path / "injected"
+    state = forensics.forensics_state_path({"XDG_STATE_HOME": str(tmp_path / "xdg")}, home=home)
+    assert state == home / ".local" / "state" / "quota-router" / "credential-forensics.state.json"
+    # Without one, XDG_STATE_HOME wins, and a ``~`` in it expands against the process
+    # HOME, as the usage cache's does (history reads HOME from the env mapping instead).
+    monkeypatch.setenv("HOME", str(tmp_path / "process-home"))
+    assert forensics.forensics_state_path({"XDG_STATE_HOME": "~/s"}) == (
+        tmp_path / "process-home" / "s" / "quota-router" / "credential-forensics.state.json")
+    assert forensics.forensics_state_path({"XDG_STATE_HOME": str(tmp_path / "xdg")}) == (
+        tmp_path / "xdg" / "quota-router" / "credential-forensics.state.json")
+    assert forensics.forensics_state_path({}) == (
+        tmp_path / "process-home" / ".local" / "state" / "quota-router"
+        / "credential-forensics.state.json")
+
+
 def test_the_forensics_log_override_expands_against_an_injected_home() -> None:
     home = Path("/Users/somebody")
     assert forensics.forensics_log_path(
