@@ -1464,7 +1464,7 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 34. A stopped waiting-stretch writer looks like a harmless history note in status  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 34. A stopped waiting-stretch writer looks like a harmless history note in status  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
 
 **Background:** `_record_waste` turns a refused waiting-stretch append into
 `src/quota_router/cli.py:2594` "forgone recording stopped: {exc}",
