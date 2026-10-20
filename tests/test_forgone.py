@@ -250,3 +250,94 @@ def test_waste_report_refuses_malformed_history_instead_of_shortening_it(tmp_pat
     code=cli.main(['waste','--json'],env=env,stdout=out,stderr=err,cwd=str(tmp_path))
     assert code!=0
     assert not out.getvalue()
+
+
+def encoding(identifier, key, value, *, scope='account', start=None, end='1970-01-01T00:00:00Z'):
+    return dict(version=1,id=identifier,kind='encoding',account='a' if scope=='account' else None,
+                scope=scope,key=key,value=value,recorded_at='2026-10-19T00:00:00Z',
+                reconstructed=True,evidence_at='2026-10-12T00:00:00Z',source='config',
+                effective_from=start,effective_to=end,status='explained',evidence=['fixture'],
+                reason='historical fixture',annotates=None)
+
+
+def valid_ledger(ledger):
+    from quota_router import calibrations
+    for i,row in enumerate(ledger):
+        calibrations.validate_record(row,ledger[:i])
+    return ledger
+
+
+def test_incomplete_companion_is_bracketed_without_overlapping_stretches(tmp_path):
+    records=[reading(1000),reading(1400),reading(1500),reading(1800),
+             reading(2000,used=.01,start=1900)]
+    records[2]['accounts'][0]['windows']=records[2]['accounts'][0]['windows'][1:]
+    rows=forgone.detect(records)
+    assert [(r['start_s'],r['end_s']) for r in rows]==[(1000,1900)]
+    assert forgone.merge([],rows)==rows
+    assert forgone.append_records(rows,tmp_path/'forgone.jsonl')==1
+
+
+@pytest.mark.parametrize('key,scope,values',[
+    ('weekly_to_session','account',(4,8)),
+    ('capacity','account',(2,4)),
+    ('tier_scale','tier:pro',(1,2)),
+])
+def test_uncertain_encoding_is_excluded_without_falling_back(key,scope,values):
+    records=[reading(t) for t in (1000,1400,2000)]
+    if key=='tier_scale':
+        for r in records:r['accounts'][0]['capacity']=None
+    ledger=[encoding('default','weekly_to_session',6.25,scope='default'),
+            encoding('old',key,values[0],scope=scope),
+            encoding('change',key,values[1],scope=scope,start='1970-01-01T00:20:00Z',end='1970-01-01T00:30:00Z')]
+    result=forgone.summarize(forgone.detect(records),ledger=valid_ledger(ledger))
+    segment=result['rows'][0]['segments'][1]
+    assert (segment['start_s'],segment['end_s'])==(1200,1800)
+    assert segment['current']['forgone_pse'] is None
+    assert 'uncertain' in segment['current']['reason']
+    assert result['totals']['unrecomputable']==1
+    # A belief can resolve a conversion whose historical encoding is uncertain.
+    resolved=forgone.summarize(forgone.detect(records),ledger=valid_ledger([*ledger,belief()]))
+    assert resolved['totals']['unrecomputable']==0
+    assert resolved['totals']['forgone_pse']==pytest.approx(1000*8/WEEK)
+
+
+def test_historical_tier_changes_the_rate_at_its_boundary():
+    records=[reading(t) for t in (1000,1400,2000)]
+    for r in records:
+        r['accounts'][0].update(capacity=None,tier='max_5x' if r['t']<1500 else 'max_20x')
+    ledger=[encoding('k','weekly_to_session',6.25,scope='default'),
+            encoding('low','tier','max_5x'),
+            encoding('high','tier','max_20x',start='1970-01-01T00:25:00Z',end='1970-01-01T00:25:00Z'),
+            encoding('scale-low','tier_scale',.25,scope='tier:max_5x'),
+            encoding('scale-high','tier_scale',1,scope='tier:max_20x')]
+    result=forgone.summarize(forgone.detect(records),ledger=valid_ledger(ledger))
+    assert result['totals']['forgone_pse']==pytest.approx(500*6.25*.25/WEEK+500*6.25/WEEK)
+    assert result['rows'][0]['segments'][1]['current']['values']['tier']=='max_20x'
+
+
+def test_newer_scoped_clock_cannot_change_account_wide_waiting():
+    records=[reading(t) for t in (1000,1400,2000)]
+    for r in records:
+        a=r['accounts'][0]
+        a['windows'].append(dict(a['windows'][1],key='fable',applies_to=['fable'],
+                                 observed_at_s=r['t']+1))
+    row,=forgone.detect(records)
+    assert (row['start_s'],row['end_s'])==(1000,2000)
+
+
+
+def test_uncertain_tier_encoding_never_selects_a_scale_without_a_belief():
+    records=[reading(t) for t in (1000,1400,2000)]
+    for r in records:r['accounts'][0]['capacity']=None
+    ledger=valid_ledger([encoding('k','weekly_to_session',6.25,scope='default'),
+        encoding('tier-old','tier','pro'),
+        encoding('tier-new','tier','max_20x',start='1970-01-01T00:20:00Z',end='1970-01-01T00:30:00Z'),
+        encoding('scale-pro','tier_scale',1,scope='tier:pro'),
+        encoding('scale-max','tier_scale',1,scope='tier:max_20x')])
+    rows=forgone.detect(records)
+    result=forgone.summarize(rows,ledger=ledger)
+    middle=result['rows'][0]['segments'][1]['current']
+    assert middle['forgone_pse'] is None
+    assert 'uncertain historical tier encoding' in middle['reason']
+    resolved=forgone.summarize(rows,ledger=valid_ledger([*ledger,belief()]))
+    assert resolved['totals']['unrecomputable']==0

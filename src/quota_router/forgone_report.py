@@ -13,26 +13,33 @@ KEYS=('weekly_pool','weekly_to_session','capacity','tier','tier_scale')
 def _encoding(ledger, account, key, at_s, scope='account'):
     entries=[e for e in ledger if e['kind']=='encoding' and e['key']==key and
              e['scope']==scope and (scope!='account' or e['account']==account) and e['annotates'] is None]
-    if any(e['effective_from'] is not None and e['effective_to'] is not None and
-           calibrations.parse_time(e['effective_from'])<=at_s<calibrations.parse_time(e['effective_to']) for e in entries):
-        return None
+    uncertain=[e for e in entries if e['effective_from'] is not None and e['effective_to'] is not None
+               and calibrations.parse_time(e['effective_from'])<=at_s<calibrations.parse_time(e['effective_to'])]
+    if uncertain:
+        return None, uncertain
     applicable=[e for e in entries if e['effective_to'] is None and e['effective_from'] is None or
                 e['effective_to'] is not None and calibrations.parse_time(e['effective_to'])<=at_s]
-    return max(enumerate(applicable),key=lambda p:(float('-inf') if p[1]['effective_to'] is None else
-               calibrations.parse_time(p[1]['effective_to']),p[0]))[1] if applicable else None
+    entry=max(enumerate(applicable),key=lambda p:(float('-inf') if p[1]['effective_to'] is None else
+              calibrations.parse_time(p[1]['effective_to']),p[0]))[1] if applicable else None
+    return entry, []
 
 
 def _conversion(row, ledger, at_s):
     raw=row['start_evidence']
-    k=_encoding(ledger,row['account'],'weekly_to_session',at_s)
-    if k is None:
-        k=_encoding(ledger,row['account'],'weekly_to_session',at_s,scope='default')
-    scale=_encoding(ledger,row['account'],'tier_scale',at_s,scope='tier:'+raw['tier'])
-    capacity=_encoding(ledger,row['account'],'capacity',at_s)
-    size=capacity['value'] if capacity is not None else raw['capacity']
-    basis=dict(k=k['value'] if k else None, tier=raw['tier'],
-               window_size=size if size is not None else scale['value'] if scale else None,
-               window_size_source='capacity' if size is not None else 'tier', fable_fraction=None)
+    k,k_uncertain=_encoding(ledger,row['account'],'weekly_to_session',at_s)
+    if k is None and not k_uncertain:
+        k,k_uncertain=_encoding(ledger,row['account'],'weekly_to_session',at_s,scope='default')
+    tier,tier_uncertain=_encoding(ledger,row['account'],'tier',at_s)
+    tier_value=None if tier_uncertain else tier['value'] if tier else raw['tier']
+    scale,scale_uncertain=(None,[]) if tier_value is None else _encoding(
+        ledger,row['account'],'tier_scale',at_s,scope='tier:'+tier_value)
+    capacity,capacity_uncertain=_encoding(ledger,row['account'],'capacity',at_s)
+    size=None if capacity_uncertain else capacity['value'] if capacity else raw['capacity']
+    # Unknown explicit capacity must not quietly become a tier fallback.
+    mode='capacity' if capacity_uncertain or size is not None else 'tier'
+    basis=dict(k=k['value'] if k else None, tier=tier_value,
+               window_size=size if mode=='capacity' else scale['value'] if scale else None,
+               window_size_source=mode, fable_fraction=None)
     beliefs=[e for key in KEYS if (e:=calibrations.resolve_belief(ledger,row['account'],key,at_s)) is not None]
     order={e['id']:i for i,e in enumerate(ledger)}
     beliefs.sort(key=lambda e:(calibrations.parse_time(e['recorded_at']),order[e['id']]))
@@ -46,18 +53,38 @@ def _conversion(row, ledger, at_s):
             suppliers['k']=entry
         elif entry['key'] in {'capacity','tier_scale'}:
             suppliers['window_size']=entry
+        elif entry['key']=='tier':
+            suppliers['tier']=entry
+    size_supplier=suppliers.get('window_size')
+    uses_scale=size_supplier is None and mode=='tier'
+    uncertainty=[]
+    if k_uncertain and 'k' not in suppliers:
+        uncertainty.append('uncertain historical weekly_to_session encoding')
+    if capacity_uncertain and size_supplier is None:
+        uncertainty.append('uncertain historical capacity encoding')
+    if uses_scale:
+        if tier_uncertain and 'tier' not in suppliers:
+            uncertainty.append('uncertain historical tier encoding')
+        if scale_uncertain and not extra:
+            uncertainty.append('uncertain historical tier_scale encoding')
+    if uncertainty:
+        missing='; '.join(uncertainty)
     provenance={
-        'k': {'source':'belief' if 'k' in suppliers else k['source'] if k else 'missing',
+        'k': {'source':'belief' if 'k' in suppliers else 'uncertain' if k_uncertain else k['source'] if k else 'missing',
               'ledger_id':suppliers['k']['id'] if 'k' in suppliers else k['id'] if k else None},
-        'window_size': {'source':'belief' if 'window_size' in suppliers else capacity['source'] if capacity else
+        'window_size': {'source':'tier_fallback' if uses_scale else 'belief' if size_supplier else
+                        'uncertain' if capacity_uncertain else capacity['source'] if capacity else
                         'observed_capacity' if size is not None else 'tier_fallback',
-                        'ledger_id':suppliers['window_size']['id'] if 'window_size' in suppliers else
+                        'ledger_id':scale['id'] if uses_scale and scale else size_supplier['id'] if size_supplier else
                         capacity['id'] if capacity else scale['id'] if scale else None}}
     for component,detail in provenance.items():
         supplier=suppliers.get(component)
-        detail['measurement_ids']=supplier['measurement_ids'] if supplier else []
+        detail['measurement_ids']=supplier['measurement_ids'] if supplier and not (component=='window_size' and uses_scale) else []
         detail['unmeasured']=not bool(detail['measurement_ids'])
     ids=[e['id'] for e in active]+extra+[d['ledger_id'] for d in provenance.values() if d['ledger_id'] is not None]
+    if uses_scale and tier is not None:
+        ids.append(tier['id'])
+    ids.extend(e['id'] for group in (k_uncertain,capacity_uncertain,tier_uncertain,scale_uncertain) for e in group)
     return proxy,basis,beliefs,values,active,missing,list(dict.fromkeys(ids)),provenance
 
 

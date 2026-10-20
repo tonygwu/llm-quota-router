@@ -31,6 +31,13 @@ def detect(records):
                 if active is not None:
                     active['stale_reads'].append(_evidence(read))
                 continue
+            if read['state'] == 'unknown':
+                if active is not None:
+                    active['gaps'].append(dict(start_s=active['end_s'],end_s=at,
+                        counted=False,reason='incomplete_observation',evidence=_evidence(read)))
+                # A partial observation cannot establish an end. If waiting
+                # resumes, its original start still belongs to this stretch.
+                continue
             if read['state'] == 'waiting':
                 windows = [w for w in read['windows'] if not w['applies_to']]
                 if active is None:
@@ -40,6 +47,9 @@ def detect(records):
                         start_evidence=_evidence(read), last_waiting_evidence=_evidence(read),
                         end_evidence=None, status='accruing', gaps=[], stale_reads=[])
                 else:
+                    for gap in active['gaps']:
+                        if gap['reason']=='incomplete_observation' and gap['start_s']==active['end_s']:
+                            gap.update(end_s=at,counted=True,reason='waiting_brackets_incomplete_observation')
                     if at-active['end_s'] > GAP_S:
                         active['gaps'].append(dict(start_s=active['end_s'],end_s=at,counted=True,
                             reason='waiting_on_both_sides'))

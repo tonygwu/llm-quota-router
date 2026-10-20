@@ -872,14 +872,14 @@ def detect_resets(
                 continue
             windows = [_raw_window(w) for w in reading.windows.values()
                        if w.observed_at_s is not None]
-            if not windows or len({w["observed_at_s"] for w in windows}) != 1:
+            if not windows:
                 continue
             state_inputs.append({"accounts": [{"id": account_id, "provider": reading.provider,
                 "tier": reading.tier, "capacity": reading.tier_scale,
                 "source": reading.source, "windows": windows}]})
-    states = {(account, r["at_s"], key): state["state"]
+    states = {(account, w["observed_at_s"], w["key"]): r["window_states"][w["key"]]["state"]
               for account, reads in classify(state_inputs).items()
-              for r in reads for key, state in r["window_states"].items()}
+              for r in reads for w in r["windows"]}
     for account_id, readings in sorted(series.items()):
         plan = plans.get(account_id) or Plan()
         for before, after in zip(readings, readings[1:]):
@@ -890,7 +890,7 @@ def detect_resets(
                 later = after.windows.get(key)
                 if later is None:
                     continue
-                if states.get((account_id, before.observed_at_s, key)) in {"waiting", "stale"}:
+                if states.get((account_id, window.observed_at_s, key)) in {"waiting", "stale"}:
                     # Nothing ran here. Its elapsed capacity belongs to the
                     # forgone log, including sparse sliding reads and old replicas.
                     continue

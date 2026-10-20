@@ -27,7 +27,9 @@ The 240-second tolerance matches the existing poll/provider allowance. Fixed til
 boundaries allow two seconds of precision jitter. A gap longer than 600 seconds,
 five poll intervals, counts when successful waiting reads bracket it. Otherwise
 the stretch ends at its last waiting read and the report shows the unknown interval
-and possible first-use boundary. Failed reads never start or extend a stretch.
+and possible first-use boundary. Failed reads never start or extend a stretch. Incomplete observations retain
+the active stretch without extending it; subsequent waiting evidence brackets
+the gap instead of creating an overlapping second stretch.
 An old replica seen before an early reset does not end the new waiting stretch.
 Open stretches accrue only through their last successful waiting observation,
 not through the report's wall clock. Mixed window clocks cannot establish that
@@ -40,21 +42,25 @@ silently shortening its evidence.
 The report splits a stretch at historical belief and encoding boundaries and at
 the first live ping result's `started_at_s`. Resolved segments enter the forgone
 total. Unresolved segments retain every candidate and enter neither current total.
-Missing historical conversions stay explicitly unrecomputable. The report retains
+Missing or uncertain historical conversions stay explicitly unrecomputable.
+Uncertainty never falls back to a default. An applicable belief may resolve it.
+Known tier changes select the corresponding historical scale for each segment.
+A model-scoped clock cannot change the account-wide observation clock. The report retains
 basis values, ledger ids, and measured versus unmeasured component provenance.
 A ping attempt without a result does not prove a call happened and cannot establish
 the comparison boundary.
 
 ## Retained-history proposal
 
-A private copy of 122 input files, including the immutable reset log, preserved the
-retained data. Its manifest records byte sizes and SHA-256 hashes. The history's
+The operator preserved a read-only copy of 121 history files outside git. The
+reconstruction uses that copy. An earlier private evidence copy also retained the
+immutable reset log and records byte sizes and SHA-256 hashes in its manifest. The history's
 status records begin September 20. Some cached observations carry earlier vendor
 clocks; these are retained as evidence, not assigned the status record's clock.
 The proposal ends at the saved history's last status observation on October 20,
-2026, at 05:03:17 UTC. This is an offline proposal, not live adoption.
+2026, at 05:19:28 UTC. This is an offline proposal, not live adoption.
 
-The read-only reconstruction attempted 30,627 history records, succeeded on 30,627,
+The read-only reconstruction attempted 30,648 history records, succeeded on 30,648,
 and failed on zero. It found 19 closed stretches, two with bounded ends, and no
 open stretch. No live ping result journal was present in this evidence copy.
 All figures below therefore belong to the period before live pings.

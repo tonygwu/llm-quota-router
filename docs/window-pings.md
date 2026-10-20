@@ -133,15 +133,16 @@ of a successful ping or window start.
 
 ## Router-model follow-up
 
-The scorer and waste detector still treat published reset timestamps as deadlines,
-including waiting windows. A synthetic pool with both windows waiting, capacity 2.43,
-weekly/session ratio 4 and demand 0.04 PSE/h reports **3.000 PSE at risk**. There is no
-expiring stock while both windows wait. A weekly waiting window observed twice with
-a 310000-second gap also becomes an "early" reset with the whole weekly stock
-forfeited (9.72 PSE with that plan). Dense sliding reads instead produce drift warnings.
-This is follow-up work, deliberately outside the ping implementation: retain the
-real weekly risk when only the five-hour window waits, and never rewrite historical
-waste rows to fix the model.
+The scorer still treats published reset timestamps as deadlines, including waiting
+windows. A synthetic pool with both windows waiting, capacity 2.43, weekly/session
+ratio 4 and demand 0.04 PSE/h reports **3.000 PSE at risk**. Correcting that ranking
+remains #28's work. The shared temporal classifier now prevents dense and sparse
+sliding reads from becoming resets in the waste detector. A 310000-second gap
+between waiting observations produces no early forfeit. Instead, the forgone
+report counts elapsed paid capacity at the pool's binding rate. A running weekly
+window beside a waiting five-hour window retains real reset risk. Historical
+`waste.jsonl` rows are never rewritten. See the
+[waiting-capacity reconstruction](measurements/2026-10-20-forgone-capacity.md).
 
 Reproduce the router-model observations without operator state:
 
@@ -169,4 +170,4 @@ PY
 ```
 
 Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and
-`[('early', True, 9.72)]`.
+`[]`.

@@ -55,11 +55,11 @@ def observations(records):
                 windows.append(dict(w, not_running=True, applies_to=[]))
             if not windows:
                 continue
-            times = {w['observed_at_s'] for w in windows}
+            times = {w['observed_at_s'] for w in windows if not w['applies_to']}
             # Claude can combine a fresh weekly response with its last local 5h
             # reading. Preserve both clocks and refuse to infer pool waiting from
             # such a mixed observation. A known running weekly still rules it out.
-            at = max(times)
+            at = max(times) if times else max(w['observed_at_s'] for w in windows)
             observation = dict(at_s=at, provider=raw['provider'], windows=windows,
                                tier=raw['tier'], capacity=raw.get('capacity'))
             recorded = record.get('t', at)  # Legacy in-memory reset fixtures lack t.
