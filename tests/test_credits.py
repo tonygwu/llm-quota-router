@@ -437,9 +437,20 @@ def test_status_dry_run_records_nothing(env) -> None:
     assert {"history.jsonl", "forecast.json"} <= {Path(k).name for k in after}
     assert after["quota-router/credits.jsonl"] != before["quota-router/credits.jsonl"]
     assert after["quota-router/calibrations.jsonl"] != before["quota-router/calibrations.jsonl"]
-    # A dry run now shows the same unexplained-encoding warnings, and adds none.
-    recorded = [w for w in json.loads(_out)["warnings"] if w.startswith("unexplained calibration")]
-    assert recorded
+    # A dry run shows the same unexplained-encoding warnings as a recording run, honours
+    # annotations the same way, and adds nothing.
+    first = next(r for r in calibrations.read_records(env=env)
+                 if r["kind"] == "encoding" and r["status"] == "unexplained")
+    calibrations.append_records([dict(
+        first, id="evidence-added", status="explained", annotates=first["id"],
+        evidence=["docs/fixture.md#annotation"], reason="Fixture annotation",
+        recorded_at=calibrations.format_time(expires + 1.5 * HOUR))], env=env)
+    code, out, err = run(["status", "--json"], env, snapshots=real_capture(),
+                         now_s=expires + 2 * HOUR, cwd=_NO_CONFIG_FILES)
+    assert code == cli.EXIT_OK, err
+    recorded = [w for w in json.loads(out)["warnings"] if w.startswith("unexplained calibration")]
+    assert recorded and not any(first["id"] in w for w in recorded)
+    after = _state_bytes(env)
     code, out, err = run(["status", "--dry-run", "--json"], env, snapshots=real_capture(),
                          now_s=expires + 2 * HOUR, cwd=_NO_CONFIG_FILES)
     assert code == cli.EXIT_OK, err
