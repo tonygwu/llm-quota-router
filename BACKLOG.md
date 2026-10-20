@@ -1149,25 +1149,30 @@ folder in the checkout container. No code.
 
 ---
 
-### 43. Six config sections ignore a mistyped key silently  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #0]`
+### 45. Typos in `[providers]`, `[tiers]` and `[exec.*]` load silently, and `[exec] env_vars` changes nothing  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** since #17 (2026-10-20) `[engine]`, `[credit_pools]` and account sections
-name an unknown key and ignore it. A review of #17 loaded a config with misspelled keys
-in `[hysteresis]`, `[staleness]`, `[eligibility]`, `[pileup]`, `[oracle]` and `[exec]`:
-the loader returned no warnings and kept the defaults (1.15 and 0.02 among them). Each
-section is read from a table merged with the built-in defaults,
-`src/quota_router/config.py:1634` "hysteresis_raw = _as_table(merged.get(",
-so the known set for each must include the default keys, and `[hysteresis]` reads two
-names for some settings (`switch_margin_ratio` and `switch_margin_multiplier`).
+**Background:** #43 (2026-10-20) closed the top-level keys of seven sections, but the
+tables whose keys are provider or tier names stay open. In the review of #43, a config
+with `[providers] claud = 0.5`, `[tiers] max20x = 0.5`, `[exec.commands] codx = "x"` and
+`[exec.env_vars] codex = "MY_CODEX_HOME"` loaded with no warning, and each value sat in
+its table unused. `[exec]` is also partly dead. Each account takes its command and its
+config-dir variable from the module constants
+(`src/quota_router/config.py:450` "return self.env_var or PROVIDER_CONFIG_DIR_ENV.get("),
+not from `config.exec`. The one reader of `config.exec` is
+`src/quota_router/run.py:514` "binary = _claude_binary(env, config.exec.commands.get(",
+for the `claude` command alone.
 
-**Impact:** a typo in a hysteresis margin, a staleness bound or the eligibility floor
-leaves the router on its default and says nothing, as an account typo did before #17.
+**Impact:** a mistyped provider weight or tier weight leaves the router on its default and
+says nothing, which #17 and #43 removed everywhere else. An operator who sets
+`[exec.env_vars]` or a non-Claude `[exec.commands]` entry gets no effect and no warning.
 
-**Fix:** a closed key set per section, warned about by name as `_ACCOUNT_KEYS` is, with
-a test per section and a test that each set equals what its loader reads.
+**Fix:** warn on a key of `[providers]`, `[tiers]`, `[exec.commands]` or `[exec.env_vars]`
+that names no known provider or tier. Then either make `exec_command` and
+`config_dir_env_var` read `config.exec`, or warn that `[exec]` is read only for `claude`
+and say so in the README.
 
-**Touch points:** `config.py` around the six `_as_table(merged.get(...))` reads, and
-`tests/test_engine_config.py` or a new config test.
+**Touch points:** `src/quota_router/config.py` (`_build`, `AccountConfig`),
+`src/quota_router/run.py`, `README.md`, and `tests/test_section_config.py`.
 
 ---
 
