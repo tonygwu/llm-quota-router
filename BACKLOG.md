@@ -1149,25 +1149,25 @@ folder in the checkout container. No code.
 
 ---
 
-### 17. A mistyped key in an account section is ignored silently  `[difficulty: low]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
+### 43. Six config sections ignore a mistyped key silently  `[difficulty: low]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** `_build_accounts` (`config.py:1361`) reads the keys it knows from each
-`[accounts.<id>]` table and ignores the rest. `[engine]` (`config.py:708`) and
-`[credit_pools]` (`config.py:875`) warn on an unknown key; account sections do not.
-Reproduced on 2026-10-18 while shipping #9: `capacty = 0.088` loads with no warning and
-`Config.capacities()` is empty.
+**Background:** since #17 (2026-10-20) `[engine]`, `[credit_pools]` and account sections
+name an unknown key and ignore it. A review of #17 loaded a config with misspelled keys
+in `[hysteresis]`, `[staleness]`, `[eligibility]`, `[pileup]`, `[oracle]` and `[exec]`:
+the loader returned no warnings and kept the defaults (1.15 and 0.02 among them). Each
+section is read from a table merged with the built-in defaults,
+`src/quota_router/config.py:1634` "hysteresis_raw = _as_table(merged.get(",
+so the known set for each must include the default keys, and `[hysteresis]` reads two
+names for some settings (`switch_margin_ratio` and `switch_margin_multiplier`).
 
-**Impact:** a typo in the one key that sizes a pool, or in `weekly_to_session`,
-`plan_ends`, `manual_rate_per_day` or `deprioritize`, leaves the router on its default
-and says nothing. The operator finds out from routing, if at all.
+**Impact:** a typo in a hysteresis margin, a staleness bound or the eligibility floor
+leaves the router on its default and says nothing, as an account typo did before #17.
 
-**Fix:** keep the account keys as a closed set the way `_CREDIT_POOL_KEYS` is
-(`config.py:787-800`), and append one warning per unknown key naming the known ones, as
-the credit-pool loader does. A test loads a section with one misspelled key and asserts
-the warning; another loads every known key and asserts none.
+**Fix:** a closed key set per section, warned about by name as `_ACCOUNT_KEYS` is, with
+a test per section and a test that each set equals what its loader reads.
 
-**Touch points:** `config.py:1361-1571` (`_build_accounts`), `config.py:787-800` for the
-pattern, and `tests/test_engine_config.py` or a new `tests/test_account_config.py`.
+**Touch points:** `config.py` around the six `_as_table(merged.get(...))` reads, and
+`tests/test_engine_config.py` or a new config test.
 
 ---
 
