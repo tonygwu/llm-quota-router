@@ -1171,7 +1171,7 @@ a test per section and a test that each set equals what its loader reads.
 
 ---
 
-### 18. Eleven test calls read the operator's live config through `load_config(env={})`  `[difficulty: low]`  `[filed: 2026-10-18]`
+### 18. Eleven test calls read the operator's live config through `load_config(env={})`  `[difficulty: low]`  `[filed: 2026-10-18]`  `[claimed by: #0]`
 
 **Background:** `load_config(env={})` falls back to `Path.home()` for an absent HOME and to
 `Path.cwd()` for an absent cwd, so it reads `~/.config/quota-router/config.toml` and any
