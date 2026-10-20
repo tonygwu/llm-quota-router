@@ -2585,10 +2585,17 @@ def _record_waste(config: Config, env: Mapping[str, str]) -> list[str]:
     ledger = calibrations_mod.read_records(env=env)
     write = waste_mod.update_from_history(records, plans=plans, env=env, ledger=ledger)
     from . import forgone
+    counts: dict[str, int] = {}
     try:
-        forgone.append_records(forgone.detect(records), env=env)
+        forgone.append_records(forgone.detect(records), env=env, counts=counts)
     except (ValueError, KeyError, OSError) as exc:
         warnings.append(f"forgone recording stopped: {exc}")
+    if counts.get("retention_shifted"):
+        # Expected for weeks after pruning, so it is a history note, not a live warning.
+        warnings.append(
+            f"forgone kept {counts['retention_shifted']} durable stretch(es) whose "
+            "re-detection names a later window waiting start after history pruning"
+        )
     return warnings + list(write.warnings)
 
 

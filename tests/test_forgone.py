@@ -118,7 +118,9 @@ def test_finished_raw_survives_pruning_and_duplicate_append(tmp_path):
     path=tmp_path/'forgone.jsonl'
     assert forgone.append_records(rows,path=path)==1
     original=path.read_bytes()
-    assert forgone.append_records(rows,path=path)==0
+    counts={}
+    assert forgone.append_records(rows,path=path,counts=counts)==0
+    assert counts=={'retention_shifted':0}
     assert path.read_bytes()==original
     retained=forgone.read_records(path=path)
     assert retained==rows
@@ -370,3 +372,166 @@ def test_uncertain_tier_encoding_never_selects_a_scale_without_a_belief():
     assert 'uncertain historical tier encoding' in middle['reason']
     resolved=forgone.summarize(rows,ledger=valid_ledger([*ledger,belief()]))
     assert resolved['totals']['unrecomputable']==0
+
+
+def companion_reading(t, *, session_used=0, session_start=None):
+    """The 7d companion waits from its first read; the 5h window carries use."""
+    session_reset = (t if session_start is None else session_start) + 18000
+    windows = [dict(key='5h', used_fraction=session_used, length_s=18000, resets_at_s=session_reset,
+                    observed_at_s=t, applies_to=[]),
+               dict(key='7d', used_fraction=0, length_s=WEEK, resets_at_s=t+WEEK,
+                    observed_at_s=t, applies_to=[])]
+    return {'t': t, 'event': 'status', 'accounts': [dict(id='a', provider='antigravity',
+            tier='pro', capacity=2, source='live', available=True, confidence=1, windows=windows)]}
+
+
+def companion_history():
+    # The 5h window runs to its fixed 20000 deadline, waits, and is used at 21900.
+    # An old replica (stale read) and a mixed-clock read (unknown, a gap) carry the
+    # companion's waiting start into stale_reads and gap evidence as well.
+    running = [companion_reading(t, session_used=.1, session_start=2000) for t in (1000, 1400, 19000, 19500)]
+    stale = companion_reading(20600, session_used=.1, session_start=2000)
+    mixed = companion_reading(21000)
+    mixed['accounts'][0]['windows'][1]['observed_at_s'] = 20990
+    waiting = [companion_reading(20400), stale, companion_reading(20800), mixed, companion_reading(21400)]
+    used = [companion_reading(22000, session_used=.01, session_start=21900)]
+    return running + waiting + used
+
+
+def later_stretch():
+    # The 5h window used at 21900 resets at 39900, waits again and is used at 41900.
+    running = [companion_reading(39000, session_used=.2, session_start=21900)]
+    waiting = [companion_reading(t) for t in (40400, 40800, 41400)]
+    return running + waiting + [companion_reading(42000, session_used=.01, session_start=41900)]
+
+
+def test_retention_shifted_companion_start_keeps_durable_row_and_appends_new(tmp_path):
+    history = companion_history()
+    row, = forgone.detect(history)
+    assert (row['start_s'], row['end_s'], row['status']) == (20000, 21900, 'finished')
+    assert row['start_evidence']['window_states']['7d']['waiting_since_s'] == 1000
+    assert row['stale_reads'][0]['window_states']['7d']['waiting_since_s'] == 1000
+    assert row['gaps'][0]['evidence']['window_states']['7d']['waiting_since_s'] == 1000
+    path = tmp_path/'forgone.jsonl'
+    assert forgone.append_records([row], path=path) == 1
+    durable = path.read_bytes()
+
+    # Thirty-day retention deletes the first two reads; the identity is unchanged.
+    pruned = history[2:]
+    again, = forgone.detect(pruned)
+    assert again['id'] == row['id'] and again != row
+    assert again['start_evidence']['window_states']['7d']['waiting_since_s'] == 19000
+    assert again['stale_reads'][0]['window_states']['7d']['waiting_since_s'] == 19000
+    assert again['gaps'][0]['evidence']['window_states']['7d']['waiting_since_s'] == 19000
+    counts = {}
+    assert forgone.append_records([again], path=path, counts=counts) == 0
+    assert counts == {'retention_shifted': 1}
+    assert path.read_bytes() == durable
+
+    # The same poll still records a stretch that closed since.
+    rows = forgone.detect(pruned + later_stretch())
+    assert [r['id'] for r in rows][0] == row['id'] and len(rows) == 2
+    counts = {}
+    assert forgone.append_records(rows, path=path, counts=counts) == 1
+    assert counts == {'retention_shifted': 1}
+    assert path.read_bytes().startswith(durable)
+    assert forgone.read_records(path=path) == [row, rows[1]]
+
+
+@pytest.mark.parametrize('change', ['end_evidence', 'status', 'earlier_start', 'reason', 'state',
+                                    'no_start', 'extra_window', 'extra_stale_read', 'stale_earlier',
+                                    'gap_state', 'missing_key'])
+def test_other_same_identity_differences_still_raise(tmp_path, change):
+    row, = forgone.detect(companion_history())
+    path = tmp_path/'forgone.jsonl'
+    forgone.append_records([row], path=path)
+    durable = path.read_bytes()
+    altered, = forgone.detect(companion_history()[2:])
+    if change == 'end_evidence':
+        altered['end_evidence']['capacity'] = 3
+    elif change == 'status':
+        altered['status'] = 'bounded'
+    elif change == 'earlier_start':
+        altered['start_evidence']['window_states']['7d']['waiting_since_s'] = 999
+    elif change == 'reason':
+        altered['last_waiting_evidence']['window_states']['7d']['reason'] = 'provider_says_not_running'
+    elif change == 'state':
+        altered['start_evidence']['window_states']['7d']['state'] = 'unknown'
+    elif change == 'no_start':
+        altered['start_evidence']['window_states']['7d']['waiting_since_s'] = None
+    elif change == 'extra_window':
+        altered['start_evidence']['window_states']['x'] = dict(state='waiting', reason='r', waiting_since_s=1)
+    elif change == 'extra_stale_read':
+        altered['stale_reads'].append(altered['stale_reads'][0])
+    elif change == 'stale_earlier':
+        altered['stale_reads'][0]['window_states']['7d']['waiting_since_s'] = 999
+    elif change == 'gap_state':
+        altered['gaps'][0]['evidence']['window_states']['7d']['state'] = 'stale'
+    else:
+        del altered['gaps'][0]['evidence']['window_states']['7d']['reason']
+    with pytest.raises(ValueError, match='conflicting forgone record identity'):
+        forgone.append_records([altered], path=path)
+    assert path.read_bytes() == durable
+
+
+def test_model_scoped_companion_shift_is_kept(tmp_path):
+    # Codex shape: the weekly window carries the stretch; a model-scoped window waits earlier.
+    def codex(t, *, used=0, start=None):
+        r = reading(t, provider='codex', keys=('7d',), used=used, start=start)
+        r['accounts'][0]['windows'].append(dict(key='model_7d', used_fraction=0, length_s=WEEK,
+            resets_at_s=t+WEEK, observed_at_s=t, applies_to=['gpt']))
+        return r
+    history = ([codex(t, used=.1, start=500) for t in (1000, 1400, 2000, 2400)] +
+               [codex(t) for t in (WEEK+600, WEEK+1000, WEEK+1600)] +
+               [codex(WEEK+2000, used=.01, start=WEEK+1900)])
+    row, = forgone.detect(history)
+    assert row['start_evidence']['window_states']['model_7d']['waiting_since_s'] == 1000
+    path = tmp_path/'forgone.jsonl'
+    forgone.append_records([row], path=path)
+    durable = path.read_bytes()
+    again, = forgone.detect(history[2:])
+    assert again['id'] == row['id']
+    assert again['start_evidence']['window_states']['model_7d']['waiting_since_s'] == 2000
+    counts = {}
+    assert forgone.append_records([again], path=path, counts=counts) == 0
+    assert counts == {'retention_shifted': 1} and path.read_bytes() == durable
+
+
+def test_record_waste_reports_retention_shift_note_only_after_pruning(tmp_path):
+    import io
+    from quota_router import cli, calibrations
+    root = tmp_path/'state'/'quota-router'
+    root.mkdir(parents=True)
+    env = {'HOME': str(tmp_path), 'XDG_STATE_HOME': str(tmp_path/'state'),
+           'XDG_CONFIG_HOME': str(tmp_path/'config'), 'PATH': '/usr/bin:/bin'}
+    calibrations.append_records([belief()], env=env)
+    def backfill(records):
+        (root/'history.jsonl').write_text(''.join(json.dumps(dict(r, v=1))+'\n' for r in records))
+        out, err = io.StringIO(), io.StringIO()
+        assert cli.main(['waste', '--backfill'], env=env, stdout=out, stderr=err, cwd=str(tmp_path)) == 0, err.getvalue()
+        return err.getvalue()
+    assert 'forgone kept' not in backfill(companion_history())
+    assert 'forgone kept' not in backfill(companion_history())
+    durable = (root/'forgone.jsonl').read_bytes()
+    err = backfill(companion_history()[2:])
+    assert 'forgone kept 1 durable stretch(es)' in err and 'forgone recording stopped' not in err
+    assert (root/'forgone.jsonl').read_bytes() == durable
+
+
+def _states(since):
+    return {'window_states': {'7d': dict(state='waiting', reason='r', waiting_since_s=since)}}
+
+
+@pytest.mark.parametrize('durable,proposed,accepted', [
+    (_states(1000), _states(2000), True),
+    (_states(1000), _states(1000.0), True),
+    (_states(None), _states(5), False),
+    (_states(5), _states(None), False),
+    (_states(1000), _states(999), False),
+    ({'a': 1}, {'a': 1, 'b': 2}, False),
+    ({'a': 1, 'b': 2}, {'a': 1}, False),
+    ({'a': [1]}, {'a': [1, 2]}, False),
+    ({'a': [1]}, {'a': {'0': 1}}, False),
+])
+def test_only_later_waiting_starts_are_accepted(durable, proposed, accepted):
+    assert forgone._later_waiting_only(durable, proposed) is accepted

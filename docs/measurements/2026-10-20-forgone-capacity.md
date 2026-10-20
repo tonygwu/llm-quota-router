@@ -13,6 +13,10 @@ pool, window keys, start and end evidence, waiting reasons, observation gaps, an
 old replica responses. They contain no derived PSE. An exclusive lock covers
 validation, duplicate checks and appending; a conflicting or overlapping record
 fails instead of silently replacing evidence. Closed records survive history pruning.
+After pruning, a re-detected stretch can keep its identity while a window's evidence
+names a later waiting start, because that window's first retained read is later. The
+writer keeps the durable row in that case and counts it as `retention_shifted`; any
+other difference under the same identity still fails.
 
 `window_state.classify` is the shared temporal classifier for this accounting and
 reset detection. The ping eligibility test is intentionally weaker. A zero reading
@@ -160,7 +164,14 @@ defect. Cutoffs from October 2 to 7 and from October 14 to 16 re-detect an adopt
 identity with later waiting starts for a window that was already waiting, and the
 writer then refuses every append. The first of these cutoffs arrives on November 1
 UTC. The report reader is unaffected. The writer's own first run would append the
-same 19 records, so the defect does not depend on this adoption. #33 carries the fix.
+same 19 records, so the defect does not depend on this adoption.
+
+The fix keeps the durable row when the only difference is a later window waiting
+start. The same replay script, run against the 19 approved records and copies of
+live history taken minutes apart on 2026-10-20 UTC, gives attempted 31, succeeded 22,
+failed 9 (`conflicting forgone record identity`, the same nine cutoffs) at `b3a3296`,
+and attempted 31, succeeded 31, failed 0 with the fix. Both first runs pass, and every
+cutoff appends two stretches that closed after the proposal was saved.
 
 ## Reproduction and adoption
 
@@ -198,4 +209,6 @@ produced a false early reset with 12.5 PSE forfeited. The same fixture now produ
 zero reset rows and one waiting stretch. `tests/test_forgone.py` covers waiting
 and running companions, rounded-zero use, explicit no-window markers, stale
 replicas, first use, gap bounds, unresolved candidates, changing beliefs, ping
-comparisons and closed records surviving history removal.
+comparisons, closed records surviving history removal, and a re-detection after
+pruning whose only difference is a later waiting start in start, last-waiting, end,
+stale-read or gap evidence.

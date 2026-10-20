@@ -168,8 +168,42 @@ def read_records(path=None,*,env=None):
         return []
 
 
-def append_records(rows, path=None,*,env=None):
-    """Lock validation and append together. Only closed stretches are durable."""
+def _later_waiting_only(durable, proposed, *, states=False):
+    """True when proposed differs from durable only by later window waiting starts.
+
+    Retention deletes a window's earliest reads, so its first retained read
+    gives a later waiting start while the stretch identity is unchanged. That
+    is the only accepted difference; any other one is a real conflict.
+    """
+    if states:
+        if not isinstance(durable,dict) or not isinstance(proposed,dict) or durable.keys()!=proposed.keys():
+            return False
+        for key,old in durable.items():
+            new=proposed[key]
+            if not isinstance(old,dict) or not isinstance(new,dict) or old.keys()!=new.keys():
+                return False
+            if any(old[k]!=new[k] for k in old if k!='waiting_since_s'):
+                return False
+            since,later=old.get('waiting_since_s'),new.get('waiting_since_s')
+            if since!=later and (since is None or later is None or later<since):
+                return False
+        return True
+    if isinstance(durable,dict) and isinstance(proposed,dict):
+        return durable.keys()==proposed.keys() and all(
+            _later_waiting_only(durable[k],proposed[k],states=k=='window_states') for k in durable)
+    if isinstance(durable,list) and isinstance(proposed,list):
+        return len(durable)==len(proposed) and all(
+            _later_waiting_only(a,b) for a,b in zip(durable,proposed))
+    return durable==proposed
+
+
+def append_records(rows, path=None,*,env=None,counts=None):
+    """Lock validation and append together. Only closed stretches are durable.
+
+    A re-detected durable stretch whose only difference is a later window
+    waiting start keeps the durable row; ``counts['retention_shifted']``
+    reports how many, when a dict is passed.
+    """
     target=Path(path) if path is not None else forgone_path(env)
     proposed=[deepcopy(row) for row in rows if row['status']!='accruing']
     for row in proposed:
@@ -180,10 +214,13 @@ def append_records(rows, path=None,*,env=None):
         existing=_loads(handle.read().decode())
         known={r['id']:r for r in existing}
         appended=0
+        shifted=0
         for row in proposed:
             if row['id'] in known:
                 if known[row['id']]!=row:
-                    raise ValueError('conflicting forgone record identity')
+                    if not _later_waiting_only(known[row['id']],row):
+                        raise ValueError('conflicting forgone record identity')
+                    shifted+=1
                 continue
             # A prefix reconstructed after retention starts later must not be
             # appended over an already durable stretch from the complete history.
@@ -203,6 +240,8 @@ def append_records(rows, path=None,*,env=None):
         handle.flush()
         import os
         os.fsync(handle.fileno())
+    if counts is not None:
+        counts['retention_shifted']=shifted
     return appended
 
 
