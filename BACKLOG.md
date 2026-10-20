@@ -367,25 +367,6 @@ landed on 2026-10-19.
 
 ---
 
-### 5. A `run` client cannot tell from an attempt whether it was billed  `[difficulty: high]`  `[filed: 2026-10-15]`  `[claimed by: #0]`
-
-A client may route a failed `quotapick run` call some other way only if nothing was
-spent. Today it has to infer that from each attempt's `outcome` and `cost_usd`. Two cases
-make the inference fragile. First, `auth` means either a refused login (nothing ran) or a
-finished call whose `apiKeySource` was not the expected one (the call ran and was billed);
-only a non-zero `cost_usd` tells them apart. Second, a timed-out credit-pool call has
-`cost_usd: null`, while the ledger books an estimated spend for it. The first client
-(2026-10-15) falls back only when every attempt ended `exhausted`, `no_candidate` or
-`auth` with no positive cost, and treats an unknown cost as unknown. That is correct
-today because Claude Code reports `total_cost_usd` on every finished call, even a $0.000125
-subscription call. It stops being correct if that field is ever missing.
-
-**What would close it:** a per-attempt `spent: true | false | null` in the `run`
-response, set from what the router observed: the child produced a result event, or the
-ledger booked a spend. Clients would then fall back on `spent: false` alone.
-
----
-
 ### 6. A credit-pool `run` records a pick on a subscription that never ran  `[difficulty: high]`  `[filed: 2026-10-16]`
 
 `run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
@@ -408,6 +389,34 @@ selection writeback, and `chosen` on the history line), let `run` call `_prepare
 `write_state=False`, and record only after the target is known, for a subscription
 target alone. The risk is in `_prepare`, which every `pick` runs; the pick goldens must
 stay byte-identical.
+
+---
+
+### 41. A `run` that fails after its child started prints no response, so the client loses what was billed  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
+
+**Background:** `_cmd_run` prints the response only when `run_mod.execute` returns,
+`src/quota_router/cli.py:4732` "payload = run_mod.execute(".
+An exception raised after a child has run escapes to `main`, which writes
+`src/quota_router/cli.py:4863` "unexpected failure:" to stderr and exits 127 with nothing
+on stdout. A review of #5 on 2026-10-20 reproduced it in a test folder: a credit call was
+billed, then the ledger append failed with "No space left on device", and the router
+exited 127 with empty stdout after one child call. A `ConfigError` raised by a later
+attempt's `_prepare` would exit 2, which the README reserves for a request refused before
+anything was spent.
+
+**Impact:** since `ded22c0` the README tells clients never to fall back on a missing or
+unparsable response, so this no longer bills twice. The client still loses the attempts,
+their `spent` values and `served`, cannot retry an attempt that was refused, and the
+history `run` line is never written, so the call is missing from the record.
+
+**Fix:** catch failures inside `execute` once the first child has been started, and still
+return a response: the attempts so far, `outcome: "cli_error"` with the error named, and
+`spent` as each attempt recorded it. Keep exit 2 for refusals before any child started.
+Add a test that fails the ledger append after a billed credit call and asserts the
+response carries that attempt with `spent: true`.
+
+**Touch points:** `run.py` `execute` (the attempt loop and the ledger appends),
+`cli.py` `_cmd_run`, `tests/test_run_credit.py`.
 
 ---
 
@@ -503,7 +512,7 @@ still appears. The separate stock-classification question has moved to #28.
 
 ---
 
-### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`  `[BLOCKED: #5 and #6 first; the step 0 probes are #16; the rails question in step 3 is open]`
+### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`  `[BLOCKED: #6 first; the step 0 probes are #16; the rails question in step 3 is open]`
 
 **Background.** A credit pool is reachable only through `quotapick run`, and `run`
 executes one tool-less call. The child always gets `--tools "" --no-session-persistence
@@ -850,8 +859,11 @@ cannot bite.
 
 **Depends on:**
 
-- **#5.** This item adds `spent` to the exec report. Implement it once, in code that `run`
-  and `exec` share.
+- **#5 (done 2026-10-20).** `run` attempts now carry `spent`, decided by
+  `_spent_from_result` and the `_NOT_STARTED` exception set in `run.py`. Exec should reuse
+  that code rather than restate it. One value differs: `run` reports a timed-out credit
+  call as `spent: true`, because its ledger books the hold as spent, while step 6 says
+  `spent: null` for the same case. Pick one when building exec; both stop a fallback.
 - **#6.** Exec also prepares with `write_state=True`, so fix #6 first, or exec repeats it.
 
 **Touch points:**
