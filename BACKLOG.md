@@ -1674,7 +1674,8 @@ reset rows alone would rise exactly when routing improves (#23).
 (2026-10-18) with no notice, possibly at the early reset on 2026-10-16
 (`docs/measurements/2026-10-18-gemini-size.md:65-68`). A change in k alone does not say
 which window changed: the weekly pool, the five-hour window, or both. The 2026-10-12 run
-sized neither pool at the time, and nothing measured either size between the two runs, so the October 16 waste depended on an after-the-fact judgment (#26 step 3, decided
+sized neither pool at the time, and nothing measured either size between the two runs, so
+the October 16 waste depended on an after-the-fact judgment (#26 step 3, decided
 2026-10-20 from the October 12 re-analysis). **Operator request 2026-10-20:** have
 instrumentation that tells the two cases apart if a provider makes this kind of change
 again.
