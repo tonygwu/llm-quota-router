@@ -425,7 +425,8 @@ def read_cache(*, env: Mapping[str, str] | None = None) -> tuple[Forecast | None
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None, f"no forecast at {path} yet (`quotapick status` writes it)"
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # A bad byte must cost the cached rate, not every pick until someone deletes it.
         return None, f"forecast at {path} unreadable: {exc}"
     try:
         return forecast_from_dict(json.loads(text)), None
@@ -440,6 +441,9 @@ class Refresh:
     refreshed: bool
     forecast: Forecast | None
     warnings: tuple[str, ...] = ()
+    #: The subset of ``warnings`` that says this refresh failed to write; ``status`` prints
+    #: it as a live warning whatever the objective.
+    failures: tuple[str, ...] = ()
 
 
 def grouping_problem(cached: Forecast, groups: Mapping[str, str] | None) -> str | None:
@@ -485,9 +489,6 @@ def refresh_if_due(
     try:
         write_cache(result, env=env)
     except OSError as exc:
-        return Refresh(
-            refreshed=False,
-            forecast=result,
-            warnings=(f"cannot write the demand forecast: {exc}",),
-        )
+        failure = (f"cannot write the demand forecast: {exc}",)
+        return Refresh(refreshed=False, forecast=result, warnings=failure, failures=failure)
     return Refresh(refreshed=True, forecast=result, warnings=result.warnings)

@@ -1128,15 +1128,20 @@ class WasteWrite:
         object.__setattr__(self, "failures", tuple(self.failures))
 
 
-def _iter_lines(path: Path) -> Iterator[str]:
+def _iter_lines(path: Path) -> Iterator[str | None]:
+    """Each line as text, or ``None`` for a line that is not UTF-8 (an unreadable row)."""
     try:
-        handle = open(path, encoding="utf-8")
+        handle = open(path, "rb")
     except (FileNotFoundError, NotADirectoryError):
         return
     except OSError:
         return
     with handle:
-        yield from handle
+        for raw in handle:
+            try:
+                yield raw.decode("utf-8")
+            except UnicodeDecodeError:
+                yield None
 
 
 def read_records(
@@ -1147,6 +1152,9 @@ def read_records(
     rows: list[ResetRecord] = []
     bad = 0
     for line in _iter_lines(target):
+        if line is None:
+            bad += 1
+            continue
         text = line.strip()
         if not text:
             continue

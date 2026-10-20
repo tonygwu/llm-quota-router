@@ -1343,6 +1343,103 @@ def test_unreadable_history_with_a_valid_ledger_is_also_a_live_warning(env):
     assert "! history unreadable; no resets or waiting stretches recorded" in err, err
 
 
+def _state_file(env, name):
+    path = Path(env["XDG_STATE_HOME"]) / "quota-router" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _good_history_line(t):
+    return json.dumps({"v": 1, "t": t, "event": "status", "accounts": []}) + "\n"
+
+
+def test_partial_line_in_rotated_history_names_that_file(env):
+    rotated = _state_file(env, "history-2026-01-01.jsonl")
+    rotated.write_text(_good_history_line(NOW - 3600) + '{"v": 1, "t"\n', encoding="utf-8")
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert "! history unreadable; no resets or waiting stretches recorded" in err, err
+    assert str(rotated) in err, err
+
+
+@pytest.mark.parametrize("where", ["first_line", "deep", "rotated"])
+def test_a_non_utf8_history_byte_is_a_named_live_warning_not_a_crash(env, where):
+    history = _state_file(env, "history.jsonl")
+    if where == "first_line":
+        target = history
+        target.write_bytes(b'{"v": 1, "t": 1, "\xff": 0}\n')
+    elif where == "deep":
+        target = history
+        target.write_bytes(_good_history_line(NOW - 60).encode() * 400 + b'{"\xff": 0}\n')
+    else:
+        target = _state_file(env, "history-2026-01-01.jsonl")
+        target.write_bytes(_good_history_line(NOW - 3600).encode() + b'{"\xff": 0}\n')
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert "! history unreadable; no resets or waiting stretches recorded" in err, err
+    if where == "first_line":
+        # No readable first-record day: rotation falls back to the file's mtime and may
+        # archive it under a dated name before the read, so match the folder.
+        assert re.search(rf"undecodable history record in {re.escape(str(target.parent))}/history[^ ]*\.jsonl line 1", err), err
+    else:
+        assert f"undecodable history record in {target} line" in err, err
+
+
+def test_pick_still_routes_with_a_non_utf8_first_history_line(env):
+    _state_file(env, "history.jsonl").write_bytes(b'{"v": 1, "t": 1, "\xff": 0}\n')
+    payload = pick(["pick"], env, snapshots=real_capture())
+    assert payload["decision"]["account"] is not None, payload
+
+
+def test_an_undecodable_unrotated_first_line_names_history_exactly(env):
+    import os
+    history = _state_file(env, "history.jsonl")
+    history.write_bytes(b'{"v": 1, "t": 1, "\xff": 0}\n')
+    os.utime(history, (NOW, NOW))  # same day as the run, so rotation keeps the file
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert f"undecodable history record in {history} line 1" in err, err
+
+
+def test_exec_still_launches_with_a_non_utf8_first_history_line(env):
+    _state_file(env, "history.jsonl").write_bytes(b'{"v": 1, "t": 1, "\xff": 0}\n')
+    runner = Runner()
+    deps = cli.Deps(load_snapshots=lambda **kw: (list(real_capture()), []), run=runner)
+    code, _, err = run(["exec", "--", "claude", "-p", "hello"], env, deps=deps)
+    assert code == 0, err
+    assert runner.calls and runner.calls[0][0] == ["claude", "-p", "hello"]
+
+
+@pytest.mark.parametrize("command", ["status", "pick"])
+def test_a_non_utf8_forecast_cache_does_not_break_status_or_pick(env, command):
+    _state_file(env, "forecast.json").write_bytes(b'{"\xff": 0}\n')
+    code, out, err = run([command], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    if command == "pick":
+        assert json.loads(out)["decision"]["account"] is not None, out
+
+
+def test_a_non_utf8_waste_byte_is_the_named_refusal_not_a_crash(env):
+    waste = _state_file(env, "waste.jsonl")
+    waste.write_bytes(b'{"\xff": 0}\n')
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert f"! 1 unreadable line(s) in {waste}" in err, err
+    assert "! refusing to append behind unreadable waste rows" in err, err
+
+
+def test_a_failed_forecast_write_is_live_under_the_default_objective(env):
+    _state_file(env, "forecast.json").mkdir()  # a directory where the cache belongs
+
+    code, _, err = run(["status"], env, snapshots=real_capture())
+    assert code == cli.EXIT_OK, err
+    assert "! cannot write the demand forecast" in err, err
+
+
 def test_invalid_ledger_stops_resets_but_still_records_waiting_stretches(env, monkeypatch):
     """The waiting-stretch writer takes no ledger input, so a bad ledger must not stop it."""
     from quota_router import calibrations, forgone, waste

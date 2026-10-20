@@ -2630,7 +2630,7 @@ _FORGONE_STOPPED: Final[str] = "forgone recording stopped"
 
 
 class _WasteNotes(NamedTuple):
-    """What the two history writers said, split by what it is about.
+    """What the history writers and the forecast refresh said, split by what it is about.
 
     ``live``: a writer refused or failed on this run and records nothing until the cause
     clears, so ``status`` prints it. ``history``: past window transitions seen in retained
@@ -2702,7 +2702,7 @@ def _forecast_records(
     return load
 
 
-def _refresh_forecast(config: Config, env: Mapping[str, str], now_s: float) -> list[str]:
+def _refresh_forecast(config: Config, env: Mapping[str, str], now_s: float) -> _WasteNotes:
     """Keep the demand forecast warm for both scoring objectives.
 
     Run from ``status`` for the same reason as :func:`_record_waste`: the poller already
@@ -2720,7 +2720,8 @@ def _refresh_forecast(config: Config, env: Mapping[str, str], now_s: float) -> l
         refresh_s=config.engine.forecast_refresh_s,
         env=env,
     )
-    return warnings + list(result.warnings)
+    return _WasteNotes(live=list(result.failures),
+                       history=warnings + [w for w in result.warnings if w not in result.failures])
 
 
 def _cmd_status(
@@ -2781,16 +2782,19 @@ def _cmd_status(
     waste_notes = (_WasteNotes(live=[], history=[]) if dry_run
                    else _record_waste(prepared.config, env, resets=ledger_valid))
     notes = list(waste_notes.history)
-    forecast_notes = [] if dry_run else _refresh_forecast(prepared.config, env, now_s)
+    forecast_notes = (_WasteNotes(live=[], history=[]) if dry_run
+                      else _refresh_forecast(prepared.config, env, now_s))
     # Joint status reports refresh problems here. Own-waste pick reports an unusable
-    # working rate when it needs one, so status does not repeat those warnings.
+    # working rate when it needs one, so status does not repeat those warnings. A failed
+    # forecast write (forecast_notes.live) is about this run whatever the objective.
     engine = prepared.config.engine
     if engine.objective != "own_waste" or engine.shadow:
-        notes = notes + forecast_notes
+        notes = notes + forecast_notes.history
     history_notes = tuple(dict.fromkeys(notes))
     live_warnings = tuple(
         note for note in dict.fromkeys(
-            prepared.warnings + tuple(calibration_notes) + tuple(waste_notes.live))
+            prepared.warnings + tuple(calibration_notes) + tuple(waste_notes.live)
+            + tuple(forecast_notes.live))
         if note not in set(history_notes)
     )
     prepared.warnings = live_warnings + history_notes

@@ -111,7 +111,7 @@ def _utc_date(epoch_s: float) -> str:
 
 
 def _first_record_day(path: Path) -> str | None:
-    """The UTC day of the first record in a history file, or None if unreadable.
+    """The UTC day of the first record in a history file, or None if unreadable or not UTF-8.
 
     Only the first line is read, so this stays O(1) no matter how large the file is.
     A file whose head is missing, truncated mid-write, or not a record simply yields
@@ -119,9 +119,10 @@ def _first_record_day(path: Path) -> str | None:
     must never raise into a routing decision.
     """
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            first = handle.readline()
-    except OSError:
+        # Decode only the first line: a bad byte later in the file must not matter here.
+        with path.open("rb") as handle:
+            first = handle.readline().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
     if not first.strip():
         return None
@@ -429,10 +430,14 @@ def iter_records(
 
     With ``since_s``, rotated files that end before that day are not opened at all.
 
-    A truncated final line (a crash mid-append) is simply skipped: a partial record must
-    not stop the router from reading the good ones before it.
-    ``strict=True`` instead raises on malformed records or read errors. Actions that
-    spend quota use it so a bad latest record cannot resurrect an older eligibility.
+    A truncated final line (a crash mid-append) or a line that is not UTF-8 is simply
+    skipped: a bad record must not stop the router from reading the good ones around it.
+    Lines are decoded one at a time, so one bad byte costs one line, not the file.
+    Records are separated by ``\n`` only (a bare ``\r`` is part of its line), which is
+    what every writer here emits; CRLF still reads correctly.
+    ``strict=True`` instead raises on malformed records or read errors, naming the file
+    and line. Actions that spend quota use it so a bad latest record cannot resurrect an
+    older eligibility.
     """
     target = Path(path) if path is not None else history_path(env)
 
@@ -449,7 +454,7 @@ def iter_records(
 
     for file_path in files:
         try:
-            handle = open(file_path, encoding="utf-8")
+            handle = open(file_path, "rb")
         except (FileNotFoundError, NotADirectoryError):
             continue
         except OSError:
@@ -457,23 +462,32 @@ def iter_records(
                 raise
             continue
         with handle:
-            for line in handle:
-                line = line.strip()
+            for number, raw in enumerate(handle, start=1):
+                try:
+                    line = raw.decode("utf-8").strip()
+                except UnicodeDecodeError as exc:
+                    if strict:
+                        raise ValueError(
+                            f"undecodable history record in {file_path} line {number}: {exc}"
+                        ) from exc
+                    continue
                 if not line:
                     continue
                 try:
                     record = json.loads(line)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
                     if strict:
-                        raise
+                        raise ValueError(
+                            f"malformed history record in {file_path} line {number}: {exc}"
+                        ) from exc
                     continue
                 if not isinstance(record, dict):
                     if strict:
-                        raise ValueError(f"non-object history record in {file_path}")
+                        raise ValueError(f"non-object history record in {file_path} line {number}")
                     continue
                 timestamp = record.get("t")
                 if strict and (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp)):
-                    raise ValueError(f"invalid history timestamp in {file_path}")
+                    raise ValueError(f"invalid history timestamp in {file_path} line {number}")
                 if since_s is not None and (
                     not isinstance(timestamp, (int, float)) or timestamp < since_s
                 ):
