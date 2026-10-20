@@ -57,7 +57,7 @@ nobody should start.
 
 ## Open items
 
-### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on #30 and one full Antigravity weekly cycle in waste.jsonl]`
+### 1. The core claim is now measurable, and not yet measured  `[difficulty: xhigh]`  `[filed: 2026-08-16]`  `[BLOCKED: waits on one full Antigravity weekly cycle in waste.jsonl]`
 
 The tool exists to reduce **wasted quota** — budget that expires unspent at a window
 reset. Every justification to date has been mechanical ("the scorer now compares like
@@ -71,7 +71,10 @@ and logged figures with supporting ledger ids. Live adoption remains operator-ga
 in #26. `quotapick status` is the writer, so the existing launchd poller needs no
 new schedule; `--backfill` re-scans retained history for missing rows. Resets that
 happened while nothing was watching have `observed: false` and no remainder, so totals
-remain lower bounds.
+remain lower bounds. `forgone.jsonl` now retains closed waiting stretches without
+PSE, and the report adds derived forgone capacity to the published total. Its shared
+temporal classifier suppresses false resets from waiting windows. The retained-history
+proposal and remaining live adoption are carried by #26.
 
 Rows carry `kind` since version 2: a provider's one-off early reset is reported as
 *forfeited*, apart from the waste total, because routing cannot plan for a boundary
@@ -87,8 +90,9 @@ nobody published. See the README section "An early reset is not waste".
    Two codex_b "missed" rows come from synthetic test data that a working checkout wrote
    into the live history on 2026-09-15. They carry no PSE.
 2. **`--backfill` cannot reach backwards very far.** It reads `history.jsonl`, whose own
-   rotation caps retention at 30 days, and history is currently only hours deep after the
-   pruning incident. So the series effectively starts now.
+   rotation caps retention at 30 days. The operator preserved the September 20 through
+   October 20 history outside git for reconstruction. Earlier stretches cannot be
+   recovered from that copy.
 3. **The counterfactual is not built, on purpose.** The publishing bar asks for router
    *versus the previous dial*, and only the absolute half exists. Building the other half
    needs three things this item does not have: the old dial's selection rule preserved as
@@ -112,7 +116,7 @@ nobody published. See the README section "An early reset is not waste".
    removed `totals_at_capacity` output is no longer the publication source.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
-and the absolute wasted-PSE figure is stated, including forgone capacity (#30). If the number is unimpressive, that is the
+and the absolute wasted-PSE figure is stated, including forgone capacity. If the number is unimpressive, that is the
 finding — publish it or shelve the project, but do not keep shipping scoring changes
 justified by argument alone. The counterfactual comparison becomes its own item at that
 point, not a precondition: a fleet that wastes almost nothing shelves the project whatever
@@ -1325,8 +1329,8 @@ side:
 1. Count real Antigravity completions per account, each with the account identity, the
    served model from the call's own telemetry, and whether the output was used.
 2. Compare the Gemini pools' weekly use, their scheduled-reset rows in `waste.jsonl`
-   and their forgone capacity with the weeks before 2026-10-19. If #30 has not landed,
-   compute the forgone capacity with #30's rule from the retained history.
+   and their forgone capacity with the weeks before 2026-10-19. Use the derived
+   `quotapick waste` report and #26's reconstructed raw stretches.
 3. Report what Gemini Flash failed on, by failure kind, so a quality problem on standard
    work shows up as data.
 4. Write the result into `docs/measurements/2026-10-18-gemini-size.md`. If the pools
@@ -1339,7 +1343,7 @@ side:
   provider preference after the router ranks, or launch through `cl`; `run` cannot reach
   Antigravity at all (#20). Premium, the capability most agent work requests, stays on
   Claude. So a small change in completions may be the honest result.
-- Compare waste plus forgone capacity (#30), not reset rows alone. Once window pings run
+- Compare waste plus forgone capacity, not reset rows alone. Once window pings run
   (#29), loss that used to be forgone shows up as reset rows, so reset rows alone rise
   even when routing improves. Note when the first live ping ran.
 - The 2026-10-19 demand-allocation fix separates Gemini and Claude-model demand and
@@ -1373,6 +1377,15 @@ Gemini interpretation without an operator decision would turn an unresolved
 assumption into a published figure.
 
 **Fix:** this item carries every operator-gated remainder of deleted #24.
+It also carries deleted #30's live waiting-stretch adoption. The approval and backup
+procedure in step 1 applies to that raw proposal too. Before installing the forgone
+writer, adopt its closed `forgone.jsonl` records from the operator-preserved history,
+keep `waste.jsonl` byte for byte, and record raw counts, validation and report figures
+in the private adoption record. The scratch proposal has 19 closed stretches, two
+bounded ends, and 1.825242 PSE included before appending the decided Gemini belief.
+Both Gemini candidates remain visible in that proposal. See
+`docs/measurements/2026-10-20-forgone-capacity.md` for reproduction and basis limits.
+
 
 **Operator decision 2026-10-20:** approved: back up live state, write the reconstructed
 ledger and its marker, then install from repo-prod (steps 1 and 2), and append the
@@ -1410,6 +1423,7 @@ coupling readings. The ledger belongs in private state, not git.
 an auditable historical belief decision and ordered deployment.
 
 **Closes when:** the approved reconstruction precedes the observed v3 poller run,
+the closed waiting stretches are adopted with their backup and validation evidence,
 and the separately approved Gemini belief is appended with reproducible reports.
 
 **Touch points:** `docs/measurements/2026-10-19-calibration-reconstruction.md:123` "Before live adoption, the operator must approve the concrete proposal and a backup";
@@ -1448,18 +1462,19 @@ re-appending an old occurrence; do not rewrite the raw log or invent its old sou
 
 ---
 
-### 28. Waiting quota is valued as expiring stock and sparse sliding reads become forfeits  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
+### 28. Waiting quota is still valued as expiring stock in scoring  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks."
 uses published reset times as deadlines. The state-free recipe in
-`docs/window-pings.md:248` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
+`docs/window-pings.md:249` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
 reproduces 3.000 PSE at risk with both account-wide windows waiting, capacity 2.43,
-weekly/session ratio 4 and demand 0.04 PSE/h. The same recipe feeds two waiting
-readings 310000 seconds apart to `detect_resets` and gets an observed early forfeit
-of 9.72 PSE. No running window expired in either fixture.
+weekly/session ratio 4 and demand 0.04 PSE/h. Before the waiting-capacity change,
+its two waiting readings 310000 seconds apart also fabricated an early forfeit of
+9.72 PSE. The shared temporal classifier now suppresses that reset, and the recipe
+prints `[]`. No running window expired in either fixture.
 
-**Impact:** ranking invents expiring stock and a sparse sliding history creates a
-false durable forfeit. Pings do not remove this case while disabled, failing or
+**Impact:** ranking still invents expiring stock while windows wait. Reset detection
+now suppresses the false forfeit. Pings do not remove the ranking case while disabled, failing or
 awaiting verification. A running weekly window still has real risk when only its
 five-hour companion waits.
 
@@ -1467,13 +1482,14 @@ five-hour companion waits.
 question previously embedded in #11. Record failing-then-passing model/report
 fixtures and their outputs in the tests and the reproduction document.
 
-1. Represent known waiting versus running account-wide windows in stock conversion
-   and reset detection. Preserve spendable headroom without inventing a deadline.
+1. Reuse `src/quota_router/window_state.py`'s temporal classification in stock
+   conversion; reset detection already uses it. Preserve spendable headroom without
+   inventing a deadline.
    The ping eligibility heuristic deliberately admits fresh scheduled Claude weekly
    windows and rounded-zero use; do not equate every ping candidate with nonexpiring
    stock. Establish the stronger evidence needed for the risk model.
-2. Prevent dense and sparse sliding observations from fabricating waste or early
-   forfeits. Retain real weekly risk when only five-hour quota waits, real scheduled
+2. Keep the reset regressions that prevent dense and sparse sliding observations
+   from fabricating waste or early forfeits. Retain real weekly risk when only five-hour quota waits, real scheduled
    resets and real early resets. Also resolve the moved #11 question for sliding
    model-scoped caps such as Codex base_model_inference; their classification does
    not make them eligible for a fast-model ping.
@@ -1482,8 +1498,8 @@ fixtures and their outputs in the tests and the reproduction document.
    Correct future interpretation without rewriting historical waste rows.
 
 **Operator decision 2026-10-20:** a waiting stretch is not "no loss". It is paid
-capacity not received, and #30 counts it as forgone capacity in the waste total. So
-step 2 drops the false forfeit from the reset rows and leaves the stretch to #30. For
+capacity not received, now counted as forgone capacity in the derived waste total.
+The reset detector drops the false forfeit and `forgone.jsonl` retains the stretch. For
 ranking, a pool whose windows all wait loses capacity at its binding rate while it
 waits; weigh that in step 1 instead of treating its headroom as free of risk.
 
@@ -1499,7 +1515,7 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 `src/quota_router/window_ping.py:27` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
 `tests/test_waste.py:579` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
-`docs/window-pings.md:248` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
+`docs/window-pings.md:249` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
 
@@ -1581,118 +1597,7 @@ private native-response and poller evidence.
 
 ---
 
-### 30. The waste report counts nothing while a start-on-use window waits, though that capacity is lost  `[difficulty: high]`  `[filed: 2026-10-20]`  `[claimed by: #9]`
 
-**Background:** Claude 5h, Codex 7d and both Antigravity windows start only at the first
-call after a reset (`docs/window-pings.md`; `waiting_reason`,
-`src/quota_router/window_ping.py:27`). A waiting window never resets, so
-`detect_resets` (`src/quota_router/waste.py:838`) writes no row for it, and the waste
-reports (`src/quota_router/waste.py:1353`, `src/quota_router/waste_report.py:286`)
-count nothing. #28 describes a waiting stretch as one where "no running window expired".
-
-**Operator decision 2026-10-20:** a waiting window is paid capacity that was not
-received, so it is waste. Count it as *forgone capacity*, include it in the published
-total, and count the waiting stretches before window pings go live (#29) as well. In the
-operator's words: the historical Gemini pools being idle is serious waste.
-
-*Size:* both windows of each Gemini pool waited from its early reset on 2026-10-16
-(22:15:24Z on `antigravity_gemini`, 22:06:28Z on `_b`) to the first use at about
-10-18T03:03:35Z, about 28.8 and 29.0 hours. That stretch lies before the measured
-Gemini beliefs start (`GEMINI_MEASURED_FROM`, `ops/reconstruct-calibrations.py:24`), so
-its size rests on the Gemini belief of #26 step 3; the two candidates were:
-
-| Belief about the change | `antigravity_gemini` | `antigravity_gemini_b` |
-|---|---|---|
-| the weekly pool stayed the same (9.72 and 9.80 PSE a week) | 28.8 / 168 × 9.72 = 1.67 PSE | 29.0 / 168 × 9.80 = 1.69 PSE |
-| the five-hour window stayed the same (36.45 and 36.75 PSE a week) | 28.8 / 168 × 36.45 = 6.25 PSE | 29.0 / 168 × 36.75 = 6.34 PSE |
-
-**Operator decision 2026-10-20 (#26 step 3):** the weekly pool stayed the same, so this
-stretch counts 1.67 and 1.69 PSE once that belief is in the ledger. Until it is, the
-report shows both candidates and keeps the stretch out of the current totals, as it does
-the 2026-10-16 early rows. A Gemini pool idle
-for a whole week under the measured beliefs forgoes about 9.7 PSE. The
-history store keeps 30 days (`DEFAULT_KEEP_DAYS`, `src/quota_router/history.py:68`), so
-older stretches are being lost now.
-
-**Impact:** the totals #1 publishes leave out the largest Antigravity loss. Once pings
-run (#29), waiting stretches shrink and the same capacity shows up as reset rows, so the
-reset rows alone would rise exactly when routing improves (#23).
-
-**Fix:**
-
-1. **Forgone rule.** A pool forgoes capacity only while every account-wide window of the
-   pool is waiting. "Waiting" here is the stronger waiting-versus-running
-   classification #28 step 1 builds, not the ping test `waiting_reason`, which also
-   admits a fresh scheduled Claude weekly window and a use too small to show as 1%;
-   whichever of #28 and #30 lands first builds it, and the other reuses it. Claude's
-   weekly window runs on a clock and never counts as waiting, so a Claude account never
-   forgoes capacity: in history each Claude account has 2 to 9 reads where its weekly
-   window passed the ping test right after its scheduled reset, and those must count
-   as zero. If a window on a clock still runs, its reset row already records the
-   unused remainder: Claude's 5h waiting beside its fixed weekly window, or an
-   Antigravity 5h waiting beside a running weekly window (from 2026-10-13 to the
-   2026-10-16 early reset), forgoes nothing extra. Model-scoped windows are out. For a
-   stretch of duration D, forgone PSE = D × the pool's binding rate, the smallest of
-   window size / window length over its account-wide windows (the weekly window for
-   Antigravity and Codex). State the rule in the README waste section.
-2. **Stretch boundaries.** A stretch starts at the window's last reset, the first
-   instant a window could have run, or at the first waiting read when that reset is
-   outside history; it includes the fixed stretch after a scheduled Antigravity reset.
-   It ends at the first use, the read where the reset becomes fixed at about first use
-   + window length. A gap in the reads inside a stretch counts when the reads on both
-   sides show waiting and no use; otherwise end the stretch at the last waiting read
-   and report the gap as a bound. A stretch still open is reported as accruing.
-3. **No double counting.** A later reset row covers the window from the first use on.
-   An early reset during a stretch forfeits nothing, because nothing ran; the false
-   forfeit #28 finds in sparse sliding reads must be dropped there and counted here, not
-   both.
-4. **Durable raw record.** Append each finished stretch to an append-only raw log
-   (a new row kind in `waste.jsonl` v3, or its own file; say which and why): account,
-   pool, window keys, start and end with the reads that show them, the gap facts and the
-   waiting reasons. Derive PSE only in the report, with the basis and ledger ids from
-   #24's beliefs in force over the stretch. Never rewrite existing rows.
-5. **Reconstruction.** Rebuild the stretches in retained history (from 2026-09-20;
-   Antigravity from about 2026-10-12) once. Develop against a scratch `XDG_STATE_HOME`.
-   Write the live records only with the operator's approval, after a backup, in the same
-   adoption step as #26. Say in the report that stretches before retention cannot be
-   recovered.
-6. **Report.** A forgone category beside waste and early forfeits, included in the
-   total and also shown on its own, per account and pool. Mark the first live ping from
-   the ping journal (#29), so a total before that time and one after measure the same
-   thing.
-
-*Risks and edge cases:*
-
-- A sliding read and a failed read must stay apart: a failed read never starts or
-  extends a stretch.
-- A window with a use too small to show as 1% still runs; the fixed reset after it, not
-  the 0%, decides that the stretch has ended.
-- Right after an early reset the provider can answer with the old window for a while:
-  `_b` alternated between the new sliding window and the old fixed one (used 0.0055,
-  reset 10-19T03:46Z) from 22:06:28Z to 22:29:07Z on 2026-10-16, and
-  `antigravity_gemini` from 22:15:24Z to 22:24:40Z. A read of the old window must not
-  end the stretch; only a fixed reset later than the stretch's start, at about first
-  use + window length, does.
-- History is pruned after 30 days and now starts at 2026-09-20, so September Codex
-  stretches are aging out while step 5 waits for approval. A read-only private copy of
-  the retained history, outside git, keeps them; it writes nothing to live state.
-- Tests: both windows waiting gives D × the weekly rate; only the 5h waiting beside a
-  running weekly gives zero; Claude 5h waiting beside its fixed weekly gives zero; a
-  Codex 7d stretch gives D × weekly size / 7 days; a fresh Claude weekly window with no
-  use beside a not-running 5h gives zero; a stretch under an unresolved belief stays out
-  of the current totals and shows its candidates; a read of the old window after an
-  early reset does not end the stretch; the stretch ends at the first use; an
-  early reset inside a stretch adds no forfeit; a gap with waiting on both sides counts
-  and one with usage after it is bounded; a model-scoped window never counts; an open
-  stretch is reported as accruing; a finished stretch survives history pruning.
-
-**Touch points:** `src/quota_router/window_ping.py:27` (`waiting_reason`),
-`src/quota_router/waste.py:838` (`detect_resets`), `src/quota_router/waste.py:1353`,
-`src/quota_router/waste_report.py:286`, `src/quota_router/history.py:68`, README.md:1400
-(the waste section), `tests/test_waste.py`, `tests/test_waste_v3.py`,
-`tests/test_window_ping.py`.
-
----
 
 ### 31. Nothing notices when a provider resizes a pool, or tells which window changed  `[difficulty: high]`  `[filed: 2026-10-20]`
 
