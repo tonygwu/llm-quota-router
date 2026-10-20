@@ -367,37 +367,12 @@ landed on 2026-10-19.
 
 ---
 
-### 6. A credit-pool `run` records a pick on a subscription that never ran  `[difficulty: high]`  `[filed: 2026-10-16]`  `[claimed by: #0]`
-
-`run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
-then compares that choice against the credit pools. When a pool wins, the subscription
-pick is already written. A probe on 2026-10-16 (the credit test fixture, pool served)
-showed all three effects: a history line with `chosen` set to the subscription, a pileup
-reservation on it in `state.json`, and a sticky `selection` entry for it. The reservation
-makes the next decisions in the pileup window (60 s by default) see load that never ran.
-The sticky entry favors an account that served nothing. The history line adds a pick
-with no burn behind it, and `quotapick calibrate` divides recorded picks by observed burn.
-Every pool-served `run` repeats this, and five pools are live. Since 2026-10-18 a pool
-also wins every waste tie with a subscription above zero, which makes pool-served runs,
-and so these phantom picks, the common case for `run` while pools hold credit.
-
-Partly closed: when `--only`/`--exclude` allow no subscription, `run` no longer records
-the pick (`test_only_a_pool_never_falls_back_to_a_subscription`).
-
-**What would close it:** split the recording tail out of `_prepare` (`record_pick`, the
-selection writeback, and `chosen` on the history line), let `run` call `_prepare` with
-`write_state=False`, and record only after the target is known, for a subscription
-target alone. The risk is in `_prepare`, which every `pick` runs; the pick goldens must
-stay byte-identical.
-
----
-
 ### 41. A `run` that fails after its child started prints no response, so the client loses what was billed  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `_cmd_run` prints the response only when `run_mod.execute` returns,
-`src/quota_router/cli.py:4732` "payload = run_mod.execute(".
+`src/quota_router/cli.py:4784` "payload = run_mod.execute(".
 An exception raised after a child has run escapes to `main`, which writes
-`src/quota_router/cli.py:4863` "unexpected failure:" to stderr and exits 127 with nothing
+`src/quota_router/cli.py:4915` "unexpected failure:" to stderr and exits 127 with nothing
 on stdout. A review of #5 on 2026-10-20 reproduced it in a test folder: a credit call was
 billed, then the ledger append failed with "No space left on device", and the router
 exited 127 with empty stdout after one child call. A `ConfigError` raised by a later
@@ -512,7 +487,7 @@ still appears. The separate stock-classification question has moved to #28.
 
 ---
 
-### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`  `[BLOCKED: #6 first; the step 0 probes are #16; the rails question in step 3 is open]`
+### 12. API credit pools cannot pay for agent runs, which is where scheduled headless work is  `[difficulty: xhigh]`  `[filed: 2026-10-18]`  `[BLOCKED: the step 0 probes are #16; the rails question in step 3 is open]`
 
 **Background.** A credit pool is reachable only through `quotapick run`, and `run`
 executes one tool-less call. The child always gets `--tools "" --no-session-persistence
@@ -864,7 +839,10 @@ cannot bite.
   that code rather than restate it. One value differs: `run` reports a timed-out credit
   call as `spent: true`, because its ledger books the hold as spent, while step 6 says
   `spent: null` for the same case. Pick one when building exec; both stop a fallback.
-- **#6.** Exec also prepares with `write_state=True`, so fix #6 first, or exec repeats it.
+- **#6 (done 2026-10-20).** `_prepare(record_later=True)` defers the pick, reservation,
+  selection state and history line to `Prepared.record`, which `run` calls once its target
+  is known. Exec should do the same once it can route to a pool, or it repeats the phantom
+  pick #6 removed from `run`.
 
 **Touch points:**
 
@@ -1586,19 +1564,19 @@ uses, across several commands.
 
 **Background:** every subcommand built with the shared parser accepts `--dry-run`.
 Only `pick`, `exec`, `status` and `waste --backfill` read it. `explain` never writes
-routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3499` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
+routing state, so the flag changes nothing there. The help now says so: `src/quota_router/cli.py:3551` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and".
 Commands that write accept the flag and write anyway: `calibrations --append`
-(`src/quota_router/cli.py:3432` "ids = calibrations_mod.append_records(stamped, env=env)"),
-`capabilities --refresh` (`src/quota_router/cli.py:4095` "report = refresh_mod.refresh("),
-`credits set` and `credits grant` (`src/quota_router/cli.py:4644` "def _cmd_credits("),
+(`src/quota_router/cli.py:3484` "ids = calibrations_mod.append_records(stamped, env=env)"),
+`capabilities --refresh` (`src/quota_router/cli.py:4147` "report = refresh_mod.refresh("),
+`credits set` and `credits grant` (`src/quota_router/cli.py:4696` "def _cmd_credits("),
 `calibrations --mark-reconstructed`, which turns on encoding detection
-(`src/quota_router/cli.py:3439` "calibrations_mod.mark_reconstruction_complete("),
-`forecast --refresh` (`src/quota_router/cli.py:4397` "def _cmd_forecast("),
-`report-failure` (`src/quota_router/cli.py:4034` "def _cmd_report_failure("),
-`forensics` (`src/quota_router/cli.py:3849` "def _cmd_forensics("),
+(`src/quota_router/cli.py:3491` "calibrations_mod.mark_reconstruction_complete("),
+`forecast --refresh` (`src/quota_router/cli.py:4449` "def _cmd_forecast("),
+`report-failure` (`src/quota_router/cli.py:4086` "def _cmd_report_failure("),
+`forensics` (`src/quota_router/cli.py:3901` "def _cmd_forensics("),
 and `doctor`, which appends a history record through the shared prepare step.
 `run` already dropped the shared flag for this reason:
-`src/quota_router/cli.py:3755` "# --dry-run was accepted, ignored, and a real call ran.".
+`src/quota_router/cli.py:3807` "# --dry-run was accepted, ignored, and a real call ran.".
 
 **Impact:** `calibrations --append --dry-run` appends to the operator-approved
 ledger, `calibrations --mark-reconstructed --dry-run` turns on encoding detection, an
@@ -1622,8 +1600,8 @@ exists both in `calibrations.detect_config_changes` and in `_cmd_status`. Split 
 pending-encoding calculation out of `detect_config_changes` so a dry run can list it,
 and keep that text in one constant.
 
-**Touch points:** `src/quota_router/cli.py:3499` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
-`src/quota_router/cli.py:3755` "# --dry-run was accepted, ignored, and a real call ran.";
+**Touch points:** `src/quota_router/cli.py:3551` "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and";
+`src/quota_router/cli.py:3807` "# --dry-run was accepted, ignored, and a real call ran.";
 `tests/test_credits.py:483` "def test_waste_backfill_refuses_dry_run(env) -> None:".
 
 ---
@@ -1631,7 +1609,7 @@ and keep that text in one constant.
 ### 37. A status run that cannot read an account's tier writes tier encodings that blind the waiting report  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
 **Background:** `status` passes every snapshot that has windows as an observed tier:
-`src/quota_router/cli.py:2710` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
+`src/quota_router/cli.py:2762` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots".
 A Claude snapshot takes its tier from the local Claude config, so it is unknown when
 that config cannot be read:
 `src/quota_router/providers/claude_statusline.py:234` "tier = config.tier if config is not None else TIER_UNKNOWN".
@@ -1692,7 +1670,7 @@ change seen only through a cache snapshot must still be recorded.
 
 *Why high not medium:* it changes what the calibration ledger records as evidence.
 
-**Touch points:** `src/quota_router/cli.py:2710` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
+**Touch points:** `src/quota_router/cli.py:2762` "observed_tiers={snapshot.id: snapshot.tier for snapshot in prepared.raw_snapshots";
 `src/quota_router/calibrations.py:485` "for item in loaded_values(config, observed_tiers=observed_tiers):";
 `src/quota_router/waste.py:625` "else capacity_for_tier(tier)";
 `tests/test_calibrations.py:207` "def test_observed_tier_tracks_actual_writer_and_missing_observation_does_not_revert".
