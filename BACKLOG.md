@@ -1452,7 +1452,7 @@ re-appending an old occurrence; do not rewrite the raw log or invent its old sou
 
 **Background:** `src/quota_router/scoring.py:413` "Convert one snapshot's windows into absolute PSE stocks."
 uses published reset times as deadlines. The state-free recipe in
-`docs/window-pings.md:171` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
+`docs/window-pings.md:248` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and"
 reproduces 3.000 PSE at risk with both account-wide windows waiting, capacity 2.43,
 weekly/session ratio 4 and demand 0.04 PSE/h. The same recipe feeds two waiting
 readings 310000 seconds apart to `detect_resets` and gets an observed early forfeit
@@ -1499,24 +1499,31 @@ classification and scoped constraints; the ping heuristic alone cannot classify 
 `src/quota_router/window_ping.py:27` "def waiting_reason(window, previous):";
 `tests/test_scoring.py:416` "def test_operator_real_case_three_hours_of_weekly_quota_beats_six_days() -> None:";
 `tests/test_waste.py:579` "def test_an_early_reset_is_recorded_when_it_happened_not_at_its_schedule(env):";
-`docs/window-pings.md:171` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
+`docs/window-pings.md:248` "Output: `3.000 PSE at risk of expiring (binding 5h, tier scale 2.43)` and".
 
 ---
 
-### 29. Window pings lack full native telemetry qualification and remain disabled  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #8]`
+### 29. Window pings await ledger adoption and live activation  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** #22 shipped a default-dry-run command and installer integration.
-`docs/window-pings.md:90` "Keep recurring pings dry-run until provider telemetry and post-ping window behavior"
-records the remaining gate. Three approved native arithmetic calls returned the
-answer and token counts. With the tested parser, one Claude call has matching
-served-model evidence; Codex and Antigravity fail model_unverified because their
-outputs omit that stamp. The Antigravity log names the selected GPT-OSS model only.
-Those calls used already-running windows, so none proves a waiting-window start.
-Gemini and alternate-account paths were outside that three-call allowance.
+**Background:** #22 shipped default-dry-run pings. The operator's model and evidence
+changes are implemented: Antigravity Claude/GPT uses `claude-sonnet-5-5-low`, and
+calls without a served-model stamp record selection-only evidence and count toward
+the full success cooldown. Wrong stamps, wrong arithmetic answers, missing tokens
+and account mismatches remain failures. `docs/window-pings.md:104` "Model-name probes, 2026-10-20"
+records nine one-shot probes with nine successes, zero failures and no retries;
+`claude_b` was skipped for exhausted quota. Three Claude responses carry matching
+served stamps; two Codex and four Antigravity responses carry selection evidence
+only. All model self-reports remain weak evidence. Full raw responses are private.
 
-**Impact:** enabling now would retry unverified calls every 30 minutes. The chosen
-Claude/GPT model, gpt-oss-120b-medium, is listed for removal on November 2, 2026;
-there is no automatic fallback. No installation or recurring pings were enabled.
+The next ordinary poller reading showed nonzero five-hour usage in all four
+Antigravity pools, with resets within four seconds of each probe start plus five
+hours. This did not exercise the production journal or the ambiguous fixed stretch
+after a scheduled reset. No installation or recurring activation was performed.
+
+**Impact:** the approved pings are still off. The code no longer retries successful
+selection-only calls as model-unverified failures, and GPT-OSS retirement no longer
+affects the chosen Claude/GPT model. Live adoption and actual poller/journal evidence
+are still required before this item closes.
 
 **Operator decision 2026-10-20:** turn the pings on.
 - Use Claude Sonnet 5.5 (Low) for the Antigravity Claude/GPT pool instead of GPT-OSS,
@@ -1528,53 +1535,48 @@ there is no automatic fallback. No installation or recurring pings were enabled.
   none (Codex and Antigravity today), record the call as "selected model only" and
   count it as a success for the cooldown, instead of `model_unverified`. A stamp that
   names a different model is still a failure.
-- The two implemented choices in step 3 stay as built unless the operator changes them.
+- The exact previous-reset-plus-length waiting test and literal five-hour/seven-day
+  cooldown stay as built unless the operator changes them.
 - Live installation still waits for #26's live-install approval, because installing
   from repo-prod also installs the v3 waste writer, which needs the reconstructed
   ledger in place first.
 
-**Fix:** carries every live-qualification and operator-gated remainder of deleted
-#22: served-model evidence from Fix step 3, deployment from step 4, post-ping
-verification and the Antigravity fixed-stretch question from step 5, plus operator
-confirmation of the explicit step 1 widening and step 2 cooldown interpretation.
-Record sanitized results in docs/window-pings.md and retain full raw responses in
-private evidence, including attempted/succeeded/failed counts and failure kinds.
+**Fix:** carries #22's remaining deployment and post-ping qualification. #26 now
+records operator approval for live ledger adoption; that adoption must finish first.
+The coordinating session owns installation and activation. Keep this item open until
+those operations and their evidence are complete.
 
-1. Obtain trustworthy served-model telemetry through the providers' native CLIs;
-   preserve tokens and distinguish selection from service. Coordinate the shared agy
-   telemetry issue with #2's Argon bullet without duplicating its capability-map work.
-   Qualify the cheapest available Claude/GPT replacement before GPT-OSS retirement,
-   stating the price-versus-subscription-weight limitation.
-2. Obtain a new bounded probe authorization and a fresh review of that concrete plan
-   before more calls. Cover Gemini and alternate-account launch paths as needed;
-   verify native subscription authentication and account identity with available
-   evidence, and explicitly qualify served-account gaps. Never read/use a credential
-   directly or install from a working checkout.
-3. Confirm the implemented choices with the operator: used zero at exactly previous
-   reset plus length also qualifies; successful pool-ping cooldown is a literal
-   five hours/seven days even after an early reset. Retain the chosen rule, with no
-   recent-run check, new schedule or per-window already-pinged flag.
-4. On approved waiting-window probes, record the next fresh reset against ping start
-   plus window length. Test warning/stop/recovery and independence of the other pool
-   windows. For the fixed stretch after a scheduled Antigravity reset, show whether
-   the boundary moves to ping time plus length or stays at the prior scheduled value.
-5. After #26's live-install gate and explicit operator deployment approval, pull and
-   install only from repo-prod. Re-run the launchd installer there in dry-run first;
-   enable WINDOW_PING_MODE=execute only on the operator's decision. Verify actual
-   poller/journal records and preserve the default installer as the rollback to dry-run.
+1. After #26's backup and ledger adoption, pull and install only from repo-prod.
+   Re-run the launchd installer there in dry-run first, then enable
+   `WINDOW_PING_MODE=execute` under the recorded operator decision. Verify the receipt,
+   new installed symbols, actual poller records and ping journal. Preserve the default
+   installer as the rollback to dry-run. Never install from a working checkout.
+2. Record the first actual arithmetic ping and its next conclusive fresh reset against
+   ping start plus window length. Verify warning/stop/recovery and independence of other
+   pool windows. For the fixed stretch after a scheduled Antigravity reset, show whether
+   its boundary moves to first-use time plus length or stays at the prior scheduled value.
+   Preserve the accepted waiting test and literal cooldown, with no recent-run check,
+   new schedule or per-window already-pinged flag.
+3. Preserve the evidence distinction in activation reports: matching served stamp,
+   selected model only, and weak self-report. Keep Claude/Codex served-account gaps
+   explicit. Record sanitized results in docs/window-pings.md and retain full raw
+   responses privately, with attempted/succeeded/failed and failure kinds. Coordinate
+   any native agy telemetry work with #2 without duplicating capability-map work.
 
-*Risks and edge cases:* the earlier three-call authorization is spent; claiming this
-item authorizes no extra prompts or live activation. Missing model evidence must not
-be accepted as success. Native CLI renewal is allowed; router token redemption is not.
+*Risks and edge cases:* the nine model-name probes ran once each; do not retry them.
+The exhausted Claude pool was not called. Missing served stamps are accepted under
+the operator's decision, but a conflicting or malformed stamp is not. Native CLI
+renewal is allowed; router token redemption is not. A diagnostic success is not proof
+that an installed recurring job ran or that the model's self-description is correct.
 
-*Why high not medium:* qualification crosses vendor telemetry, multiple account/pool
-launch paths, a model retirement and consequential recurring quota spend.
+*Why high not medium:* activation crosses vendor telemetry, multiple account/pool
+launch paths, durable journal state and consequential recurring quota spend.
 
-**Touch points:** `docs/window-pings.md:90` "Keep recurring pings dry-run until provider telemetry and post-ping window behavior";
+**Touch points:** `docs/window-pings.md:96` "Keep recurring pings dry-run until deployment approval and ledger adoption in #26.";
 `src/quota_router/ping_cli.py:81` "def parse_response(account, completed):";
-`tests/test_ping_cli.py:32` "def test_observed_markdown_arithmetic_answers(answer):";
+`src/quota_router/window_ping.py:132` "def _verification(records, events, now_s):";
 `tests/test_window_ping.py:121` "def test_failed_verification_blocks_only_one_window_and_survives_restart(tmp_path):";
-`docs/window-pings.md:121` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
+`docs/window-pings.md:198` "The existing 120-second usage-poll job gains `window-ping --dry-run --json` after";
 private native-response and poller evidence.
 
 ---
