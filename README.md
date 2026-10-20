@@ -437,7 +437,7 @@ perfectly even burn would still consume before the reset.
 Pace is not "how full" — an account can be 70% empty and still have quota to
 spare if its reset is close, which is exactly the case the router exists to
 catch. `quotapick status --verbose` prints the subtraction for every window, per
-account, plus every warning the history scan produced.
+account, plus the history scan's notes, one line per account and window.
 
 **STATUS** says whether to trust the row's numbers:
 

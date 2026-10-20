@@ -660,7 +660,8 @@ def _series(records: Iterable[Mapping[str, Any]]) -> dict[str, list[_Reading]]:
 
 @dataclass(frozen=True, slots=True)
 class Detection:
-    """Resets found in a history, plus every pair that was refused and why."""
+    """Resets found in a history, plus the pairs refused and why, folded per window
+    (see :func:`_fold_pair_notes`)."""
 
     records: tuple[ResetRecord, ...] = ()
     warnings: tuple[str, ...] = ()
@@ -858,11 +859,13 @@ def detect_resets(
     """
     plans = plans or {}
     found: list[ResetRecord] = []
-    # (account/window, kind, text), folded into one warning per window at the end.
-    notes: list[tuple[str, str, str]] = []
+    # (account/window, kind, when the pair's later reading was taken, text), folded into
+    # one warning per window at the end.
+    notes: list[tuple[str, str, float, str]] = []
+    pair_at_s = 0.0
 
     def note(account_id: str, key: str, kind: str, text: str) -> None:
-        notes.append((f"{account_id}/{key}", kind, text))
+        notes.append((f"{account_id}/{key}", kind, pair_at_s, text))
 
     series = _series(records)
     # Share the stronger temporal classification with forgone accounting. The
@@ -887,6 +890,7 @@ def detect_resets(
     for account_id, readings in sorted(series.items()):
         plan = plans.get(account_id) or Plan()
         for before, after in zip(readings, readings[1:]):
+            pair_at_s = after.observed_at_s
             stocks = _stocks(before, plan)
             for key, window in before.windows.items():
                 if not window.is_stock:
@@ -1059,32 +1063,42 @@ def detect_resets(
     return Detection(records=tuple(found), warnings=_fold_pair_notes(notes))
 
 
-def _fold_pair_notes(notes: Sequence[tuple[str, str, str]]) -> tuple[str, ...]:
+def _fold_pair_notes(notes: Sequence[tuple[str, str, float, str]]) -> tuple[str, ...]:
     """One warning per account and window: the note itself when there is one, otherwise
-    a count by kind and the newest note's words.
+    a count by kind, the newest note, and the newest note of each other kind.
 
     Every ``status`` scans all retained history again, so an unfolded note came back on
     every poll; one record on 2026-10-18 carried 12,203 (BACKLOG #11). Pairs are scanned
     oldest first, so the last note of a window is its newest, and a drift that arrives
-    after an earlier scan still shows here.
+    after an earlier scan still shows here. Each example carries the time its pair's
+    later reading was taken, and a rare kind keeps its own example, so routine drift
+    cannot hide a refused reset behind a bare count.
     """
-    grouped: dict[str, list[tuple[str, str]]] = {}
-    for window, kind, text in notes:
-        grouped.setdefault(window, []).append((kind, text))
+    grouped: dict[str, list[tuple[str, float, str]]] = {}
+    for window, kind, at_s, text in notes:
+        grouped.setdefault(window, []).append((kind, at_s, text))
     out: list[str] = []
     for window, items in grouped.items():
         if len(items) == 1:
-            out.append(items[0][1])
+            out.append(items[0][2])
             continue
         kinds: dict[str, int] = {}
-        for kind, _text in items:
+        newest_of: dict[str, tuple[float, str]] = {}
+        for kind, at_s, text in items:
             kinds[kind] = kinds.get(kind, 0) + 1
+            newest_of[kind] = (at_s, text)
         counts = ", ".join(f"{count} {kind}" for kind, count in kinds.items())
-        newest = items[-1][1].removeprefix(f"{window}: ")
-        out.append(
-            f"{window}: {len(items)} reset-scan notes in retained history ({counts}); "
-            f"newest: {newest}"
-        )
+
+        def example(at_s: float, text: str) -> str:
+            return f"(pair read {_iso(at_s)}) {text.removeprefix(f'{window}: ')}"
+
+        newest_kind, newest_at_s, newest_text = items[-1]
+        line = (f"{window}: {len(items)} reset-scan notes in retained history ({counts}); "
+                f"newest {example(newest_at_s, newest_text)}")
+        for kind in kinds:
+            if kind != newest_kind:
+                line += f"; newest {kind} {example(*newest_of[kind])}"
+        out.append(line)
     return tuple(out)
 
 

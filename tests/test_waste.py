@@ -475,16 +475,43 @@ def test_repeated_pair_warnings_fold_to_one_line_per_window(env):
     first = waste.detect_resets(records).warnings
     lines = [w for w in first if w.startswith("claude/7d: ")]
     assert len(lines) == 1, first
-    assert "20 reset-scan notes in retained history" in lines[0]
-    assert "19 reset time moved forward" in lines[0] and "1 incoherent pair" in lines[0]
-    assert lines[0].endswith(f"-> {waste._iso(reset_at + 600.0 * 20)}); recorded as no "
-                             "reset, but a window whose boundary drifts is not the fixed "
-                             "window this measurement assumes")
+    line = lines[0]
+    assert line.startswith("claude/7d: 20 reset-scan notes in retained history "
+                           "(19 reset time moved forward, 1 incoherent pair); ")
+    # The newest note, with the time its pair was read, and the rare kind's own newest
+    # example, so drift that follows it cannot hide it behind a bare count.
+    assert (f"; newest (pair read {waste._iso(T0 + 2000.0)}) reset time moved forward "
+            f"0.00 of a window without rolling over ({waste._iso(reset_at + 600.0 * 19)} -> "
+            f"{waste._iso(reset_at + 600.0 * 20)})") in line
+    assert (f"; newest incoherent pair (pair read {waste._iso(T0 + 550.0)}) incoherent "
+            f"pair -- used fell 45% -> 10%") in line
 
     later = records + [weekly_reading(T0 + 2100.0, used=0.45, resets_at_s=reset_at + 12_900.0)]
     second = [w for w in waste.detect_resets(later).warnings if w.startswith("claude/7d: ")]
     assert len(second) == 1 and "21 reset-scan notes" in second[0]
+    assert f"newest (pair read {waste._iso(T0 + 2100.0)})" in second[0]
     assert f"-> {waste._iso(reset_at + 12_900.0)})" in second[0]
+
+
+def test_each_account_and_window_keeps_its_own_folded_line(env):
+    reset_at = T0 + SEVEN_DAYS
+    records = [
+        hrecord(
+            T0 + 100.0 * i,
+            account("claude", window("7d", 0.45, reset_at + 600.0 * i, T0 + 100.0 * i)),
+            account("claude_b", window("7d", 0.30, reset_at + 900.0 * i, T0 + 100.0 * i)),
+            account("claude_c", window("7d", 0.20, reset_at + (600.0 if i == 5 else 0.0),
+                                       T0 + 100.0 * i)),
+        )
+        for i in range(1, 6)
+    ]
+    warnings = waste.detect_resets(records).warnings
+    assert [w.split(": ", 1)[0] for w in warnings] == ["claude/7d", "claude_b/7d",
+                                                      "claude_c/7d"]
+    assert warnings[2].startswith("claude_c/7d: reset time moved forward")  # one note, as is
+    assert "4 reset-scan notes" in warnings[0] and "4 reset-scan notes" in warnings[1]
+    assert f"({waste._iso(reset_at + 900.0 * 4)} -> {waste._iso(reset_at + 900.0 * 5)})" in (
+        warnings[1])
 
 
 def test_a_single_pair_warning_keeps_its_own_words(env):

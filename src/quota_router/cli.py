@@ -2771,7 +2771,8 @@ def _cmd_status(
 
     # Two populations of warning, and only one of them is about this reading. The waste
     # scan re-walks every retained history record on every run, so its notes describe
-    # window transitions observed days ago and their count only grows. Printing them
+    # window transitions observed days ago (folded to one line per account and window,
+    # so they no longer grow with history, but they still repeat every run). Printing them
     # beside a warning about the snapshot just taken buries the second in the first --
     # on the operator's fleet, seven live warnings under thirty-four history notes. The
     # default view prints every live warning and states how many history notes exist;
