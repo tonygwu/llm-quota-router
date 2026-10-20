@@ -1174,10 +1174,19 @@ echo '{"capability":"premium","system":"Reply in JSON.","prompt":"...",
 The response carries `run_contract: 1` (pick's `contract_version` is untouched), `ok`,
 `outcome`, `text`, `structured`, `served {account, provider, pool_kind, model,
 model_requested, models_seen, effort, auth}`, `usage`, `cost_usd`, `cost_pse`,
-`attempts[]` and `decision {reason, objective, fallback}`. `served.effort` is the
+`attempts[]` (each `{account, pool_kind, model, effort, outcome, duration_ms, cost_usd,
+spent, detail}`) and `decision {reason, objective, fallback}`. `served.effort` is the
 `--effort` the child was given (the router's translation of a capability request), or
 null when it was given none; each attempt carries its own. Exit 0 whenever the request parsed, whatever the outcome; exit 2 for a
-request or config refused before anything was spent. Outcomes: `ok`, `exhausted`,
+request or config refused before anything was spent.
+
+Each attempt's `spent` says whether it was billed, as far as the router saw. It is
+`true` when the child reported a positive `total_cost_usd` or a credit pool's ledger
+booked a spend (a timed-out credit call is booked at its hold). It is `false` when the
+child reported a zero cost or could not be started. It is `null` when nothing says, for
+example a subscription call that timed out or a child that ended without a result
+event. An `auth` outcome can be either: a refused login costs nothing, while a call that
+ran on the wrong credential was billed. Outcomes: `ok`, `exhausted`,
 `wrong_model`, `auth`, `transient`, `timeout`, `schema_invalid`, `cli_error`,
 `no_candidate`, `bad_request`.
 
@@ -1213,8 +1222,10 @@ in `decision.fallback`. `[engine] usd_per_pse` is required. From Python:
 
 **Migrating a client.** Replace the `claude -p` call in the one function that makes it
 (digital-twin `callLlm`, memkg-evals `ClaudeCLI.call`, self-rsi-habits' `ModelProvider`)
-with `quotapick run`, keep the old path as the fallback when `run_contract != 1` or the
-outcome is `no_candidate`/`cli_error`, and read provenance from `served`. A client that
+with `quotapick run`, keep the old path as the fallback when `run_contract != 1`, or
+when the call failed and every attempt says `spent: false` (`no_candidate` has no
+attempts, so it qualifies), and read provenance from `served`. A revision from before
+2026-10-20 omits `spent`; read a missing one as `null`. A client that
 strips `ANTHROPIC_API_KEY` from its own environment may keep doing so: `run` reads a
 credit pool's key from the Keychain itself.
 

@@ -188,6 +188,47 @@ def test_an_api_key_on_a_subscription_run_is_an_auth_failure(env) -> None:
     assert "apiKeySource" in payload["attempts"][0]["detail"]
 
 
+def test_each_attempt_says_whether_it_was_billed(env) -> None:
+    """``spent`` is what the router saw (BACKLOG #5): a positive reported cost is a bill
+    and a reported zero is none, so a client can fall back on ``spent: false`` alone."""
+    exhausted = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
+                        text="Claude AI usage limit reached|1792030000")
+    runner = FakeRunner((1, exhausted, ""), (0, _stream(), ""))
+    _code, payload, _err = _run(env, _request(), runner)
+    assert [(a["outcome"], a["spent"]) for a in payload["attempts"]] == [
+        ("exhausted", False), ("ok", True)]
+
+
+def test_an_auth_failure_is_spent_only_when_the_call_ran(env) -> None:
+    # Both attempts end `auth`. The first was refused before it ran; the second ran on
+    # the wrong credential and billed it.
+    refused = _stream(is_error=True, subtype="error_during_execution", cost=0.0,
+                      text="API Error: 401 authentication_error: invalid x-api-key")
+    ran = _stream(api_key_source="ANTHROPIC_API_KEY", cost=0.02)
+    runner = FakeRunner((1, refused, ""), (0, ran, ""))
+    _code, payload, _err = _run(env, _request(), runner)
+    assert [(a["outcome"], a["spent"]) for a in payload["attempts"]] == [
+        ("auth", False), ("auth", True)]
+
+
+@pytest.mark.parametrize("reply, expected", [
+    pytest.param((1, "", "Segmentation fault"), None, id="no result event"),
+    pytest.param((0, _stream(cost=None), ""), None, id="result without a cost"),
+    pytest.param((0, _stream(cost=-1.0), ""), None, id="negative cost"),
+    pytest.param((0, _stream(cost=float("nan")), ""), None, id="NaN cost"),
+    pytest.param(subprocess.TimeoutExpired(cmd="claude", timeout=5), None, id="timeout"),
+    pytest.param(FileNotFoundError(2, "No such file or directory", "/opt/test/claude"), False,
+                 id="binary missing"),
+    pytest.param(PermissionError(13, "Permission denied", "/opt/test/claude"), False,
+                 id="binary not executable"),
+    pytest.param(OSError("pipe broke after start"), None, id="other OSError"),
+])
+def test_spent_is_unknown_unless_the_router_saw_it(env, reply, expected) -> None:
+    runner = FakeRunner(reply)
+    _code, payload, _err = _run(env, _request(max_attempts=1), runner)
+    assert payload["attempts"][0]["spent"] is expected
+
+
 def test_attempts_stop_at_the_cap(env) -> None:
     bad = (0, _stream(model="claude-other"), "")
     runner = FakeRunner(bad, bad, bad)

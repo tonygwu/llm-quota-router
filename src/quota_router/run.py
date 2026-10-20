@@ -256,6 +256,11 @@ class Attempt:
     auth: str | None = None
     #: The ``--effort`` the child was given; None when it was given none.
     effort: str | None = None
+    #: Whether this attempt was billed, as far as the router saw: ``True`` when the
+    #: child reported a positive cost or the credit ledger booked a spend, ``False``
+    #: when it reported a zero cost or never started, ``None`` when nobody can tell.
+    #: A client may route elsewhere only when every attempt says ``False``.
+    spent: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -266,8 +271,29 @@ class Attempt:
             "outcome": self.outcome,
             "duration_ms": self.duration_ms,
             "cost_usd": self.cost_usd,
+            "spent": self.spent,
             "detail": self.detail,
         }
+
+
+#: Exceptions ``subprocess.run`` raises only when the child could not be started: the
+#: binary or the working directory is missing or not executable. Nothing ran, so
+#: nothing was billed. Every other exception leaves the attempt's spend unknown.
+_NOT_STARTED: Final[tuple[type[OSError], ...]] = (
+    FileNotFoundError, PermissionError, NotADirectoryError,
+)
+
+
+def _spent_from_cost(cost_usd: float | None) -> bool | None:
+    """What a finished child's reported ``total_cost_usd`` says about billing.
+
+    Claude Code reports a positive cost on every call that reached the model, even a
+    $0.000125 subscription call, and zero on a call refused before it ran (exhausted,
+    logged out). A missing, negative or non-finite cost says nothing.
+    """
+    if cost_usd is None or not math.isfinite(cost_usd) or cost_usd < 0:
+        return None
+    return cost_usd > 0
 
 
 def judge(
@@ -635,11 +661,18 @@ def execute(
             except Exception as exc:  # noqa: BLE001 - classified below, never raised
                 elapsed = int((time.monotonic() - t0) * 1000)
                 is_timeout = type(exc).__name__ == "TimeoutExpired"
+                if is_timeout:
+                    # A credit timeout is booked as spent below; a subscription one
+                    # may or may not have reached the model.
+                    spent = True if target.kind == "credit" else None
+                else:
+                    spent = False if isinstance(exc, _NOT_STARTED) else None
                 attempt = Attempt(
                     target.account, target.kind, target.model,
                     "timeout" if is_timeout else "cli_error", elapsed, None,
                     scrub(f"{type(exc).__name__}: {exc}")[:300],
                     effort=target.effort,
+                    spent=spent,
                 )
                 attempts.append(attempt)
                 final = attempt
@@ -682,6 +715,7 @@ def execute(
             models_seen=tuple(sorted((result.get("modelUsage") or {}).keys())),
             auth=(parsed.init or {}).get("apiKeySource"),
             effort=target.effort,
+            spent=_spent_from_cost(cost_usd),
         )
         attempts.append(attempt)
         final = attempt

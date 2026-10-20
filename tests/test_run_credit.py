@@ -170,12 +170,22 @@ def test_exhaustion_empties_the_pool_and_the_job_moves_on(env) -> None:
     runner = FakeRunner((1, refused, ""), (0, _stream(), ""))
     _code, payload, _err = _run(env, _request(), runner)
     assert [a["outcome"] for a in payload["attempts"]] == ["exhausted", "ok"]
+    assert [a["spent"] for a in payload["attempts"]] == [False, True]
     assert payload["served"]["pool_kind"] == "subscription"
     lines = _ledger(env)
     assert [line["type"] for line in lines] == ["hold", "release", "exhausted"]
     config = cli.load_config(env=env, cwd=_NO_CONFIG_FILES)
     pool = config.credit_pools["anthropic_api_d"]
     assert credits.balance(pool, lines, now_s=NOW + 1).remaining_usd == 0.0
+
+
+def test_a_timed_out_credit_call_is_spent_because_the_ledger_booked_it(env) -> None:
+    runner = FakeRunner(subprocess.TimeoutExpired(cmd="claude", timeout=5))
+    _code, payload, _err = _run(env, _request(timeout_s=5), runner)
+    attempt, = payload["attempts"]
+    assert (attempt["pool_kind"], attempt["outcome"]) == ("credit", "timeout")
+    assert attempt["cost_usd"] is None and attempt["spent"] is True
+    assert [line["type"] for line in _ledger(env)] == ["hold", "spend"]
 
 
 def test_a_subscription_auth_on_a_credit_run_is_refused(env) -> None:
