@@ -367,7 +367,7 @@ landed on 2026-10-19.
 
 ---
 
-### 6. A credit-pool `run` records a pick on a subscription that never ran  `[difficulty: high]`  `[filed: 2026-10-16]`
+### 6. A credit-pool `run` records a pick on a subscription that never ran  `[difficulty: high]`  `[filed: 2026-10-16]`  `[claimed by: #0]`
 
 `run` asks `_prepare` for the best subscription first, with `write_state=True`, and only
 then compares that choice against the credit pools. When a pool wins, the subscription
