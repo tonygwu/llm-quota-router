@@ -462,6 +462,41 @@ def test_a_boundary_that_only_drifts_is_not_a_rollover(env):
     assert any("without rolling over" in w for w in detection.warnings), detection.warnings
 
 
+def test_repeated_pair_warnings_fold_to_one_line_per_window(env):
+    """BACKLOG #11: every status run re-scans all retained history, so each pair warning
+    used to come back on every poll, 12,203 of them in one record on 2026-10-18. Each
+    account and window now gets one line with a count and the newest example, and a
+    drift that arrives after an earlier scan still shows, as that newest example."""
+    reset_at = T0 + SEVEN_DAYS
+    records = [weekly_reading(T0 + 100.0 * i, used=0.45, resets_at_s=reset_at + 600.0 * i)
+               for i in range(1, 21)]
+    records.insert(5, weekly_reading(T0 + 550.0, used=0.10, resets_at_s=reset_at + 3000.0))
+
+    first = waste.detect_resets(records).warnings
+    lines = [w for w in first if w.startswith("claude/7d: ")]
+    assert len(lines) == 1, first
+    assert "20 reset-scan notes in retained history" in lines[0]
+    assert "19 reset time moved forward" in lines[0] and "1 incoherent pair" in lines[0]
+    assert lines[0].endswith(f"-> {waste._iso(reset_at + 600.0 * 20)}); recorded as no "
+                             "reset, but a window whose boundary drifts is not the fixed "
+                             "window this measurement assumes")
+
+    later = records + [weekly_reading(T0 + 2100.0, used=0.45, resets_at_s=reset_at + 12_900.0)]
+    second = [w for w in waste.detect_resets(later).warnings if w.startswith("claude/7d: ")]
+    assert len(second) == 1 and "21 reset-scan notes" in second[0]
+    assert f"-> {waste._iso(reset_at + 12_900.0)})" in second[0]
+
+
+def test_a_single_pair_warning_keeps_its_own_words(env):
+    reset_at = T0 + SEVEN_DAYS
+    records = [
+        weekly_reading(T0 + 100.0, used=0.45, resets_at_s=reset_at),
+        weekly_reading(T0 + 200.0, used=0.46, resets_at_s=reset_at + 600.0),
+    ]
+    warning, = waste.detect_resets(records).warnings
+    assert warning.startswith("claude/7d: reset time moved forward 0.00 of a window")
+
+
 def test_a_sliding_window_produces_no_records_at_all(env):
     """The failure mode that would be silent and enormous.
 

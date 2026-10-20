@@ -858,7 +858,11 @@ def detect_resets(
     """
     plans = plans or {}
     found: list[ResetRecord] = []
-    warnings: list[str] = []
+    # (account/window, kind, text), folded into one warning per window at the end.
+    notes: list[tuple[str, str, str]] = []
+
+    def note(account_id: str, key: str, kind: str, text: str) -> None:
+        notes.append((f"{account_id}/{key}", kind, text))
 
     series = _series(records)
     # Share the stronger temporal classification with forgone accounting. The
@@ -900,7 +904,7 @@ def detect_resets(
                     window, later, before.observed_at_s, after.observed_at_s
                 )
                 if transition == TRANSITION_BACKWARDS:
-                    warnings.append(
+                    note(account_id, key, "reset time moved backwards",
                         f"{account_id}/{key}: reset time moved backwards "
                         f"{_iso(window.resets_at_s)} -> {_iso(later.resets_at_s)}; "
                         f"refusing to record a reset from data that disagrees with itself"
@@ -910,7 +914,7 @@ def detect_resets(
                 fresh_start_s = later.resets_at_s - later.length_s
                 if transition == TRANSITION_SAME:
                     if dropped:
-                        warnings.append(
+                        note(account_id, key, "incoherent pair",
                             f"{account_id}/{key}: incoherent pair -- used fell "
                             f"{window.used:.0%} -> {later.used:.0%} but the reset time "
                             f"moved only {jump / window.length_s:.2f} of a window; a "
@@ -918,7 +922,7 @@ def detect_resets(
                             f"and a rollover moves the boundary by a full length"
                         )
                     elif jump > RESET_JITTER_S:
-                        warnings.append(
+                        note(account_id, key, "reset time moved forward",
                             f"{account_id}/{key}: reset time moved forward "
                             f"{jump / window.length_s:.2f} of a window without rolling "
                             f"over ({_iso(window.resets_at_s)} -> "
@@ -1016,7 +1020,7 @@ def detect_resets(
                 missed = max(0, int(round(jump / window.length_s)) - 1)
                 emitted = min(missed, MAX_MISSED_ENUMERATED)
                 if missed > emitted:
-                    warnings.append(
+                    note(account_id, key, "unobserved resets cut",
                         f"{account_id}/{key}: {missed} unobserved resets implied by a "
                         f"jump of {jump / window.length_s:.1f} window lengths; recorded "
                         f"the {emitted} most recent and cut {missed - emitted}"
@@ -1052,7 +1056,36 @@ def detect_resets(
                     )
 
     found.sort(key=lambda row: (row.reset_at_s, row.account, row.window))
-    return Detection(records=tuple(found), warnings=tuple(warnings))
+    return Detection(records=tuple(found), warnings=_fold_pair_notes(notes))
+
+
+def _fold_pair_notes(notes: Sequence[tuple[str, str, str]]) -> tuple[str, ...]:
+    """One warning per account and window: the note itself when there is one, otherwise
+    a count by kind and the newest note's words.
+
+    Every ``status`` scans all retained history again, so an unfolded note came back on
+    every poll; one record on 2026-10-18 carried 12,203 (BACKLOG #11). Pairs are scanned
+    oldest first, so the last note of a window is its newest, and a drift that arrives
+    after an earlier scan still shows here.
+    """
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for window, kind, text in notes:
+        grouped.setdefault(window, []).append((kind, text))
+    out: list[str] = []
+    for window, items in grouped.items():
+        if len(items) == 1:
+            out.append(items[0][1])
+            continue
+        kinds: dict[str, int] = {}
+        for kind, _text in items:
+            kinds[kind] = kinds.get(kind, 0) + 1
+        counts = ", ".join(f"{count} {kind}" for kind, count in kinds.items())
+        newest = items[-1][1].removeprefix(f"{window}: ")
+        out.append(
+            f"{window}: {len(items)} reset-scan notes in retained history ({counts}); "
+            f"newest: {newest}"
+        )
+    return tuple(out)
 
 
 # ======================================================================================
