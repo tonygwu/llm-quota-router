@@ -33,8 +33,10 @@ backup is listed as excluded from chronology. Nothing is silently sampled.
   unnamed: the reason is the tier evidence, not a claim that every current account
   participated. The account-specific 9.8, both measured Claude/GPT k values and the
   primary pool's measured size cover all time because there is no evidence of a
-  change. The second Claude/GPT pool's configured 0.088 stays an encoding, without
-  a measured size belief. Codex and other default inheritors gain no measured belief.
+  change. In the initial proposal, the second Claude/GPT pool's configured 0.088
+  stays an encoding, without a measured size belief. A later operator belief applies
+  the primary pool's size to it, as recorded below. Codex and other default inheritors
+  gain no measured belief.
 - **Initial Gemini beliefs:** both pools have an unresolved historical weekly-pool belief,
   including the October 16 resets, followed by the operator's settled-value belief
   from the October 18 experiment onward. That boundary says where the later
@@ -122,7 +124,7 @@ validation and review reports remain in the private adoption record.
    reported 10 attempted, 10 succeeded, 0 failed, with no failure kinds.
 5. After repeating the current/logged/as-of checks against copied post-poller
    state, the installed CLI appended the operator's two Gemini beliefs at
-   `05:42:21.199671Z`. The ledger now holds 139 records: 16 measurements,
+   `05:42:21.199671Z`. The ledger then held 139 records: 16 measurements,
    109 encodings and 14 beliefs. Its marker remains valid and all earlier records
    remain intact. This belief append left `waste.jsonl` unchanged.
 
@@ -150,6 +152,40 @@ review also returned `ship` before the belief append, after its verification
 calculation was updated for recovered raw precision. No live operation failed.
 Installation waited for an active poll to finish before invoking uv; no job was
 signalled and no rollback was needed.
+
+## Additional second-pool belief, October 20
+
+The operator subsequently decided that the second Claude/GPT pool has the same
+0.088 PSE five-hour size as the measured primary pool, for all time. The reason is
+their shared plan and model group, supported by the primary pool's measurement.
+The October 18 config already encoded both as 0.088. This is a belief about the
+second pool, not a measurement of it.
+
+After a scratch check and a fresh pre-write `ship` verdict, the installed CLI
+appended `belief-antigravity_claude_b-capacity-same-plan-20261020` at
+`2026-10-20T06:01:36.625472Z`. It has `key: capacity`, `value: 0.088`, and null
+`valid_from` and `valid_to`. Its measurement reference is
+`measurement-agy-claude-capacity`. The evidence timestamp
+`2026-10-20T05:49:10Z` is the recording time of operator-decision commit
+`18da47d43c3a32108e04f00f0f0b6edc9d3a9860`; the reason distinguishes that from
+the unknown exact time of the human decision.
+
+The ledger now contains 140 records: 16 measurements, 109 encodings and 15 beliefs.
+A supplemental copy of the previous ledger, marker and reset log was saved
+privately before the append. All 139 earlier records, the marker and the reset
+log remained unchanged. A cutoff at the new append time reproduces the full prior
+report. The only changed reset row is the second Claude/GPT pool's October 15
+weekly reset: current waste changes from 1.8425697088241577 to
+0.16214613437652586 PSE, while logged waste remains 1.84257 PSE.
+The raw check is `(1 - 0.07871514558792114) * 2 * 0.088`.
+Gemini rows remain unchanged.
+
+The [saved waiting-capacity proposal](2026-10-20-forgone-capacity.md) was also
+recalculated in scratch with all approved beliefs: 19 records attempted,
+19 validated, 0 failed. The second Claude/GPT pool contributes
+0.0883416402116402 PSE, and the total becomes 4.265023712993716 PSE.
+Its raw-history adoption and writer installation remain separate pending work.
+This additional belief append did not install code or change the schedule.
 
 ## Reproduction and adoption
 
