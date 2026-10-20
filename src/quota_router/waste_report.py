@@ -44,9 +44,9 @@ def _effective(row, basis, beliefs, ledger, replacements=None):
                 slots["fable_fraction"] = (value["fable_fraction"], belief)
             elif value is None and any("fable_fraction" in candidate["value"]
                                        for candidate in belief["candidates"]):
-                # Any candidate supplying the optional component owns its
-                # uncertainty. A candidate omitting it retains the prior value
-                # when _effective is rerun with that candidate selected.
+                # Validation requires uniform optional fields across candidates,
+                # so the whole belief either owns this uncertainty or retains
+                # the prior fraction (including any prior unresolved choices).
                 slots["fable_fraction"] = (None, belief)
         elif key == "weekly_to_session":
             slots["k"] = (value, belief)

@@ -1475,9 +1475,12 @@ value, spread, experiment interval, method, evidence and caveats. A belief names
 account, its effective interval, value or labeled unresolved candidates, reasons,
 supporting/disputed measurement ids and decision maker. A weekly-pool belief pairs
 `weekly_to_session` with `window_size`, so uncertainty about one does not silently
-choose the other. It may also supply `fable_fraction`: a candidate that omits that
-optional field retains the prior fraction, while any candidate that supplies it
-keeps that component unresolved until a later belief resolves it. Resolving k or
+choose the other. It may also supply `fable_fraction`. All candidates in one pool
+belief must name the same conversion fields: either every candidate supplies the
+fraction or every candidate omits it. Mixed fields are rejected before appending.
+Omitting it from every candidate retains the prior fraction, including any prior
+unresolved choices. Supplying it keeps that component unresolved until resolved.
+Resolving k or
 capacity alone does not resolve the fraction. A corrected tier whose scale change
 bounds contain the reset stays logged with an uncertainty reason unless an explicit
 scale belief resolves it. The supported keys also include `capacity`, `tier`, `tier_scale`

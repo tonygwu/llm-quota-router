@@ -191,26 +191,42 @@ def test_unobserved_rows_do_not_count_default_assumptions():
     assert report["unknown_basis_source_rows"] == 0
 
 
-@pytest.mark.parametrize("fractions,expected", [((0.2, 0.8), [1.44, 5.76]), ((0.2, None), [1.44, 3.6])])
-def test_pool_fraction_remains_unresolved_after_k_and_capacity_resolve(fractions, expected):
+def test_pool_fraction_remains_unresolved_after_k_and_capacity_resolve():
     from tests.test_waste_v3 import history
 
     sample = next(item for item in waste.detect_resets(history(0.1, scoped=True)).records if item.scoped)
     choices = [{"label": str(fraction), "value": {"weekly_to_session": 4, "window_size": 2,
-                **({"fable_fraction": fraction} if fraction is not None else {})}}
-               for fraction in fractions]
+                "fable_fraction": fraction}} for fraction in (0.2, 0.8)]
     ledger = [belief("pool", "weekly_pool", None, candidates=choices),
               belief("k", "weekly_to_session", 4, recorded="2026-10-20T00:00:00Z"),
               belief("size", "capacity", 2, recorded="2026-10-20T00:00:00Z")]
     report = waste.summarize([sample], ledger=ledger)
     current = report["rows"][0]["current"]
     assert current["status"] == "unresolved"
-    assert [candidate["wasted_pse"] for candidate in current["candidates"]] == pytest.approx(expected)
+    assert [candidate["wasted_pse"] for candidate in current["candidates"]] == pytest.approx([1.44, 5.76])
     assert report["scoped_totals"]["wasted_pse"] == 0
     ledger.append(belief("fraction", "fable_fraction", 0.3, recorded="2026-10-21T00:00:00Z"))
     resolved = waste.summarize([sample], ledger=ledger)
     assert resolved["rows"][0]["current"]["status"] == "belief"
     assert resolved["scoped_totals"]["wasted_pse"] == pytest.approx(2.16)
+
+
+def test_pool_candidates_without_fraction_retain_all_prior_fraction_candidates():
+    from tests.test_waste_v3 import history
+
+    sample = next(item for item in waste.detect_resets(history(0.1, scoped=True)).records if item.scoped)
+    ledger = [belief("fraction", "fable_fraction", None, candidates=[
+        {"label": "small fraction", "value": 0.2}, {"label": "large fraction", "value": 0.8}]),
+        belief("pool", "weekly_pool", None, recorded="2026-10-20T00:00:00Z", candidates=[
+            {"label": "small pool", "value": {"weekly_to_session": 4, "window_size": 2}},
+            {"label": "large pool", "value": {"weekly_to_session": 8, "window_size": 2}},
+        ])]
+    report = waste.summarize([sample], ledger=ledger)
+    current = report["rows"][0]["current"]
+    assert current["status"] == "unresolved"
+    assert current["ledger_ids"] == ["fraction", "pool"]
+    assert [c["wasted_pse"] for c in current["candidates"]] == pytest.approx([1.44, 2.88, 5.76, 11.52])
+    assert report["scoped_totals"]["wasted_pse"] == 0
 
 
 @pytest.mark.parametrize("reset,status,value", [

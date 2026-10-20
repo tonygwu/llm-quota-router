@@ -246,6 +246,10 @@ def validate_record(record: Mapping[str, Any], previous: Iterable[Mapping[str, A
                 _text(candidate["label"], "candidate label")
                 _value(record["key"], candidate["value"])
                 labels.append(candidate["label"])
+            if record["key"] == "weekly_pool" and len({
+                    frozenset(candidate["value"]) for candidate in record["candidates"]}) != 1:
+                raise LedgerError("weekly_pool candidates must name the same conversion fields; "
+                                  "supply fable_fraction in every candidate or omit it from every candidate")
             if len(set(labels)) != len(labels):
                 raise LedgerError("candidate labels must be unique")
         else:

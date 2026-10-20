@@ -100,6 +100,18 @@ def test_unresolved_combined_weekly_candidates_and_scope(env):
     assert c.resolve_belief(c.read_records(env=env), "codex", "weekly_pool", c.parse_time(T0)) is None
 
 
+def test_mixed_weekly_candidate_fields_rejected_before_append(env):
+    c.append_records([measurement()], env=env)
+    original = c.ledger_path(env).read_bytes()
+    unresolved = belief(key="weekly_pool", status="unresolved", value=None, candidates=[
+        {"label": "new fraction", "value": {"weekly_to_session": 4, "window_size": 2, "fable_fraction": 0.3}},
+        {"label": "retain prior fraction", "value": {"weekly_to_session": 4, "window_size": 2}},
+    ])
+    with pytest.raises(c.LedgerError, match="same conversion fields"):
+        c.append_records([unresolved], env=env)
+    assert c.ledger_path(env).read_bytes() == original
+
+
 @pytest.mark.parametrize("change", [
     {"value": float("nan")}, {"value": True}, {"value": 0.5},
     {"recorded_at": "2026-10-19T00:00:00"}, {"recorded_at": "2026-10-19T00:00:00-07:00"},
