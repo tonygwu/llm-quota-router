@@ -321,7 +321,9 @@ def build_default_adapters(
     ]
     if antigravity_accounts:
         adapters.append(
-            AntigravityAdapter(env=env, accounts=antigravity_accounts, live=allow_slow_reads)
+            AntigravityAdapter(
+                env=env, accounts=antigravity_accounts, live=allow_slow_reads, home=home
+            )
         )
     return tuple(adapters)
 

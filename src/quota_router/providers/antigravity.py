@@ -149,6 +149,7 @@ from .base import (
     FIVE_HOUR_S,
     SEVEN_DAY_S,
     ProviderAdapter,
+    expand_user,
     parse_iso8601,
     parse_timestamp,
     read_json_file,
@@ -697,6 +698,8 @@ class AntigravityAdapter(ProviderAdapter):
             read at all.
         which: Injected PATH lookup, for the binary-presence check and the argv.
         env: Environment mapping, injected for tests; also the child's environment.
+        home: ``$HOME`` override for the usage cache and for a leading ``~`` in the
+            state-file path. agy itself still runs with ``env``.
     """
 
     name = "antigravity"
@@ -717,6 +720,7 @@ class AntigravityAdapter(ProviderAdapter):
         binary: str = ANTIGRAVITY_BINARY,
         which: Callable[[str], str | None] | None = None,
         env: Mapping[str, str] | None = None,
+        home: Path | str | None = None,
     ) -> None:
         self._accounts = tuple(accounts) if accounts is not None else None
         if self._accounts:
@@ -733,6 +737,7 @@ class AntigravityAdapter(ProviderAdapter):
         self._binary = binary
         self._which = which
         self._env = env
+        self._home = home
         self.warnings: tuple[str, ...] = ()
 
     def _environ(self) -> Mapping[str, str]:
@@ -747,10 +752,10 @@ class AntigravityAdapter(ProviderAdapter):
 
     def _state_file(self) -> Path | None:
         if self._state_path is not None:
-            return Path(os.path.expanduser(str(self._state_path)))
+            return expand_user(self._state_path, self._home)
         raw = self._environ().get(ANTIGRAVITY_STATE_ENV)
         if raw and raw.strip():
-            return Path(os.path.expanduser(raw.strip()))
+            return expand_user(raw.strip(), self._home)
         return None
 
     def _deadlines(self) -> dict[str, float]:
@@ -810,7 +815,7 @@ class AntigravityAdapter(ProviderAdapter):
         return list(groups.values())
 
     def _cache_path(self, account_id: str) -> Path:
-        return usage_cache_path(account_id, self._env)
+        return usage_cache_path(account_id, self._env, home=self._home)
 
     def _cached(self, pool: _Pool) -> tuple[_Record | None, str | None]:
         """``(record, None)``, or ``(None, why the record cannot be used at all)``."""

@@ -1696,6 +1696,19 @@ def test_an_injected_home_expands_every_tilde(tmp_path: Path, monkeypatch) -> No
         assert len(codex_adapters) == 2
         assert all([c.codex_home for c in a.accounts()] == [expected] for a in codex_adapters)
 
+    # A declared Antigravity pool caches under the injected home, and its state file
+    # override expands against it.
+    adapters = build_default_adapters(
+        config=FakePolicy(FakePolicyAccount(ACCOUNT_ANTIGRAVITY_CLAUDE, provider="antigravity")),
+        env={"QUOTA_ROUTER_ANTIGRAVITY_STATE": "~/agy-state.json"}, home=home)
+    agy, = [a for a in adapters if isinstance(a, AntigravityAdapter)]
+    assert agy._cache_path(ACCOUNT_ANTIGRAVITY_CLAUDE) == usage_cache_path(
+        ACCOUNT_ANTIGRAVITY_CLAUDE, {}, home=home)
+    assert usage_cache_path(ACCOUNT_ANTIGRAVITY_CLAUDE, {}, home=home).is_relative_to(home)
+    assert agy._state_file() == home / "agy-state.json"
+    assert AntigravityAdapter(state_path="~/s.json", home=home, env={})._state_file() == (
+        home / "s.json")
+
     # The default directory keeps its unsuffixed Keychain name when written with ``~``.
     assert keychain_service_for("~/.claude", home=home) == keychain_service_for(
         home / ".claude", home=home)
