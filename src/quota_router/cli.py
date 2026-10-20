@@ -3549,14 +3549,6 @@ def _common_parser() -> argparse.ArgumentParser:
         help="ignore the sticky incumbent and hysteresis for this invocation",
     )
     common.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="pick, exec, explain: decide without routing-state writes or spawning the chosen "
-        "CLI, but still append one history record; status: record nothing; waste --backfill "
-        "refuses it; other commands ignore it. Provider reads may spawn vendor CLIs and "
-        "still refresh usage caches",
-    )
-    common.add_argument(
         "--explain",
         action="store_true",
         help="write a human-readable explanation to stderr",
@@ -3585,10 +3577,29 @@ def _common_parser() -> argparse.ArgumentParser:
     return common
 
 
+def _dry_run_parser() -> argparse.ArgumentParser:
+    """``--dry-run``, for the commands that honour it.
+
+    It used to be a shared flag, so every other command accepted it and wrote anyway:
+    ``calibrations --append``, ``credits set`` and ``capabilities --refresh`` among them
+    (BACKLOG #36). Only these commands take it now, and argparse refuses it elsewhere.
+    """
+    dry_run = argparse.ArgumentParser(add_help=False)
+    dry_run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="pick, exec, explain: decide without routing-state writes or spawning the chosen "
+        "CLI, but still append one history record; status: record nothing; waste --backfill "
+        "refuses it. Provider reads may spawn vendor CLIs and still refresh usage caches",
+    )
+    return dry_run
+
+
 def _build_parser() -> argparse.ArgumentParser:
     from .capability import EFFORTS as _EFFORTS
 
     common = _common_parser()
+    dry_run = _dry_run_parser()
     parser = argparse.ArgumentParser(
         prog=_PROG,
         description=(
@@ -3611,7 +3622,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pick_parser = subparsers.add_parser(
         "pick",
-        parents=[common],
+        parents=[common, dry_run],
         help="print the routing decision as JSON (always exits 0 unless flags are bad)",
     )
     pick_parser.add_argument(
@@ -3648,7 +3659,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     exec_parser = subparsers.add_parser(
         "exec",
-        parents=[common],
+        parents=[common, dry_run],
         help="pick, then run that account's own CLI; the child's exit code passes through",
     )
     exec_parser.add_argument(
@@ -3659,7 +3670,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     status_parser = subparsers.add_parser(
         "status",
-        parents=[common],
+        parents=[common, dry_run],
         help="show what quota is left on every account, and how it is pacing",
     )
     status_parser.add_argument(
@@ -3672,7 +3683,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers.add_parser(
-        "explain", parents=[common], help="explain the decision in prose"
+        "explain", parents=[common, dry_run], help="explain the decision in prose"
     )
     calibrate_parser = subparsers.add_parser(
         "calibrate",
@@ -3792,7 +3803,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     waste_parser = subparsers.add_parser(
         "waste",
-        parents=[common],
+        parents=[common, dry_run],
         help="report quota that expired unused at each window reset",
     )
     waste_parser.add_argument("--beliefs-as-of", metavar="UTC",

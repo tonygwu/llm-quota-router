@@ -61,7 +61,9 @@ other writes:
 - From commit `e2cd00c`, `status` and `waste --backfill` also append waiting records
   to `forgone.jsonl`.
 - `--dry-run` stops them only for `status`, and `waste --backfill` refuses it;
-  `pick`, `explain` and `exec` still append history, and other commands ignore it.
+  `pick`, `explain` and `exec` still append history. Every other command built on the
+  shared flags refuses it with a usage error. `window-ping` has its own `--dry-run`,
+  which is its default mode.
 
 The ledger and the waiting records only grow, so records from unfinished code stay
 there. A waiting record that the installed writer disagrees with can make it refuse
