@@ -1501,59 +1501,72 @@ repo-prod installation and actual poller records.
 
 ---
 
-### 38. A stopped reset writer, or an invalid ledger, stops recording without a live status warning  `[difficulty: medium]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[claimed by: #1]`
+### 40. Corrupt history or waste bytes break routing and status, or name no file  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`
 
-**Background:** #34 made a stopped waiting-stretch writer a live `status` warning, with
-the prefix constant `src/quota_router/cli.py:2578` "_FORGONE_STOPPED: Final[str]".
-The reset writer refuses every append when `waste.jsonl` holds an unreadable row,
-`src/quota_router/waste.py:1176` "refusing to append behind unreadable waste rows; preserve and inspect the file",
-when the write itself fails,
-`src/quota_router/waste.py:1206` "cannot append to waste file",
-or when its lock times out,
-`src/quota_router/waste.py:1171` "waste lock timed out after".
-All reach `status` through `_record_waste`, which status counts as history notes. A
-review of #34 reproduced it in test folders: with an unreadable `waste.jsonl` row the
-default view printed only "2 note(s) about past window transitions in retained
-history", and the refusal appeared only with `-v`; a write failure behaved the same.
-The refusal line names no file; the path is only in the companion line
-`src/quota_router/waste.py:1114` "unreadable line(s) in".
+**Background:** reviews of #38 found these gaps beside the writers' live warnings.
+- A JSON decode error in strict history reading re-raises bare, so the live warning
+  shows only the parser message ("line 1 column 9", always line 1 of one record) and no
+  file: `src/quota_router/history.py:466` "except json.JSONDecodeError:". The other
+  strict errors already name the file, for example
+  `src/quota_router/history.py:472` "non-object history record in".
+- A non-UTF-8 byte crashes with `UnicodeDecodeError` (exit 127 for `status`). In the
+  first decoded block of `history.jsonl` it fails at
+  `src/quota_router/history.py:123` "first = handle.readline()", which catches only
+  `OSError`, during the history append that every recording command makes (`status`,
+  `pick`, `exec`, `explain`, `run`, `doctor`). Later in the file, or in a rotated file, it fails at
+  `src/quota_router/history.py:460` "for line in handle:" in the non-strict reader that
+  the forecast refresh uses. In `waste.jsonl` it fails at
+  `src/quota_router/waste.py:1093` "yield from handle" instead of producing the
+  unreadable-row refusal. A review reproduced each case in test folders; a `pick` with
+  a bad first line returned no account ("router failure: UnicodeDecodeError"), and `exec`
+  exited 127 without launching anything.
+- A failed demand-forecast write, `src/quota_router/forecast.py:491` "cannot write the demand forecast",
+  is silent under the default objective: `status` discards forecast notes at
+  `src/quota_router/cli.py:2735` "if engine.objective",
+  and under the joint objective it is only a counted history note.
 
-Separately, when the calibration ledger is invalid `status` skips `_record_waste`
-entirely, `src/quota_router/cli.py:2689` "calibration ledger invalid; waste recording stopped".
-The waiting-stretch writer then does not run either, although it takes no ledger
-input; it sits behind the check only because it was added inside `_record_waste`.
-
-**Impact:** a stopped reset writer records no reset on any poll, and nothing in the
-default view prompts a look. Recording resumes only after someone repairs the
-unreadable row or the write error clears; resets not recorded before their history
-ages out are lost, and a crash mid-append leaves a partial line that stops the writer
-until repaired. With an invalid ledger, waiting stretches are also not recorded, and
-the live warning does not say so. Placed early because item 1's total depends on
-`waste.jsonl`.
+**Impact:** one bad byte in history's first block makes `pick` choose no account, so
+`cl` falls back to its own default (the soonest weekly reset when configured), makes
+`exec` exit without launching, and stops `status`. Anywhere else in history it stops
+`status` after that run's history append once the forecast refresh is due (a rotated
+file only within the forecast window), and breaks `pick`'s cached-snapshot replay when
+a live usage read fails. A crash mid-append that leaves a partial line makes every
+poll print a warning that points nowhere. Placed early because it can stop routing,
+not only recording.
 
 **Fix:**
-1. Classify the three reset-writer refusals as live warnings and keep the routine
-   reset-scan notes as history notes. Carry the signal as data from `waste.py` (for
-   example, return the append's own warnings separately from the scan notes; today
-   `update_from_history` merges them), not as string prefixes matched in `cli.py`.
-   Include the file path in the live warning.
-2. For an invalid ledger, choose one and record the choice: (a) run the waiting-stretch
-   writer whatever the ledger's state, which stops the loss (recommended: it needs no
-   ledger); or (b) keep skipping it and say in the live warning that waiting stretches
-   are not recorded either.
-3. Tests in `tests/test_cli.py` next to
-   `tests/test_cli.py:1262` "def test_record_waste_stop_note_reaches_the_default_status_view":
-   each refusal prints in the default view with its file; routine notes do not; the
-   invalid-ledger case behaves as chosen in step 2.
+1. Strict history reading re-raises JSON and UTF-8 decode errors as `ValueError` naming
+   the file, like its other errors.
+2. Treat `UnicodeDecodeError` like any unreadable line in `_first_record_day`, in the
+   non-strict history reader, and in waste reading: no crash; the existing refusal or
+   live warning names the file.
+3. Return the forecast-write failure as a live warning that bypasses the objective
+   check, through `_WasteNotes`-style live notes in `cli.py`.
+4. Tests in `tests/test_cli.py` next to
+   `tests/test_cli.py:1320` "def test_unreadable_history_is_a_live_warning_not_a_crash":
+   a partial JSON line in a rotated file names that file; a non-UTF-8 byte in the first
+   line of history, later in history, in a rotated file, and in waste each give exit 0
+   and a live warning that names the file; `pick` with a bad first history line still
+   chooses an account and `exec` still launches; a forecast-write failure prints live
+   under the default objective.
 
-*Why medium:* a display classification change and one guard move, with focused tests;
-no stored data changes.
+*Risks and edge cases:* the strict and non-strict readers share the line loop at
+history.py:460, so opening with `errors="replace"` would let a corrupted record through
+strict reading as valid JSON, and strict callers decide spending; strict readers must
+keep refusing bad bytes. `_first_record_day` must stay a one-line read. Switching to
+binary reads changes line-ending handling. `credits.py` and `window_ping.py` read their
+files the same unguarded way; check them, and file separately if they differ.
 
-**Touch points:** `src/quota_router/waste.py:1176` "refusing to append behind unreadable waste rows";
-`src/quota_router/waste.py:1206` "cannot append to waste file";
-`src/quota_router/cli.py:2689` "calibration ledger invalid; waste recording stopped";
-`src/quota_router/cli.py:2709` "stopped = tuple(note for note in notes if note.startswith(_FORGONE_STOPPED))";
-`tests/test_cli.py:1262` "def test_record_waste_stop_note_reaches_the_default_status_view".
+*Why high not medium:* it changes error handling in the history reader that routing
+uses, across several commands.
+
+**Touch points:** `src/quota_router/history.py:466` "except json.JSONDecodeError:";
+`src/quota_router/history.py:123` "first = handle.readline()";
+`src/quota_router/history.py:460` "for line in handle:";
+`src/quota_router/waste.py:1093` "yield from handle";
+`src/quota_router/forecast.py:491` "cannot write the demand forecast";
+`src/quota_router/cli.py:2735` "if engine.objective";
+`tests/test_cli.py:1320` "def test_unreadable_history_is_a_live_warning_not_a_crash".
 
 ---
 
