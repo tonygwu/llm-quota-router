@@ -108,7 +108,7 @@ nobody published. See the README section "An early reset is not waste".
    excluded from current totals. Old Fable rows lacking coupled readings stay logged
    with an explicit reason. Publish this report's basis and ledger ids, plus its
    unresolved, unrecomputable and unmeasured-default counts. #26 carries the
-   operator's reconstruction/deployment approval and Gemini belief decision; the
+   operator's reconstruction/deployment approval and the decided Gemini belief; the
    removed `totals_at_capacity` output is no longer the publication source.
 
 **Closes when:** at least one full weekly cycle of resets is recorded for every account,
@@ -1335,7 +1335,7 @@ this repo, and `docs/measurements/2026-10-18-gemini-size.md`.
 
 ---
 
-### 26. Live waste adoption and the October 16 Gemini belief await operator decisions  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[BLOCKED: operator approval of reconstruction and deployment; operator Gemini belief decision]`
+### 26. Live waste adoption awaits the operator's install approval, and the October 16 Gemini belief is decided but not yet in the ledger  `[difficulty: high]`  `[priority: P2]`  `[filed: 2026-10-20]`  `[BLOCKED: operator approval of reconstruction and deployment]`
 
 **Background:** #24 implemented raw v3 reset readings, an append-only assumption
 ledger and reports derived from current historical beliefs. Its reconstruction is
@@ -1364,8 +1364,15 @@ assumption into a published figure.
    receipt and new symbols, then actual poller records from before and after the
    install, including v3 basis/raw fields and calibration detection. Do not change
    the schedule. This step can retain unresolved Gemini beliefs.
-3. Obtain the operator's separate belief decision for the Gemini window ending
-   October 16. Append the new belief with its evidence, reasons and validity
+3. **Operator decision 2026-10-20:** for the Gemini window ending October 16, the
+   weekly pool stayed the same (9.72 and 9.80 PSE a week; forfeits 9.681723 and
+   9.745963), on the recording agent's recommendation. The evidence it summarized: the
+   October 12 re-analysis implies weekly pools of 16.2 and 18.3 PSE by the fine method,
+   against 19.4 and 19.6 on October 18, close to the same size and far from the 3.75
+   times larger pool the other candidate needs; in the agent's judgment the stated
+   caveats cannot close that gap, and this candidate is the smaller figure. Earlier
+   wording of this step, kept for its procedure: obtain the operator's separate
+   belief decision for the Gemini window ending October 16. Append the new belief with its evidence, reasons and validity
    interval; retain the unresolved predecessor and all measurement records.
    Record the chosen basis in the measurement document and verify current versus
    logged figures plus `--beliefs-as-of` in a scratch copy before appending that belief to live state.
@@ -1566,15 +1573,17 @@ operator's words: the historical Gemini pools being idle is serious waste.
 (22:15:24Z on `antigravity_gemini`, 22:06:28Z on `_b`) to the first use at about
 10-18T03:03:35Z, about 28.8 and 29.0 hours. That stretch lies before the measured
 Gemini beliefs start (`GEMINI_MEASURED_FROM`, `ops/reconstruct-calibrations.py:24`), so
-its size is the unresolved Gemini belief that #26 step 3 leaves to the operator:
+its size rests on the Gemini belief of #26 step 3; the two candidates were:
 
 | Belief about the change | `antigravity_gemini` | `antigravity_gemini_b` |
 |---|---|---|
 | the weekly pool stayed the same (9.72 and 9.80 PSE a week) | 28.8 / 168 × 9.72 = 1.67 PSE | 29.0 / 168 × 9.80 = 1.69 PSE |
 | the five-hour window stayed the same (36.45 and 36.75 PSE a week) | 28.8 / 168 × 36.45 = 6.25 PSE | 29.0 / 168 × 36.75 = 6.34 PSE |
 
-Until the operator decides, the report shows this stretch with both candidates and keeps
-it out of the current totals, as it does the 2026-10-16 early rows. A Gemini pool idle
+**Operator decision 2026-10-20 (#26 step 3):** the weekly pool stayed the same, so this
+stretch counts 1.67 and 1.69 PSE once that belief is in the ledger. Until it is, the
+report shows both candidates and keeps the stretch out of the current totals, as it does
+the 2026-10-16 early rows. A Gemini pool idle
 for a whole week under the measured beliefs forgoes about 9.7 PSE. The
 history store keeps 30 days (`DEFAULT_KEEP_DAYS`, `src/quota_router/history.py:68`), so
 older stretches are being lost now.
@@ -1656,6 +1665,65 @@ reset rows alone would rise exactly when routing improves (#23).
 `src/quota_router/waste_report.py:286`, `src/quota_router/history.py:68`, README.md:1400
 (the waste section), `tests/test_waste.py`, `tests/test_waste_v3.py`,
 `tests/test_window_ping.py`.
+
+---
+
+### 31. Nothing notices when a provider resizes a pool, or tells which window changed  `[difficulty: high]`  `[filed: 2026-10-20]`
+
+**Background:** Antigravity's Gemini k went from 15.0 (measured 2026-10-12) to 4.0
+(2026-10-18) with no notice, possibly at the early reset on 2026-10-16
+(`docs/measurements/2026-10-18-gemini-size.md:65-68`). A change in k alone does not say
+which window changed: the weekly pool, the five-hour window, or both. The 2026-10-12 run
+sized neither pool at the time, and nothing measured either size between the two runs, so the October 16 waste depended on an after-the-fact judgment (#26 step 3, decided
+2026-10-20 from the October 12 re-analysis). **Operator request 2026-10-20:** have
+instrumentation that tells the two cases apart if a provider makes this kind of change
+again.
+
+**Impact:** the next silent change leaves the same gap, and a wrong size skews routing
+(`capacity`, `weekly_to_session`) and the waste totals #1 publishes until someone runs a
+new measurement by hand.
+
+**Fix:** keep a rolling calibration for each subscription pool from the work it already
+does.
+
+1. For each call that lands on a pool and carries token counts, price the tokens at the
+   pool's list-price basis (the basis the measurement docs use) and record it with the
+   pool, model and time. Sources: `quotapick run` attempts, window pings (#29), and any
+   routed work whose telemetry the router can see.
+2. Pair those dollars with the poller's bar movements to estimate, per pool, the weekly
+   bar's movement per dollar (weekly size) and the five-hour bar's movement per dollar
+   (window size). Their ratio is k. Use the fine-movement method of the 2026-10-18
+   measurement: track each `/usage` replica separately and leave out the provisional
+   jumps (#21).
+3. When k or either size moves beyond its noise, warn and append a `measurement` record
+   to the assumption ledger (#24's design). Whichever per-dollar rate stayed the same
+   names the window that did not change, and that record is the evidence for the new
+   belief.
+4. Report each pool's current estimates, their spread and the work they rest on, and say
+   when a pool has too little metered work for an estimate.
+
+*Risks and edge cases:*
+
+- Work the router cannot see, such as interactive use of the same account, moves the
+  bars without dollars and biases the sizes down. Say for each pool whether the router
+  sees all its calls. Today it sees no Antigravity call at all: `quotapick run` routes
+  only Claude accounts and credit pools (`src/quota_router/run.py:443-446`, #20), pings
+  are still dry-run (#29), and work routed through `pick` runs inside the consumer.
+  Step 1 needs #20, live pings, or a way for consumers to report their usage.
+- Claude and Codex report whole percents, so their estimates need many more calls than
+  Antigravity's fine-grained bars.
+- A "1 + 1" ping is too small to move a Claude, Codex or Antigravity Claude/GPT bar. On
+  the Gemini pools it may register: their bars have moved by as little as about 1e-6
+  between polls, and a ping should move them by about that much. Nobody has measured
+  one yet.
+- List price is a proxy for the provider's own weights, and a change in the model mix
+  can look like a resize; record the model mix with each estimate.
+
+**Touch points:** `src/quota_router/history.py:413` (`iter_records`, bar readings),
+`src/quota_router/run.py:443-446` (which accounts `run` reaches) and its attempt records,
+`src/quota_router/ping_cli.py:81` (`parse_response`, ping tokens) and the ping journal,
+`src/quota_router/calibrations.py` (the ledger), and
+`docs/measurements/2026-10-18-gemini-size.md` (the method).
 
 ---
 
