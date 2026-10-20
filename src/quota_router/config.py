@@ -269,12 +269,33 @@ def _as_str_table(value: Any, section: str) -> dict[str, str]:
     return {str(key): _as_str(item, section, str(key)) for key, item in table.items()}
 
 
-def _first_present(table: Mapping[str, Any], names: Sequence[str], default: Any) -> Any:
-    """First of ``names`` actually present in ``table`` -- how TOML aliases are honored."""
-    for name in names:
-        if table.get(name) is not None:
-            return table[name]
-    return default
+def _resolve_aliases(
+    data: Mapping[str, Any], path: Path, warnings: list[str]
+) -> dict[str, Any]:
+    """One file's table with each section alias renamed to its canonical name.
+
+    A file that sets both names keeps the canonical one, and the alias is reported as
+    ignored.
+    """
+    out = dict(data)
+    for section, aliases in _SECTION_ALIASES.items():
+        table = out.get(section)
+        if not isinstance(table, Mapping):
+            continue
+        table = dict(table)
+        for alias, canonical in aliases.items():
+            if alias not in table:
+                continue
+            value = table.pop(alias)
+            if canonical in table:
+                warnings.append(
+                    f"{path}: [{section}] sets both {canonical} and its alias {alias}; "
+                    f"{alias} ignored"
+                )
+            else:
+                table[canonical] = value
+        out[section] = table
+    return out
 
 
 def expand_path(raw: str, env: Mapping[str, str] | None = None) -> str:
@@ -1321,6 +1342,41 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset(_BUILTIN)
 #: than a missing warning: it invites someone to "fix" a config that was already right.
 _KNOWN_TOP_LEVEL_KEYS: Final[frozenset[str]] = frozenset({"fallback_model"})
 
+#: Every key a fixed-shape section may carry: the keys of its builtin table, which are
+#: the keys :func:`_build` reads. Like ``[engine]`` and ``[accounts.<id>]``, anything else
+#: is warned about by name. A typo in a hysteresis margin or a staleness bound would
+#: otherwise leave the router on its default and say nothing (BACKLOG #43).
+_SECTION_KEYS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        section: frozenset(_BUILTIN[section])
+        for section in (
+            "hysteresis",
+            "staleness",
+            "eligibility",
+            "pileup",
+            "oracle",
+            "exec",
+            "model_classes",
+        )
+    }
+)
+
+#: TOML aliases by section, as ``{alias: canonical name}``. Each file's aliases are
+#: renamed before the layers merge. Reading them after the merge cannot work, because the
+#: builtin layer always supplies the canonical name, and before #43 none of these took
+#: effect.
+_SECTION_ALIASES: Final[Mapping[str, Mapping[str, str]]] = MappingProxyType(
+    {
+        "hysteresis": MappingProxyType(
+            {
+                "switch_margin_multiplier": "switch_margin_ratio",
+                "switch_margin": "switch_margin_abs",
+                "ttl_s": "max_dwell_s",
+            }
+        ),
+    }
+)
+
 
 # ======================================================================================
 # Loading
@@ -1622,9 +1678,10 @@ def _build(
     sources: list[str],
     *,
     eligibility_explicit: bool = False,
+    layer_warnings: Sequence[str] = (),
 ) -> Config:
     """Validate a merged mapping into a :class:`Config`."""
-    warnings: list[str] = []
+    warnings: list[str] = list(layer_warnings)
     for section in merged:
         if section in _KNOWN_SECTIONS or section in _KNOWN_TOP_LEVEL_KEYS:
             continue
@@ -1638,6 +1695,19 @@ def _build(
     oracle_raw = _as_table(merged.get("oracle", {}), "oracle")
     exec_raw = _as_table(merged.get("exec", {}), "exec")
     model_raw = _as_table(merged.get("model_classes", {}), "model_classes")
+    for section, table in (
+        ("hysteresis", hysteresis_raw),
+        ("staleness", staleness_raw),
+        ("eligibility", eligibility_raw),
+        ("pileup", pileup_raw),
+        ("oracle", oracle_raw),
+        ("exec", exec_raw),
+        ("model_classes", model_raw),
+    ):
+        known_keys = _SECTION_KEYS[section]
+        for key in sorted(set(table) - known_keys):
+            known = ", ".join(sorted(known_keys))
+            warnings.append(f"unknown key [{section}] {key} ignored (known: {known})")
 
     accounts = _build_accounts(merged.get("accounts", {}), env, warnings)
     engine = _build_engine(merged.get("engine", {}), warnings)
@@ -1652,17 +1722,13 @@ def _build(
         hysteresis=HysteresisConfig(
             enabled=_as_bool(hysteresis_raw.get("enabled", True), "hysteresis", "enabled"),
             switch_margin_ratio=_as_number(
-                _first_present(
-                    hysteresis_raw, ("switch_margin_ratio", "switch_margin_multiplier"), 1.15
-                ),
+                hysteresis_raw.get("switch_margin_ratio", 1.15),
                 "hysteresis",
                 "switch_margin_ratio",
                 minimum=0.0,
             ),
             switch_margin_abs=_as_number(
-                _first_present(
-                    hysteresis_raw, ("switch_margin_abs", "switch_margin"), 0.02
-                ),
+                hysteresis_raw.get("switch_margin_abs", 0.02),
                 "hysteresis",
                 "switch_margin_abs",
                 minimum=0.0,
@@ -1675,7 +1741,7 @@ def _build(
                 minimum=0,
             ),
             max_dwell_s=_as_number(
-                _first_present(hysteresis_raw, ("max_dwell_s", "ttl_s"), 900.0),
+                hysteresis_raw.get("max_dwell_s", 900.0),
                 "hysteresis",
                 "max_dwell_s",
                 minimum=0.0,
@@ -1814,15 +1880,23 @@ def load_config(
     # operator asked for this bar. Presence of the key, not its value -- a config that
     # spells out the default 0.02 is still someone asking for that floor.
     eligibility_explicit = False
+    layer_warnings: list[str] = []
 
     for path, required in layers:
         data = _read_toml(path, required=required)
         if data is None:
             continue
+        data = _resolve_aliases(data, path, layer_warnings)
         eligibility = data.get("eligibility")
         if isinstance(eligibility, Mapping) and "min_remaining" in eligibility:
             eligibility_explicit = True
         merged = _deep_merge(merged, data)
         sources.append(str(path))
 
-    return _build(merged, env, sources, eligibility_explicit=eligibility_explicit)
+    return _build(
+        merged,
+        env,
+        sources,
+        eligibility_explicit=eligibility_explicit,
+        layer_warnings=layer_warnings,
+    )
